@@ -17,5 +17,7 @@ Implementar la primera versión ejecutable y testeada de Gentle Mesh en Go, vali
 - [x] Task 8: Diseñar y formalizar la arquitectura de federación Mesh-to-Mesh (M2M) y Protocolo de Territorio Compartido (Shared Situational Awareness) en RFC 001 y `pkg/protocol/federation.go`. (Commit: `fad93e4`, 18 test suites passing)
 - [x] Task 9: Implementar Radar de Ámbitos y Actividad en tiempo real (`domain`, `blast_radius`, `phase`, `current_action`), endpoint `/v1/mesh/radar` y comando CLI `gentle-mesh radar`. (Commit: `3efa6ba`, 100+ tests passing with race detector across all packages)
 - [x] Task 10: Implementar Admisión Territorial en Servidor (`FindConflict`), recuperación ante pánico de runner y normalización de URLs en locks (`pkg/server/http`, `pkg/server/registry`). Persistir informes Thermonuclear Review (GPT-4o, Claude 3.5 Sonnet, DeepSeek) en `docs/reviews/`. (Tests passing con race detector)
-- [ ] Task 11: Endurecimiento de I/O en JSONL logger (batching de `Sync` fuera de `t.mu`) y retención de disco (`CleanupExpired` periódico).
-- [ ] Task 12: Implementar `TerritoryManager` y endpoints de peering federado M2M (`/v1/mesh/peers`, `/v1/mesh/territory`) con TDD.
+- [x] Task 11: Endurecimiento de I/O en JSONL logger (fsync selectivo en eventos clave, manual Sync y tolerancia a líneas corruptas al EOF en ReadEvents) y retención automática de disco con ticker periódico y eliminación de `.jsonl` expirados en TaskManager.
+- [x] Task 12: Blindaje de ciclo de vida de runners con `TrackRunner` y `sync.WaitGroup` en `TaskManager.Close()`, evitando escrituras sobre loggers cerrados durante el shutdown.
+- [x] Task 13: Endurecimiento de transporte HTTP y streaming SSE (`ReadHeaderTimeout: 5s`, `IdleTimeout: 120s`, `MaxBytesReader` 1MB/64KB, `subtle.ConstantTimeCompare` en auth, y SSE heartbeat ping `: ping\n\n` cada 15s).
+- [ ] Task 14: Implementar `TerritoryManager` y endpoints de peering federado M2M (`/v1/mesh/peers`, `/v1/mesh/territory`) con TDD.

@@ -16,14 +16,15 @@ import (
 
 // ServerConfig defines configuration parameters for the mesh HTTP coordinator server.
 type ServerConfig struct {
-	Addr             string
-	TasksDir         string
-	HeartbeatTimeout time.Duration
-	TaskTTL          time.Duration
-	BearerToken      string
-	Runner           runner.Runner
-	Registry         *registry.Registry
-	TaskManager      *task.TaskManager
+	Addr                 string
+	TasksDir             string
+	HeartbeatTimeout     time.Duration
+	TaskTTL              time.Duration
+	BearerToken          string
+	Runner               runner.Runner
+	Registry             *registry.Registry
+	TaskManager          *task.TaskManager
+	SSEHeartbeatInterval time.Duration
 }
 
 // Server provides the HTTP REST and SSE coordinator daemon for gentle-mesh.
@@ -43,6 +44,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 	if cfg.TaskTTL <= 0 {
 		cfg.TaskTTL = 24 * time.Hour
+	}
+	if cfg.SSEHeartbeatInterval <= 0 {
+		cfg.SSEHeartbeatInterval = 15 * time.Second
 	}
 	if cfg.Registry == nil {
 		cfg.Registry = registry.NewRegistry(cfg.HeartbeatTimeout)
@@ -70,8 +74,10 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 
 	s.httpServer = &stdhttp.Server{
-		Addr:    cfg.Addr,
-		Handler: s.Handler(),
+		Addr:              cfg.Addr,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	return s, nil
@@ -114,8 +120,10 @@ func (s *Server) Handler() stdhttp.Handler {
 func (s *Server) Start() error {
 	if s.httpServer == nil {
 		s.httpServer = &stdhttp.Server{
-			Addr:    s.config.Addr,
-			Handler: s.Handler(),
+			Addr:              s.config.Addr,
+			Handler:           s.Handler(),
+			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       120 * time.Second,
 		}
 	}
 	if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, stdhttp.ErrServerClosed) {

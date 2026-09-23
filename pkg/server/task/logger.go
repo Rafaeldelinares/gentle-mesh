@@ -43,7 +43,8 @@ func NewJSONLLogger(filePath string) (*JSONLLogger, error) {
 	}, nil
 }
 
-// WriteEvent serializes event as a single-line JSON and appends it to disk, syncing immediately.
+// WriteEvent serializes event as a single-line JSON and appends it to disk.
+// It syncs immediately only for critical events (status, completion, error).
 func (l *JSONLLogger) WriteEvent(event protocol.Event) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -61,15 +62,28 @@ func (l *JSONLLogger) WriteEvent(event protocol.Event) error {
 	if _, err := l.file.Write(data); err != nil {
 		return fmt.Errorf("failed to write event to disk: %w", err)
 	}
-	if err := l.file.Sync(); err != nil {
-		return fmt.Errorf("failed to sync event to disk: %w", err)
+
+	if event.Type == protocol.EventStatus || event.Type == protocol.EventCompletion || event.Type == protocol.EventError {
+		if err := l.file.Sync(); err != nil {
+			return fmt.Errorf("failed to sync event to disk: %w", err)
+		}
 	}
 
 	return nil
 }
 
+// Sync flushes the underlying file to disk.
+func (l *JSONLLogger) Sync() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return ErrLoggerClosed
+	}
+	return l.file.Sync()
+}
+
 // ReadEvents reads the event log file from disk and returns all events with ID > sinceID.
-// It supports lines up to 1MB.
+// It supports lines up to 1MB and tolerates a corrupt/partial trailing line if a crash occurred mid-write at EOF.
 func (l *JSONLLogger) ReadEvents(sinceID int64) ([]protocol.Event, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -88,15 +102,29 @@ func (l *JSONLLogger) ReadEvents(sinceID int64) ([]protocol.Event, error) {
 	buf := make([]byte, 64*1024)
 	scanner.Buffer(buf, maxCapacity)
 
-	events := make([]protocol.Event, 0)
+	var rawLines [][]byte
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
 			continue
 		}
+		lineCopy := make([]byte, len(line))
+		copy(lineCopy, line)
+		rawLines = append(rawLines, lineCopy)
+	}
 
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scanner error while reading events: %w", err)
+	}
+
+	events := make([]protocol.Event, 0, len(rawLines))
+	for i, line := range rawLines {
 		var evt protocol.Event
 		if err := json.Unmarshal(line, &evt); err != nil {
+			if i == len(rawLines)-1 {
+				// Corrupt/partial trailing line at EOF is skipped
+				break
+			}
 			return nil, fmt.Errorf("failed to unmarshal event: %w", err)
 		}
 
@@ -105,14 +133,10 @@ func (l *JSONLLogger) ReadEvents(sinceID int64) ([]protocol.Event, error) {
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scanner error while reading events: %w", err)
-	}
-
 	return events, nil
 }
 
-// Close closes the underlying file descriptor.
+// Close syncs and closes the underlying file descriptor.
 func (l *JSONLLogger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -121,7 +145,17 @@ func (l *JSONLLogger) Close() error {
 		return nil
 	}
 	l.closed = true
-	return l.file.Close()
+
+	if l.file == nil {
+		return nil
+	}
+
+	syncErr := l.file.Sync()
+	closeErr := l.file.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
 }
 
 // FilePath returns the underlying file path.

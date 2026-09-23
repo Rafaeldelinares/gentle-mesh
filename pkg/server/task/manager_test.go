@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -760,4 +761,85 @@ func TestTaskManager_ConcurrencyRace(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestTaskManager_AutomaticRetentionAndDiskCleanup(t *testing.T) {
+	tmpDir := t.TempDir()
+	tm, err := NewTaskManager(tmpDir, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("NewTaskManager failed: %v", err)
+	}
+	defer tm.Close()
+
+	task, err := tm.CreateTask(protocol.TaskRequest{Agent: "worker", Task: "cleanup-retention-test"})
+	if err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	_ = task.TransitionTo(protocol.TaskStatusRunning)
+	if _, err := task.EmitEvent(protocol.EventCompletion, protocol.CompletionPayload{Result: "done"}); err != nil {
+		t.Fatalf("EmitEvent completion failed: %v", err)
+	}
+
+	if task.FinishedAt == 0 {
+		t.Fatal("expected FinishedAt to be set")
+	}
+
+	logFile := filepath.Join(tmpDir, task.TaskID+".jsonl")
+	if _, err := os.Stat(logFile); err != nil {
+		t.Fatalf("expected log file to exist on disk: %v", err)
+	}
+
+	time.Sleep(250 * time.Millisecond)
+
+	if _, exists := tm.GetTask(task.TaskID); exists {
+		t.Fatal("expected task to be purged from GetTask after TTL")
+	}
+
+	if _, err := os.Stat(logFile); !os.IsNotExist(err) {
+		t.Fatalf("expected log file to no longer exist on disk, got err: %v", err)
+	}
+
+	if err := tm.Close(); err != nil {
+		t.Fatalf("tm.Close() failed: %v", err)
+	}
+}
+
+func TestTaskManager_TrackRunnerGracefulShutdown(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := NewTaskManager(tmpDir, 0)
+	if err != nil {
+		t.Fatalf("NewTaskManager failed: %v", err)
+	}
+
+	task, err := mgr.CreateTask(protocol.TaskRequest{Agent: "worker", Task: "track-runner-test"})
+	if err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	done := mgr.TrackRunner()
+	runnerCompleted := make(chan struct{})
+
+	go func() {
+		defer done()
+		<-task.Context().Done()
+		// Emit event to verify logger is still open and writable before runner finishes
+		_, emitErr := task.EmitEvent(protocol.EventThought, protocol.ThoughtPayload{Text: "finishing runner"})
+		if emitErr != nil {
+			t.Errorf("expected EmitEvent to succeed before logger closed, got: %v", emitErr)
+		}
+		close(runnerCompleted)
+	}()
+
+	// Close() should cancel all task contexts, wait for runners to finish, and then close loggers
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("mgr.Close() failed: %v", err)
+	}
+
+	select {
+	case <-runnerCompleted:
+		// Succeeded: runner completed
+	default:
+		t.Fatal("expected runner to be completed when Close() finishes")
+	}
 }

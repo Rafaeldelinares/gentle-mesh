@@ -3,6 +3,7 @@ package task
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -253,5 +254,115 @@ func TestJSONLLogger_ReadNonexistent(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Fatalf("expected 0 events, got %d", len(events))
+	}
+}
+
+func TestJSONLLogger_TrailingCorruptLineIgnored(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "task-corrupt.jsonl")
+
+	logger, err := NewJSONLLogger(logPath)
+	if err != nil {
+		t.Fatalf("failed to create logger: %v", err)
+	}
+	defer logger.Close()
+
+	for i := 1; i <= 3; i++ {
+		evt, err := protocol.NewEvent(int64(i), "task-corrupt", protocol.EventThought, protocol.ThoughtPayload{
+			Text: fmt.Sprintf("thought %d", i),
+		})
+		if err != nil {
+			t.Fatalf("failed to create event %d: %v", i, err)
+		}
+		if err := logger.WriteEvent(*evt); err != nil {
+			t.Fatalf("failed to write event %d: %v", i, err)
+		}
+	}
+
+	// Append corrupt partial bytes without a trailing newline
+	corruptBytes := []byte(`{"id":4, "type":"thought", "payload": {"text":"incom`)
+	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		t.Fatalf("failed to open file for appending corrupt bytes: %v", err)
+	}
+	if _, err := f.Write(corruptBytes); err != nil {
+		_ = f.Close()
+		t.Fatalf("failed to write corrupt bytes: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("failed to close file: %v", err)
+	}
+
+	events, err := logger.ReadEvents(0)
+	if err != nil {
+		t.Fatalf("expected ReadEvents to succeed ignoring trailing corrupt line, got: %v", err)
+	}
+
+	if len(events) != 3 {
+		t.Fatalf("expected 3 valid events, got %d", len(events))
+	}
+
+	for i, evt := range events {
+		expectedID := int64(i + 1)
+		if evt.ID != expectedID {
+			t.Errorf("event %d: expected ID %d, got %d", i, expectedID, evt.ID)
+		}
+	}
+
+	// Verify that a corrupt line earlier in the file produces a hard error
+	corruptMidPath := filepath.Join(tmpDir, "task-corrupt-mid.jsonl")
+	content := []byte("{\"id\":1,\"task_id\":\"t\",\"type\":\"thought\"}\n{corrupted line\n{\"id\":3,\"task_id\":\"t\",\"type\":\"thought\"}\n")
+	if err := os.WriteFile(corruptMidPath, content, 0644); err != nil {
+		t.Fatalf("failed to write corrupt mid file: %v", err)
+	}
+	midLogger := &JSONLLogger{filePath: corruptMidPath}
+	if _, err := midLogger.ReadEvents(0); err == nil {
+		t.Fatal("expected error when corrupt line is not the last line, got nil")
+	}
+}
+
+func TestJSONLLogger_SelectiveSync(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "task-sync.jsonl")
+
+	logger, err := NewJSONLLogger(logPath)
+	if err != nil {
+		t.Fatalf("failed to create logger: %v", err)
+	}
+	defer logger.Close()
+
+	// WriteEvent with EventThought
+	thoughtEvt, err := protocol.NewEvent(1, "task-sync", protocol.EventThought, protocol.ThoughtPayload{
+		Text: "non-critical event",
+	})
+	if err != nil {
+		t.Fatalf("failed to create thought event: %v", err)
+	}
+	if err := logger.WriteEvent(*thoughtEvt); err != nil {
+		t.Fatalf("failed to write thought event: %v", err)
+	}
+
+	// WriteEvent with EventCompletion
+	compEvt, err := protocol.NewEvent(2, "task-sync", protocol.EventCompletion, protocol.CompletionPayload{
+		Result: "critical event",
+	})
+	if err != nil {
+		t.Fatalf("failed to create completion event: %v", err)
+	}
+	if err := logger.WriteEvent(*compEvt); err != nil {
+		t.Fatalf("failed to write completion event: %v", err)
+	}
+
+	// logger.Sync()
+	if err := logger.Sync(); err != nil {
+		t.Fatalf("logger.Sync() failed: %v", err)
+	}
+
+	events, err := logger.ReadEvents(0)
+	if err != nil {
+		t.Fatalf("failed to read events: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
 	}
 }

@@ -48,6 +48,7 @@ func (s *Server) handleHealthz(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 func (s *Server) handleMeshJoin(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, 64<<10)
 	var req protocol.NodeJoinRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request payload: %v", err)})
@@ -64,6 +65,7 @@ func (s *Server) handleMeshJoin(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 func (s *Server) handleMeshHeartbeat(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, 64<<10)
 	var req protocol.NodeHeartbeatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request payload: %v", err)})
@@ -104,6 +106,7 @@ func (s *Server) handleMeshRadar(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, 1<<20)
 	var req protocol.TaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request payload: %v", err)})
@@ -195,7 +198,9 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		}
 	}
 
+	done := s.taskManager.TrackRunner()
 	go func(mt *task.ManagedTask, r runner.Runner) {
+		defer done()
 		defer func() {
 			if rec := recover(); rec != nil {
 				log.Printf("runner panic on task %s: %v\n%s", mt.TaskID, rec, debug.Stack())
@@ -278,10 +283,20 @@ func (s *Server) handleTaskEvents(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 	w.WriteHeader(stdhttp.StatusOK)
 	flusher.Flush()
 
+	heartbeatInterval := s.config.SSEHeartbeatInterval
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = 15 * time.Second
+	}
+	heartbeatTicker := time.NewTicker(heartbeatInterval)
+	defer heartbeatTicker.Stop()
+
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-heartbeatTicker.C:
+			_, _ = w.Write([]byte(": ping\n\n"))
+			flusher.Flush()
 		case evt, ok := <-eventsChan:
 			if !ok {
 				return
@@ -296,6 +311,7 @@ func (s *Server) handleTaskEvents(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 }
 
 func (s *Server) handleTaskReply(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, 64<<10)
 	id := r.PathValue("id")
 	if id == "" {
 		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "task id is required"})

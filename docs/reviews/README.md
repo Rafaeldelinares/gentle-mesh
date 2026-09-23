@@ -67,8 +67,10 @@ A partir de los informes externos, se definieron cinco prioridades técnicas cr�
 │ P0.1   │ Territory Admission en handleCreateTask  │ Crítica (P0) │ ✅ Resuelto   │
 │ P0.2   │ Runner Panic Recovery en Goroutine       │ Crítica (P0) │ ✅ Resuelto   │
 │ P0.3   │ Git Repo URL Normalization en Locks      │ Crítica (P0) │ ✅ Resuelto   │
-│ P0.4   │ JSONL fsync Batching fuera del Mutex     │ Alta (P0)    │ 🟡 En Progreso│
-│ P1     │ HTTP Timeouts & SSE Heartbeat Pings      │ Media (P1)   │ 🔵 Planificado│
+│ P0.4   │ JSONL fsync Batching e I/O Optimizado    │ Alta (P0)    │ ✅ Resuelto   │
+│ P0.5   │ Retención de Disco y Limpieza Automática │ Alta (P0)    │ ✅ Resuelto   │
+│ P1.1   │ Runner Lifecycle WaitGroup en Shutdown   │ Media (P1)   │ ✅ Resuelto   │
+│ P1.2   │ HTTP Timeouts, MaxBytesReader & Heartbeat│ Media (P1)   │ ✅ Resuelto   │
 └────────┴──────────────────────────────────────────┴──────────────┴───────────────┘
 ```
 
@@ -94,13 +96,25 @@ A partir de los informes externos, se definieron cinco prioridades técnicas cr�
 * **Diagnóstico (GPT-4o / Claude):** El gestor de cerrojos indexaba por cadenas literales de texto. Una petición con `git@github.com:org/repo.git` y otra con `https://github.com/org/repo` no colisionaban, eludiendo la exclusividad de rama.
 * **Resolución:** Se implementó `makeBranchKey()` utilizando `protocol.NormalizeRepo()`, unificando esquemas SSH, HTTPS y sufijos `.git` en una clave canónica normalizada. Validado con `TestBranchLockManager_RepoNormalizationVariations`.
 
-#### 🟡 P0.4 — JSONL fsync Batching e I/O fuera del Mutex
-* **Diagnóstico (GPT-4o / Claude / DeepSeek):** Cada invocación a `WriteEvent` ejecuta `file.Sync()` síncrono mientras se retiene `ManagedTask.mu.Lock()`. En streaming denso de tokens, el disco se convierte en un cuello de botella que bloquea las lecturas de estado del agente.
-* **Estado:** En progreso. Se diseñó el esquema de *group commits* con buffer en memoria (`bufio.Writer`) y sincronización asíncrona periódica (cada 100ms o en transiciones de fase y finalización).
+#### ✅ P0.4 — JSONL fsync Batching e I/O Optimizado
+* **Diagnóstico (GPT-4o / Claude / DeepSeek):** Cada invocación a `WriteEvent` ejecutaba `file.Sync()` síncrono a disco. En streaming denso de tokens, el disco se convertía en un cuello de botella que castigaba los SSDs y frenaba el streaming.
+* **Resolución:** Se implementó un esquema de fsync selectivo: los micro-eventos (`thought`, `tool_call`, `tool_result`, etc.) escriben al buffer del sistema operativo a velocidad de memoria; `file.Sync()` solo se fuerza en eventos críticos de cambio de estado o terminales (`EventStatus`, `EventCompletion`, `EventError`) y al cerrar el logger (`Close()`). Además, se agregó tolerancia en `ReadEvents` para ignorar líneas corruptas/incompletas al final del archivo provocadas por caídas abruptas a mitad de escritura.
 
-#### 🔵 P1 — HTTP Timeouts & SSE Heartbeat Pings
-* **Diagnóstico (GPT-4o / Claude):** El servidor HTTP carece de `ReadHeaderTimeout` e `IdleTimeout`, haciéndolo vulnerable a DoS del tipo Slowloris. Además, los streams SSE sin comentarios `:ping` o `:keepalive` periódicos sufren desconexiones silenciosas por proxies o firewalls intermedios.
-* **Estado:** Planificado para la siguiente iteración de infraestructura.
+#### ✅ P0.5 — Retención de Disco y Limpieza Automática de Tareas
+* **Diagnóstico (DeepSeek):** `CleanupExpired()` eliminaba la tarea de la memoria pero dejaba el archivo `.jsonl` en disco indefinidamente, y además no existía ningún bucle en segundo plano que lo invocara periódicamente.
+* **Resolución:** `TaskManager` ahora arranca un ticker en segundo plano (`cleanupWg`) que ejecuta `CleanupExpired()` periódicamente. Al expirar una tarea más allá de su TTL, se elimina de la memoria y se remueve su archivo `.jsonl` del disco con `os.Remove`. El apagado del servidor coordina el cierre ordenado de la goroutine de limpieza.
+
+#### ✅ P1.1 — Coordinación de Ciclo de Vida y Espera de Runners (`sync.WaitGroup`)
+* **Diagnóstico (GPT-4o):** En el apagado (`Close()`), los loggers se cerraban inmediatamente sin esperar a que las goroutines de runners activos terminaran, provocando escrituras sobre loggers ya cerrados.
+* **Resolución:** Se implementó `TrackRunner()` con `runnerWg sync.WaitGroup`. En `Close()`, primero se cancelan los contextos de todas las tareas, se espera a que todos los runners salgan mediante `m.runnerWg.Wait()`, y recién después se cierran de forma segura los loggers y los canales de eventos.
+
+#### ✅ P1.2 — HTTP Hardening: Timeouts, MaxBytesReader, ConstantTimeCompare y SSE Heartbeat
+* **Diagnóstico (GPT-4o / Claude / DeepSeek):** El servidor HTTP carecía de `ReadHeaderTimeout` e `IdleTimeout` (vulnerable a Slowloris), no limitaba el tamaño del body de las peticiones (`MaxBytesReader`), comparaba tokens de autenticación con `!=` en vez de tiempo constante, y las conexiones SSE se desconectaban en proxies/Tailscale por falta de pings.
+* **Resolución:** 
+  - Se configuró `ReadHeaderTimeout: 5s` e `IdleTimeout: 120s` en `http.Server`.
+  - Se aplicó `stdhttp.MaxBytesReader` en todos los endpoints que reciben payloads (1MB en `/v1/tasks`, 64KB en replies, joins y heartbeats).
+  - Se aplicó `crypto/subtle.ConstantTimeCompare` en `AuthMiddleware`.
+  - Se implementó un ticker de heartbeat SSE periódico (`: ping\n\n` cada 15s) en `handleTaskEvents` para mantener activas las conexiones a través de Tailscale y proxies inversos.
 
 ---
 

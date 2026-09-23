@@ -1,11 +1,11 @@
 package http
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"log"
 	stdhttp "net/http"
 	"runtime/debug"
-	"strings"
 )
 
 // AuthMiddleware validates incoming HTTP requests using a Bearer token.
@@ -16,15 +16,15 @@ func AuthMiddleware(token string, next stdhttp.Handler) stdhttp.Handler {
 	if token == "" {
 		return next
 	}
+	expectedAuth := "Bearer " + token
 	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		if r.URL.Path == "/healthz" || r.URL.Path == "/healthz/" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || parts[0] != "Bearer" || parts[1] != token {
+		authHeader := r.Header.Get("Authorization")
+		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedAuth)) != 1 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(stdhttp.StatusUnauthorized)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})

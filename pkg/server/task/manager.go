@@ -23,11 +23,14 @@ var (
 // TaskManager coordinates task creation, execution contexts, log persistence,
 // event streaming subscriptions, and lifecycle management across all subagent tasks.
 type TaskManager struct {
-	tasksDir string
-	taskTTL  time.Duration
-	mu       sync.RWMutex
-	tasks    map[string]*ManagedTask
-	closed   bool
+	tasksDir    string
+	taskTTL     time.Duration
+	mu          sync.RWMutex
+	tasks       map[string]*ManagedTask
+	closed      bool
+	stopCleanup chan struct{}
+	cleanupWg   sync.WaitGroup
+	runnerWg    sync.WaitGroup
 }
 
 // NewTaskManager creates a new TaskManager storing JSONL logs in tasksDir.
@@ -36,11 +39,38 @@ func NewTaskManager(tasksDir string, taskTTL time.Duration) (*TaskManager, error
 		return nil, fmt.Errorf("failed to create tasks directory: %w", err)
 	}
 
-	return &TaskManager{
-		tasksDir: tasksDir,
-		taskTTL:  taskTTL,
-		tasks:    make(map[string]*ManagedTask),
-	}, nil
+	m := &TaskManager{
+		tasksDir:    tasksDir,
+		taskTTL:     taskTTL,
+		tasks:       make(map[string]*ManagedTask),
+		stopCleanup: make(chan struct{}),
+	}
+
+	if taskTTL > 0 {
+		interval := taskTTL / 2
+		if interval < 50*time.Millisecond {
+			interval = 50 * time.Millisecond
+		} else if interval > 10*time.Minute {
+			interval = 10 * time.Minute
+		}
+
+		m.cleanupWg.Add(1)
+		go func() {
+			defer m.cleanupWg.Done()
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					m.CleanupExpired()
+				case <-m.stopCleanup:
+					return
+				}
+			}
+		}()
+	}
+
+	return m, nil
 }
 
 // CreateTask instantiates and registers a new subagent task, allocating a unique ID,
@@ -239,6 +269,10 @@ func (m *TaskManager) CleanupExpired() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.closed {
+		return
+	}
+
 	now := time.Now()
 	for id, task := range m.tasks {
 		task.mu.RLock()
@@ -260,25 +294,40 @@ func (m *TaskManager) CleanupExpired() {
 					_ = logger.Close()
 				}
 				delete(m.tasks, id)
+				logFile := filepath.Join(m.tasksDir, id+".jsonl")
+				_ = os.Remove(logFile)
 			}
 		}
+	}
+}
+
+// TrackRunner increments the active runner WaitGroup and returns a release func to be deferred by the runner goroutine.
+func (m *TaskManager) TrackRunner() func() {
+	m.runnerWg.Add(1)
+	return func() {
+		m.runnerWg.Done()
 	}
 }
 
 // Close cancels all running tasks and closes all underlying event loggers.
 func (m *TaskManager) Close() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if m.closed {
+		m.mu.Unlock()
 		return nil
 	}
 	m.closed = true
 
-	var firstErr error
 	for _, task := range m.tasks {
 		task.cancel()
+	}
+	m.mu.Unlock()
 
+	m.runnerWg.Wait()
+
+	m.mu.Lock()
+	var firstErr error
+	for _, task := range m.tasks {
 		task.mu.Lock()
 		if task.logger != nil {
 			if err := task.logger.Close(); err != nil && firstErr == nil {
@@ -291,6 +340,13 @@ func (m *TaskManager) Close() error {
 		task.subscribers = make(map[chan protocol.Event]struct{})
 		task.mu.Unlock()
 	}
+
+	if m.stopCleanup != nil {
+		close(m.stopCleanup)
+	}
+	m.mu.Unlock()
+
+	m.cleanupWg.Wait()
 
 	return firstErr
 }

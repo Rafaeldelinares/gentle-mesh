@@ -45,25 +45,37 @@ func setupTestServer(t *testing.T, modifyCfg ...func(*meshhttp.ServerConfig)) (*
 }
 
 func readNextSSEEvent(scanner *bufio.Scanner) (*protocol.Event, error) {
-	var block []byte
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(bytes.TrimSpace(line)) == 0 {
-			if len(block) > 0 {
-				break
+	for {
+		var block []byte
+		var hasData bool
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			trimmed := bytes.TrimSpace(line)
+			if len(trimmed) == 0 {
+				if len(block) > 0 {
+					break
+				}
+				continue
 			}
+			if bytes.HasPrefix(trimmed, []byte(":")) {
+				// SSE comment / heartbeat - ignore comment lines
+				continue
+			}
+			hasData = true
+			block = append(block, line...)
+			block = append(block, '\n')
+		}
+		if err := scanner.Err(); err != nil {
+			return nil, err
+		}
+		if len(block) == 0 {
+			return nil, io.EOF
+		}
+		if !hasData {
 			continue
 		}
-		block = append(block, line...)
-		block = append(block, '\n')
+		return protocol.ParseSSE(block)
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	if len(block) == 0 {
-		return nil, io.EOF
-	}
-	return protocol.ParseSSE(block)
 }
 
 func TestServer_Healthz(t *testing.T) {
@@ -1202,5 +1214,93 @@ func TestServer_RunnerPanicRecovery(t *testing.T) {
 	defer healthResp.Body.Close()
 	if healthResp.StatusCode != http.StatusOK {
 		t.Errorf("expected healthz status 200, got %d", healthResp.StatusCode)
+	}
+}
+
+func TestServer_MaxBytesReader(t *testing.T) {
+	_, ts := setupTestServer(t)
+
+	// Sending a body > 1MB (e.g. 1.5MB) to /v1/tasks
+	largePayload := make([]byte, 1500*1024)
+	for i := range largePayload {
+		largePayload[i] = 'x'
+	}
+	taskReq := protocol.TaskRequest{
+		Agent: "worker",
+		Task:  string(largePayload),
+	}
+	body, _ := json.Marshal(taskReq)
+
+	resp, err := ts.Client().Post(ts.URL+"/v1/tasks", "application/json", bytes.NewReader(body))
+	if err != nil {
+		// When MaxBytesReader hits the limit, connection may be closed/reset
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected status 400 Bad Request for oversized body, got %d", resp.StatusCode)
+	}
+}
+
+func TestServer_SSEHeartbeat(t *testing.T) {
+	_, ts := setupTestServer(t, func(cfg *meshhttp.ServerConfig) {
+		cfg.SSEHeartbeatInterval = 20 * time.Millisecond
+		cfg.Runner = runner.NewSimulatedRunner(runner.SimulatedOptions{
+			Query: &runner.SimulatedQuery{
+				QueryID:  "hb-hold",
+				Question: "holding task open for heartbeat",
+			},
+		})
+	})
+
+	taskReq := protocol.TaskRequest{
+		Agent: "worker",
+		Task:  "sse-heartbeat-test",
+	}
+	body, _ := json.Marshal(taskReq)
+
+	resp, err := ts.Client().Post(ts.URL+"/v1/tasks", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /v1/tasks failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var taskResp protocol.TaskResponse
+	if err := json.NewDecoder(resp.Body).Decode(&taskResp); err != nil {
+		t.Fatalf("failed decoding task response: %v", err)
+	}
+
+	sseResp, err := ts.Client().Get(ts.URL + taskResp.EventsURL)
+	if err != nil {
+		t.Fatalf("GET events failed: %v", err)
+	}
+	defer sseResp.Body.Close()
+
+	if sseResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", sseResp.StatusCode)
+	}
+
+	scanner := bufio.NewScanner(sseResp.Body)
+	sawPing := make(chan bool, 1)
+
+	go func() {
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(strings.TrimSpace(line), ": ping") {
+				sawPing <- true
+				return
+			}
+		}
+		sawPing <- false
+	}()
+
+	select {
+	case ok := <-sawPing:
+		if !ok {
+			t.Fatal("stream closed without sending : ping heartbeat")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for SSE heartbeat ping comment")
 	}
 }
