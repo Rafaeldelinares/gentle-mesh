@@ -109,6 +109,20 @@ go run ./cmd/gentle-mesh run -coordinator http://localhost:8080 \
 
 ---
 
-## 5. Licencia
+## 5. Built with Gentle-AI
+
+<div align="center">
+
+<a href="https://github.com/Gentleman-Programming/gentle-ai">
+  <img width="220" src="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/brand/built-with-gentle-ai.png" alt="Built with Gentle-AI" />
+</a>
+
+<p><sub>Construido y disciplinado con <strong><a href="https://github.com/Gentleman-Programming/gentle-ai">Gentle-AI</a></strong> — Memory, Workflows & Evidence.</sub></p>
+
+</div>
+
+---
+
+## 6. Licencia
 
 Código abierto bajo licencia MIT (o la que determine la gobernanza comunitaria de Gentleman Programming).
