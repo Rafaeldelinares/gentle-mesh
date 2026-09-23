@@ -1,4 +1,6 @@
 # Binarios compilados
+gentle-mesh
+*.zip
 /bin/
 /dist/
 *.exe
