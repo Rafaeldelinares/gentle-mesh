@@ -3,9 +3,13 @@
 > **Transporte Distribuido Federado, Ejecución Remota de Subagentes y Consciencia Situacional para el Ecosistema Pi & Gentle AI.**
 
 <p align="center">
-  <a href="docs/architecture/index.html"><strong>🏛️ Hub de Arquitectura y Pruebas</strong></a> &bull;
-  <a href="docs/architecture/gentle-mesh-secure-environment.html"><strong>🌐 Topología de Nodos</strong></a> &bull;
-  <a href="docs/architecture/gentle-mesh-test-verification-gates.html"><strong>🛡️ Compuertas de Seguridad</strong></a> &bull;
+  <a href="https://rafaeldelinares.github.io/gentle-mesh/"><strong>🚀 Ver Diagramas y Hub Interactivo en Vivo (GitHub Pages)</strong></a>
+</p>
+
+<p align="center">
+  <a href="https://rafaeldelinares.github.io/gentle-mesh/"><strong>🏛️ Hub de Arquitectura y Pruebas</strong></a> &bull;
+  <a href="https://rafaeldelinares.github.io/gentle-mesh/architecture/gentle-mesh-secure-environment.html"><strong>🌐 Topología de Nodos</strong></a> &bull;
+  <a href="https://rafaeldelinares.github.io/gentle-mesh/architecture/gentle-mesh-test-verification-gates.html"><strong>🛡️ Compuertas de Seguridad</strong></a> &bull;
   <a href="docs/rfcs/001-remote-agent-transport.md"><strong>📄 RFC 001</strong></a>
 </p>
 
@@ -111,16 +115,19 @@ go run ./cmd/gentle-mesh run -coordinator http://localhost:8080 \
 
 ## 4. Documentación y Arquitectura Interactiva (Archify)
 
-El repositorio incluye diagramas de arquitectura interactivos y autocontenidos (HTML puro sin dependencias externas) generados con **Archify**, diseñados para explorar visualmente el sistema, simular rutas y comprender el porqué de cada compuerta de seguridad:
+El repositorio incluye diagramas de arquitectura interactivos y autocontenidos (HTML puro sin dependencias externas) generados con **Archify**, diseñados para explorar visualmente el sistema, simular rutas y comprender el porqué de cada compuerta de seguridad.
 
-* 🏛️ **[Hub Central de Arquitectura y Verificación (index.html)](docs/architecture/index.html):** Portal principal interactivo que detalla la justificación técnica de los 7 vectores de prueba de ingeniería, con enlaces para reproducir cada prueba con tour guiado e intro directamente en el diagrama.
-* 🛡️ **[Matriz de Pruebas y Compuertas de Seguridad](docs/architecture/gentle-mesh-test-verification-gates.html):** Pipeline paso a paso con las 9 compuertas técnicas (G1 a G5), tour interactivo ("¿Para qué sirve este test?"), explicaciones de riesgos mitigados y aserciones en Go.
-* 🌐 **[Topología Pentagonal y Clúster Seguro](docs/architecture/gentle-mesh-secure-environment.html):** Visualización geométrica regular del clúster de 6 nodos en Docker, enrutamiento por tags (GPU, heavy, fast, etc.), enclave de coordinación y modal explicativo de cada nodo.
+> 🚀 **Demos interactivas en vivo (ejecutables directamente en el navegador vía GitHub Pages):**
+> * 🏛️ **[Hub Central de Arquitectura y Verificación](https://rafaeldelinares.github.io/gentle-mesh/):** Portal principal con la justificación de los 7 vectores de prueba y botones directos para reproducir cada test con tour e intro explicativa.
+> * 🛡️ **[Matriz de Pruebas y Compuertas de Seguridad](https://rafaeldelinares.github.io/gentle-mesh/architecture/gentle-mesh-test-verification-gates.html):** Pipeline paso a paso con las 9 compuertas técnicas (G1 a G5), tour interactivo ("¿Para qué sirve este test?"), mitigación de riesgos y aserciones en Go.
+> * 🌐 **[Topología Pentagonal y Clúster Seguro](https://rafaeldelinares.github.io/gentle-mesh/architecture/gentle-mesh-secure-environment.html):** Visualización geométrica regular del clúster de 6 nodos en Docker, enrutamiento por tags (GPU, heavy, fast, etc.) y modal explicativo de cada componente.
+
+### Código y Especificación Técnica en el Repositorio
+
+* 📁 **Archivos locales autocontenidos:** En [`docs/architecture/`](docs/architecture/) se encuentran los archivos `.html` originales. Al ser 100% autónomos y sin dependencias, también pueden abrirse con doble clic directamente en local desde cualquier navegador.
 * 📄 **[RFC 001 — Remote Agent Transport & M2M Federation](docs/rfcs/001-remote-agent-transport.md):** Especificación técnica canónica y formal.
 * 🤖 **[Guía de Evaluación Externa para LLMs](docs/EVALUATION_GUIDE_FOR_LLMS.md):** Prompt y metodología estructurada para someter este código a revisión con Claude 3.5 Sonnet o GPT-4o.
 * 📋 **[Convenciones del Proyecto](AGENTS.md):** Reglas operativas, competencias y filosofía de desarrollo.
-
-> 💡 **Nota sobre los diagramas HTML:** Son archivos 100% autónomos y portables. Pueden abrirse con doble clic en cualquier navegador (incluso offline), servirse con cualquier servidor estático o desplegarse con un clic en GitHub Pages desde la carpeta `/docs`.
 
 ---
 
