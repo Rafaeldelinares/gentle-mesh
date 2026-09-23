@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Gentle Mesh — Arquitectura y Verificación</title>
-  <meta name="description" content="Visualizaciones interactivas de arquitectura, topología de red segura y compuertas de verificación para Gentle Mesh.">
+  <meta name="description" content="Hub de referencia, visualizaciones interactivas de arquitectura, topología pentagonal y catálogo de pruebas de ingeniería para Gentle Mesh.">
   <script>
     (function () {
       try {
@@ -40,6 +40,10 @@
       --accent-card1-bg: rgba(14, 165, 233, 0.08);
       --accent-card2: #10b981;
       --accent-card2-bg: rgba(16, 185, 129, 0.08);
+      --accent-card3: #6366f1;
+      --accent-card3-bg: rgba(99, 102, 241, 0.08);
+      --accent-card4: #f59e0b;
+      --accent-card4-bg: rgba(245, 158, 11, 0.08);
 
       --badge-bg: #ecfdf5;
       --badge-border: #a7f3d0;
@@ -76,6 +80,10 @@
         --accent-card1-bg: rgba(56, 189, 248, 0.12);
         --accent-card2: #34d399;
         --accent-card2-bg: rgba(52, 211, 153, 0.12);
+        --accent-card3: #818cf8;
+        --accent-card3-bg: rgba(129, 140, 248, 0.12);
+        --accent-card4: #fbbf24;
+        --accent-card4-bg: rgba(251, 191, 36, 0.12);
 
         --badge-bg: rgba(16, 185, 129, 0.12);
         --badge-border: rgba(16, 185, 129, 0.25);
@@ -111,6 +119,10 @@
       --accent-card1-bg: rgba(56, 189, 248, 0.12);
       --accent-card2: #34d399;
       --accent-card2-bg: rgba(52, 211, 153, 0.12);
+      --accent-card3: #818cf8;
+      --accent-card3-bg: rgba(129, 140, 248, 0.12);
+      --accent-card4: #fbbf24;
+      --accent-card4-bg: rgba(251, 191, 36, 0.12);
 
       --badge-bg: rgba(16, 185, 129, 0.12);
       --badge-border: rgba(16, 185, 129, 0.25);
@@ -156,7 +168,7 @@
       width: 100%;
       max-width: 1100px;
       margin: 0 auto;
-      padding: 1.5rem 1rem 3rem;
+      padding: 1.5rem 1rem 3.5rem;
       flex: 1;
       display: flex;
       flex-direction: column;
@@ -205,7 +217,7 @@
 
     /* Header Section */
     header {
-      margin-bottom: 2rem;
+      margin-bottom: 2.25rem;
       text-align: center;
     }
 
@@ -238,11 +250,60 @@
       font-weight: 400;
     }
 
+    /* Top badges row */
+    .hero-badges-wrapper {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 0.5rem 0.65rem;
+      margin-bottom: 1.25rem;
+      max-width: 960px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      padding: 0.45rem 0.85rem;
+      border-radius: 9999px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+
+    .hero-badge:hover {
+      transform: translateY(-1px);
+      border-color: var(--border-focus);
+    }
+
+    .hero-badge-pass {
+      background: var(--badge-bg);
+      border-color: var(--badge-border);
+      color: var(--badge-text);
+    }
+
+    .hero-badge-race {
+      background: rgba(var(--primary-rgb), 0.08);
+      border-color: rgba(var(--primary-rgb), 0.25);
+      color: var(--primary);
+    }
+
+    .hero-badge svg {
+      flex-shrink: 0;
+    }
+
     /* Network connection badge */
     .network-badge-wrapper {
       display: flex;
       justify-content: center;
-      margin-bottom: 2.25rem;
+      margin-bottom: 1rem;
     }
 
     .network-badge {
@@ -251,14 +312,14 @@
       flex-wrap: wrap;
       justify-content: center;
       gap: 0.75rem;
-      background: var(--badge-bg);
-      border: 1px solid var(--badge-border);
-      color: var(--badge-text);
-      padding: 0.6rem 1.15rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      padding: 0.45rem 1rem;
       border-radius: 9999px;
-      font-size: 0.85rem;
+      font-size: 0.82rem;
       font-weight: 500;
-      box-shadow: 0 2px 6px rgba(16, 185, 129, 0.08);
+      box-shadow: var(--shadow-card);
       max-width: 100%;
     }
 
@@ -267,15 +328,17 @@
       align-items: center;
       gap: 0.45rem;
       font-weight: 600;
+      color: var(--badge-text);
     }
 
     .status-dot {
-      width: 9px;
-      height: 9px;
+      width: 8px;
+      height: 8px;
       border-radius: 50%;
       background-color: var(--badge-dot);
       box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
       animation: pulse-ring 2.2s infinite ease-out;
+      flex-shrink: 0;
     }
 
     @keyframes pulse-ring {
@@ -283,7 +346,7 @@
         box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
       }
       70% {
-        box-shadow: 0 0 0 7px rgba(16, 185, 129, 0);
+        box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
       }
       100% {
         box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
@@ -303,14 +366,15 @@
 
     .badge-label {
       opacity: 0.85;
-      font-size: 0.8rem;
+      font-size: 0.78rem;
     }
 
     .code-val {
       font-family: var(--font-mono);
       font-weight: 600;
-      font-size: 0.84rem;
+      font-size: 0.82rem;
       letter-spacing: -0.01em;
+      color: var(--text-main);
     }
 
     .copy-pill-btn {
@@ -404,6 +468,14 @@
       --card-accent: var(--accent-card2);
     }
 
+    .card-discord {
+      --card-accent: var(--accent-card3);
+    }
+
+    .card-rfc {
+      --card-accent: var(--accent-card4);
+    }
+
     .card-header-icon {
       width: 48px;
       height: 48px;
@@ -422,6 +494,14 @@
 
     .card-verification .card-header-icon {
       --icon-bg: var(--accent-card2-bg);
+    }
+
+    .card-discord .card-header-icon {
+      --icon-bg: var(--accent-card3-bg);
+    }
+
+    .card-rfc .card-header-icon {
+      --icon-bg: var(--accent-card4-bg);
     }
 
     .card-header-icon svg {
@@ -522,6 +602,26 @@
       transform: translateX(3px);
     }
 
+    .card-btn-discord {
+      background: #5865f2;
+      box-shadow: 0 4px 10px rgba(88, 101, 242, 0.25);
+    }
+
+    .card:hover .card-btn-discord {
+      background: #4752c4;
+      box-shadow: 0 6px 14px rgba(88, 101, 242, 0.35);
+    }
+
+    .card-btn-rfc {
+      background: #d97706;
+      box-shadow: 0 4px 10px rgba(217, 119, 6, 0.25);
+    }
+
+    .card:hover .card-btn-rfc {
+      background: #b45309;
+      box-shadow: 0 6px 14px rgba(217, 119, 6, 0.35);
+    }
+
     /* Stretched link for complete card tap friendliness */
     .card-btn::after {
       content: "";
@@ -531,21 +631,314 @@
       z-index: 1;
     }
 
+    /* ==========================================================
+       CATALOGO DE PRUEBAS DE INGENIERIA: EL POR QUE DE CADA TEST
+       ========================================================== */
+    .test-catalog-section {
+      margin-top: 4rem;
+      border-top: 1px solid var(--border);
+      padding-top: 3rem;
+    }
+
+    .catalog-header {
+      text-align: center;
+      margin-bottom: 2.25rem;
+    }
+
+    .catalog-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+      color: var(--primary);
+      margin-bottom: 0.65rem;
+    }
+
+    .catalog-title {
+      font-size: clamp(1.4rem, 3.5vw, 2.1rem);
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      color: var(--text-main);
+      line-height: 1.25;
+      margin-bottom: 0.75rem;
+    }
+
+    .catalog-subtitle {
+      font-size: 0.98rem;
+      color: var(--text-secondary);
+      max-width: 800px;
+      margin: 0 auto;
+      line-height: 1.6;
+    }
+
+    .catalog-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.85rem;
+      margin-bottom: 1.75rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 0.75rem 1rem;
+      border-radius: 14px;
+    }
+
+    .filter-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+    }
+
+    .filter-pill {
+      background: var(--tag-bg);
+      border: 1px solid var(--tag-border);
+      color: var(--text-secondary);
+      border-radius: 9999px;
+      padding: 0.35rem 0.8rem;
+      font-size: 0.78rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+
+    .filter-pill:hover {
+      color: var(--text-main);
+      border-color: var(--border-focus);
+    }
+
+    .filter-pill.active {
+      background: var(--primary);
+      color: #ffffff;
+      border-color: var(--primary);
+      font-weight: 600;
+      box-shadow: 0 2px 8px rgba(var(--primary-rgb), 0.25);
+    }
+
+    .toggle-all-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      border-radius: 9999px;
+      padding: 0.4rem 0.9rem;
+      font-size: 0.8rem;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      white-space: nowrap;
+    }
+
+    .toggle-all-btn:hover {
+      color: var(--text-main);
+      border-color: var(--border-focus);
+    }
+
+    .vector-list {
+      display: flex;
+      flex-direction: column;
+      gap: 1.15rem;
+    }
+
+    .test-vector-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: var(--shadow-card);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .test-vector-item:hover {
+      border-color: var(--border-focus);
+    }
+
+    .test-vector-item[open] {
+      border-color: rgba(var(--primary-rgb), 0.35);
+    }
+
+    .vector-summary {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.15rem 1.35rem;
+      cursor: pointer;
+      user-select: none;
+      list-style: none;
+      gap: 0.85rem;
+      background: var(--surface);
+      transition: background-color 0.2s ease;
+    }
+
+    .vector-summary:hover {
+      background-color: var(--surface-hover);
+    }
+
+    .vector-summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .vector-summary-main {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .vector-num {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      padding: 0.2rem 0.55rem;
+      border-radius: 6px;
+      background: rgba(var(--primary-rgb), 0.08);
+      border: 1px solid rgba(var(--primary-rgb), 0.2);
+      color: var(--primary);
+      white-space: nowrap;
+    }
+
+    .vector-name {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--text-main);
+      line-height: 1.3;
+    }
+
+    .vector-summary-meta {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      flex-shrink: 0;
+    }
+
+    .vector-status-pill {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.22rem 0.65rem;
+      border-radius: 9999px;
+      background: var(--badge-bg);
+      border: 1px solid var(--badge-border);
+      color: var(--badge-text);
+      white-space: nowrap;
+    }
+
+    .vector-chevron {
+      color: var(--text-muted);
+      transition: transform 0.25s ease;
+      flex-shrink: 0;
+    }
+
+    .test-vector-item[open] .vector-chevron {
+      transform: rotate(180deg);
+    }
+
+    .vector-body {
+      padding: 0 1.35rem 1.35rem;
+      border-top: 1px solid var(--border);
+      padding-top: 1.15rem;
+    }
+
+    .why-box {
+      background: rgba(var(--primary-rgb), 0.04);
+      border-left: 3px solid var(--primary);
+      border-radius: 0 10px 10px 0;
+      padding: 0.95rem 1.25rem;
+      margin-bottom: 1.15rem;
+    }
+
+    .why-title {
+      font-weight: 700;
+      font-size: 0.86rem;
+      color: var(--primary);
+      margin-bottom: 0.4rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .why-text {
+      font-size: 0.93rem;
+      color: var(--text-main);
+      line-height: 1.62;
+    }
+
+    .why-text code {
+      font-family: var(--font-mono);
+      font-size: 0.85em;
+      background: var(--tag-bg);
+      border: 1px solid var(--tag-border);
+      padding: 0.12rem 0.4rem;
+      border-radius: 4px;
+      color: var(--text-main);
+    }
+
+    .tests-section {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .tests-label {
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    .tests-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+      align-items: center;
+    }
+
+    .test-name-tag {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      font-weight: 600;
+      background: var(--tag-bg);
+      border: 1px solid var(--tag-border);
+      color: var(--text-main);
+      padding: 0.25rem 0.65rem;
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+
+    .package-badge {
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      color: var(--text-muted);
+      background: var(--tag-bg);
+      border: 1px solid var(--border);
+      padding: 0.15rem 0.5rem;
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+
     /* Footer */
     footer {
-      margin-top: 3.5rem;
+      margin-top: 4rem;
       text-align: center;
       font-size: 0.85rem;
       color: var(--text-muted);
       border-top: 1px solid var(--border);
-      padding-top: 1.5rem;
+      padding-top: 1.75rem;
     }
 
     .footer-links {
       display: flex;
+      flex-wrap: wrap;
       justify-content: center;
-      gap: 1.25rem;
-      margin-top: 0.5rem;
+      gap: 1rem;
+      margin-top: 0.65rem;
     }
 
     .footer-link {
@@ -585,8 +978,8 @@
       opacity: 1;
     }
 
-    /* Fold phone specific adaptations (~320px - 400px folded screen) */
-    @media (max-width: 480px) {
+    /* Responsive adjustments */
+    @media (max-width: 640px) {
       .container {
         padding: 1rem 0.75rem 2.5rem;
       }
@@ -594,10 +987,17 @@
         padding: 1.35rem 1.15rem;
         border-radius: 16px;
       }
+      .hero-badges-wrapper {
+        gap: 0.4rem;
+      }
+      .hero-badge {
+        font-size: 0.76rem;
+        padding: 0.35rem 0.65rem;
+      }
       .network-badge {
-        padding: 0.5rem 0.85rem;
-        font-size: 0.78rem;
-        gap: 0.5rem;
+        padding: 0.45rem 0.75rem;
+        font-size: 0.76rem;
+        gap: 0.45rem;
       }
       .badge-sep {
         display: none;
@@ -605,13 +1005,37 @@
       .badge-item {
         margin: 0.1rem 0;
       }
-      .card-tags {
-        gap: 0.35rem;
-        margin-bottom: 1.25rem;
+      .catalog-controls {
+        flex-direction: column;
+        align-items: stretch;
       }
-      .tag {
-        font-size: 0.72rem;
-        padding: 0.25rem 0.5rem;
+      .toggle-all-btn {
+        justify-content: center;
+      }
+      .vector-summary {
+        padding: 1rem;
+      }
+      .vector-summary-main {
+        gap: 0.5rem;
+      }
+      .vector-name {
+        font-size: 0.95rem;
+      }
+      .vector-status-pill {
+        display: none;
+      }
+      .vector-body {
+        padding: 0 1rem 1rem;
+        padding-top: 0.85rem;
+      }
+      .why-box {
+        padding: 0.8rem 1rem;
+      }
+      .why-text {
+        font-size: 0.88rem;
+      }
+      .test-name-tag {
+        font-size: 0.74rem;
       }
     }
   </style>
@@ -631,16 +1055,41 @@
       <div class="brand-eyebrow">
         <span>Gentle AI</span>
         <span>•</span>
-        <span>RFC Infrastructure</span>
+        <span>RFC Infrastructure Hub</span>
       </div>
       <h1>Gentle Mesh — Arquitectura y Verificación</h1>
-      <p class="subtitle">Visualizaciones Interactivas Archify (Showcase)</p>
+      <p class="subtitle">Transporte Distribuido Federado, Enclave Pentagonal de Seguridad y Catálogo de Verificación</p>
 
+      <!-- Top Badges Prominentes Requeridos -->
+      <div class="hero-badges-wrapper">
+        <div class="hero-badge hero-badge-pass">
+          <span class="status-dot"></span>
+          <span>140+ Tests Passing</span>
+        </div>
+        <div class="hero-badge hero-badge-race">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          <span>Detector de Carreras (-race) OK</span>
+        </div>
+        <div class="hero-badge">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+          <span>Go 1.22 Stdlib</span>
+        </div>
+        <div class="hero-badge">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+          <span>Binario ~15MB</span>
+        </div>
+        <div class="hero-badge">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+          <span>Zero Dependencias Externas</span>
+        </div>
+      </div>
+
+      <!-- Network and Tailscale status -->
       <div class="network-badge-wrapper">
         <div class="network-badge">
           <div class="status-indicator">
             <span class="status-dot"></span>
-            <span>Malla Conectada</span>
+            <span>Malla Activa</span>
           </div>
           <span class="badge-sep">|</span>
           <div class="badge-item">
@@ -662,25 +1111,26 @@
       </div>
     </header>
 
+    <!-- Cards Grid: 2 Principales + 2 Complementarias -->
     <main class="cards-grid">
-      <!-- Card 1: Topología y Entorno Seguro de Ejecución -->
+      <!-- Card 1: Topología Pentagonal y Entorno Seguro de Ejecución -->
       <article class="card card-topology">
         <div>
           <div class="card-header-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-              <circle cx="12" cy="11" r="3"/>
+              <polygon points="12 2 22 8.5 18 21 6 21 2 8.5 12 2"/>
+              <circle cx="12" cy="12" r="3"/>
             </svg>
           </div>
-          <h2 class="card-title">Topología y Entorno Seguro de Ejecución</h2>
-          <p class="card-subtitle">Aislamiento de Red Docker, Enclave de Seguridad, Territory Admission y Despacho Federado</p>
+          <h2 class="card-title">Topología Pentagonal y Entorno Seguro de Ejecución</h2>
+          <p class="card-subtitle">Disposición pentagonal de 5 workers especializados (gpu, heavy, fast, research, ci) orbitando al nodo coordinador central, con aislamiento de red Docker, timing-safe auth y admisión territorial.</p>
 
           <div class="card-tags">
-            <span class="tag primary-tag">Red Aislada</span>
+            <span class="tag primary-tag">Topología Pentagonal</span>
+            <span class="tag">5 Workers Especializados</span>
+            <span class="tag">Red Aislada Docker</span>
             <span class="tag">Timing-Safe Auth</span>
-            <span class="tag">FindConflict</span>
-            <span class="tag">Branch Lock</span>
-            <span class="tag">5 Workers</span>
+            <span class="tag">Territory Admission</span>
           </div>
         </div>
 
@@ -721,14 +1171,347 @@
           </a>
         </div>
       </article>
+
+      <!-- Card 3: Propuesta Comunitaria para Discord -->
+      <article class="card card-discord">
+        <div>
+          <div class="card-header-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+              <circle cx="9" cy="10" r="1" fill="currentColor"/>
+              <circle cx="15" cy="10" r="1" fill="currentColor"/>
+            </svg>
+          </div>
+          <h2 class="card-title">Propuesta Comunitaria para Discord (#ideas-y-propuestas)</h2>
+          <p class="card-subtitle">Formato visual y modular optimizado para el canal #ideas-y-propuestas en la comunidad de Gentleman Programming, con botón de copiado en 1-click.</p>
+
+          <div class="card-tags">
+            <span class="tag primary-tag">Discord Ready</span>
+            <span class="tag">#ideas-y-propuestas</span>
+            <span class="tag">1-Click Copy</span>
+            <span class="tag">RFC 001 Pitch</span>
+          </div>
+        </div>
+
+        <div class="card-action">
+          <a href="propuesta-discord.html" class="card-btn card-btn-discord">
+            <span>Ver Propuesta Discord</span>
+            <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </a>
+        </div>
+      </article>
+
+      <!-- Card 4: Especificación Técnica RFC 001 -->
+      <article class="card card-rfc">
+        <div>
+          <div class="card-header-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z"/>
+              <path d="M6 6h10M6 10h10M6 14h6"/>
+            </svg>
+          </div>
+          <h2 class="card-title">Especificación Técnica RFC 001</h2>
+          <p class="card-subtitle">Documento canónico que define la arquitectura de transporte remoto, contratos REST/SSE, topología federada y protocolo de tolerancia a fallos.</p>
+
+          <div class="card-tags">
+            <span class="tag primary-tag">RFC Oficial</span>
+            <span class="tag">Protocolo SSE</span>
+            <span class="tag">REST API</span>
+            <span class="tag">Federated Dispatch</span>
+            <span class="tag">GitHub Specs</span>
+          </div>
+        </div>
+
+        <div class="card-action">
+          <a href="https://github.com/Rafaeldelinares/gentle-mesh/blob/main/docs/rfcs/001-remote-agent-transport.md" target="_blank" rel="noopener noreferrer" class="card-btn card-btn-rfc">
+            <span>Leer RFC 001 en GitHub</span>
+            <svg viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>
+          </a>
+        </div>
+      </article>
     </main>
 
+    <!-- ==========================================================
+         SECCIÓN: CATÁLOGO DE PRUEBAS DE INGENIERÍA: EL POR QUÉ DE CADA TEST
+         ========================================================== -->
+    <section class="test-catalog-section" aria-labelledby="catalog-title">
+      <div class="catalog-header">
+        <div class="catalog-eyebrow">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><circle cx="12" cy="11" r="3"/></svg>
+          <span>Ingeniería de Software de Misión Crítica</span>
+        </div>
+        <h2 id="catalog-title" class="catalog-title">Catálogo de Pruebas de Ingeniería: El Por Qué de Cada Test</h2>
+        <p class="catalog-subtitle">En Gentle Mesh las pruebas no son un trámite decorativo ni un porcentaje ciego de cobertura: cada test defiende un invariante arquitectónico contra fallos silenciosos, condiciones de carrera o desperdicio destructivo de tokens en entornos multi-agente concurrentes.</p>
+      </div>
+
+      <div class="catalog-controls">
+        <div class="filter-pills" role="tablist" aria-label="Filtrar vectores de prueba">
+          <button type="button" class="filter-pill active" data-filter="all">Todos (7 Vectores)</button>
+          <button type="button" class="filter-pill" data-filter="git">1. Git &amp; Territorio</button>
+          <button type="button" class="filter-pill" data-filter="security">2. Perímetro &amp; Auth</button>
+          <button type="button" class="filter-pill" data-filter="resilience">3. Resiliencia &amp; Pánicos</button>
+          <button type="button" class="filter-pill" data-filter="persistence">4. Persistencia &amp; Fsync</button>
+          <button type="button" class="filter-pill" data-filter="streaming">5. Reanudación SSE</button>
+          <button type="button" class="filter-pill" data-filter="cluster">6. Despacho en Clúster</button>
+          <button type="button" class="filter-pill" data-filter="race">7. Cero Carreras (-race)</button>
+        </div>
+
+        <button type="button" class="toggle-all-btn" id="toggle-all-btn" aria-label="Alternar expansión de todos los vectores">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></svg>
+          <span class="toggle-text">Colapsar Todos</span>
+        </button>
+      </div>
+
+      <div class="vector-list">
+        <!-- Vector 1: Aislamiento Territorial y Anti-Colisión Git -->
+        <details class="test-vector-item" data-category="git" open>
+          <summary class="vector-summary">
+            <div class="vector-summary-main">
+              <span class="vector-num">VECTOR 01</span>
+              <h3 class="vector-name">Aislamiento Territorial y Anti-Colisión Git</h3>
+              <span class="package-badge">pkg/server/federation</span>
+              <span class="package-badge">pkg/server/registry</span>
+            </div>
+            <div class="vector-summary-meta">
+              <span class="vector-status-pill">HTTP 409 Preventivo</span>
+              <svg class="vector-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </summary>
+          <div class="vector-body">
+            <div class="why-box">
+              <div class="why-title">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                <span>El Por Qué de la Prueba:</span>
+              </div>
+              <p class="why-text">
+                En desarrollo multi-agente (&ldquo;crear sistemas entre varios&rdquo;), si dos agentes tocan concurrentemente la misma rama o zonas solapadas de código (<code>edit_surfaces</code>), se provocan merge conflicts destructivos en Git y se queman miles de tokens inútilmente. El test valida el rechazo preventivo antes de gastar un solo token (HTTP 409 Conflict).
+              </p>
+            </div>
+            <div class="tests-section">
+              <span class="tests-label">Batería de Pruebas Automatizadas:</span>
+              <div class="tests-list">
+                <span class="test-name-tag">TestTerritoryManager_FindConflict</span>
+                <span class="test-name-tag">TestServer_FederatedTerritoryConflict</span>
+                <span class="test-name-tag">TestBranchLockManager_Normalization</span>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- Vector 2: Perímetro de Hardening y Ataques de Canal Lateral -->
+        <details class="test-vector-item" data-category="security" open>
+          <summary class="vector-summary">
+            <div class="vector-summary-main">
+              <span class="vector-num">VECTOR 02</span>
+              <h3 class="vector-name">Perímetro de Hardening y Ataques de Canal Lateral</h3>
+              <span class="package-badge">pkg/server/http</span>
+            </div>
+            <div class="vector-summary-meta">
+              <span class="vector-status-pill">ConstantTimeCompare &amp; DoS Shield</span>
+              <svg class="vector-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </summary>
+          <div class="vector-body">
+            <div class="why-box">
+              <div class="why-title">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                <span>El Por Qué de la Prueba:</span>
+              </div>
+              <p class="why-text">
+                La igualdad simple de strings (<code>token == secret</code>) tarda más o menos según coincidencias de caracteres, permitiendo ataques de timing side-channel para adivinar el token. Usamos <code>crypto/subtle.ConstantTimeCompare</code>. Además, limitar el body a 64KB/1MB previene ataques DoS de memoria.
+              </p>
+            </div>
+            <div class="tests-section">
+              <span class="tests-label">Batería de Pruebas Automatizadas:</span>
+              <div class="tests-list">
+                <span class="test-name-tag">TestServer_TimingSafeAuth</span>
+                <span class="test-name-tag">TestServer_MaxBytesReader_PayloadLimit</span>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- Vector 3: Resiliencia de Procesos y Aislamiento de Pánicos -->
+        <details class="test-vector-item" data-category="resilience" open>
+          <summary class="vector-summary">
+            <div class="vector-summary-main">
+              <span class="vector-num">VECTOR 03</span>
+              <h3 class="vector-name">Resiliencia de Procesos y Aislamiento de Pánicos</h3>
+              <span class="package-badge">pkg/server/runner</span>
+            </div>
+            <div class="vector-summary-meta">
+              <span class="vector-status-pill">Recover() &amp; Zero Crash</span>
+              <svg class="vector-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </summary>
+          <div class="vector-body">
+            <div class="why-box">
+              <div class="why-title">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                <span>El Por Qué de la Prueba:</span>
+              </div>
+              <p class="why-text">
+                Los subagentes ejecutan código generado por LLMs que puede fallar con segfaults o panics inesperados. El test verifica que <code>recover()</code> capture el pánico y cierre la tarea sin voltear el servidor coordinador ni afectar a otros agentes concurrentes.
+              </p>
+            </div>
+            <div class="tests-section">
+              <span class="tests-label">Batería de Pruebas Automatizadas:</span>
+              <div class="tests-list">
+                <span class="test-name-tag">TestRunner_PanicRecovery</span>
+                <span class="test-name-tag">TestRunner_ProcessCleanup</span>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- Vector 4: Persistencia Crash-Safe con Fsync Selectivo -->
+        <details class="test-vector-item" data-category="persistence" open>
+          <summary class="vector-summary">
+            <div class="vector-summary-main">
+              <span class="vector-num">VECTOR 04</span>
+              <h3 class="vector-name">Persistencia Crash-Safe con Fsync Selectivo</h3>
+              <span class="package-badge">pkg/server/task</span>
+            </div>
+            <div class="vector-summary-meta">
+              <span class="vector-status-pill">SSD Protection &amp; Durability</span>
+              <svg class="vector-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </summary>
+          <div class="vector-body">
+            <div class="why-box">
+              <div class="why-title">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                <span>El Por Qué de la Prueba:</span>
+              </div>
+              <p class="why-text">
+                Un <code>fsync()</code> en cada token devuelto por un LLM destruye el SSD y genera cuellos de botella masivos de I/O. El test verifica que solo se sincronice en transiciones críticas de ciclo de vida (<code>pending</code> &rarr; <code>running</code> &rarr; <code>completed</code>), garantizando durabilidad ante cortes de energía sin degradar performance.
+              </p>
+            </div>
+            <div class="tests-section">
+              <span class="tests-label">Batería de Pruebas Automatizadas:</span>
+              <div class="tests-list">
+                <span class="test-name-tag">TestTaskLogger_SelectiveFsync</span>
+                <span class="test-name-tag">TestTaskManager_AtomicTransitions</span>
+                <span class="test-name-tag">TestTaskManager_DiskCleanup</span>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- Vector 5: Reanudación Transparente y Streaming SSE -->
+        <details class="test-vector-item" data-category="streaming" open>
+          <summary class="vector-summary">
+            <div class="vector-summary-main">
+              <span class="vector-num">VECTOR 05</span>
+              <h3 class="vector-name">Reanudación Transparente y Streaming SSE</h3>
+              <span class="package-badge">pkg/protocol</span>
+              <span class="package-badge">pkg/server/http</span>
+            </div>
+            <div class="vector-summary-meta">
+              <span class="vector-status-pill">Last-Event-ID Replay</span>
+              <svg class="vector-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </summary>
+          <div class="vector-body">
+            <div class="why-box">
+              <div class="why-title">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                <span>El Por Qué de la Prueba:</span>
+              </div>
+              <p class="why-text">
+                En redes móviles o Tailscale los enlaces sufren microcortes. El test valida que el cliente reconecte enviando <code>Last-Event-ID</code> y reciba solo los eventos perdidos, sin duplicar trabajo ni reiniciar la tarea.
+              </p>
+            </div>
+            <div class="tests-section">
+              <span class="tests-label">Batería de Pruebas Automatizadas:</span>
+              <div class="tests-list">
+                <span class="test-name-tag">TestSSE_LastEventID_Replay</span>
+                <span class="test-name-tag">TestSSE_HeartbeatTicker</span>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- Vector 6: Despacho Federado por Tags en Clúster de 6 Nodos -->
+        <details class="test-vector-item" data-category="cluster" open>
+          <summary class="vector-summary">
+            <div class="vector-summary-main">
+              <span class="vector-num">VECTOR 06</span>
+              <h3 class="vector-name">Despacho Federado por Tags en Clúster de 6 Nodos</h3>
+              <span class="package-badge">cmd/gentle-mesh</span>
+              <span class="package-badge">pkg/server/runner</span>
+              <span class="package-badge">docker-compose.test.yml</span>
+            </div>
+            <div class="vector-summary-meta">
+              <span class="vector-status-pill">6 Nodos Docker Activos</span>
+              <svg class="vector-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </summary>
+          <div class="vector-body">
+            <div class="why-box">
+              <div class="why-title">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                <span>El Por Qué de la Prueba:</span>
+              </div>
+              <p class="why-text">
+                Cargas pesadas de compilación o modelos de GPU deben descargarse de la laptop local y dirigirse al nodo adecuado (<code>gpu</code>, <code>heavy</code>, <code>fast</code>, <code>research</code>, <code>ci</code>). El test valida el despacho en una topología de 6 contenedores Docker con latencia y concurrencia real.
+              </p>
+            </div>
+            <div class="tests-section">
+              <span class="tests-label">Batería de Pruebas Automatizadas:</span>
+              <div class="tests-list">
+                <span class="test-name-tag">TestMeshRunner_TagDispatch</span>
+                <span class="test-name-tag">TestDockerCluster_6Nodes</span>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <!-- Vector 7: Cero Carreras de Memoria -->
+        <details class="test-vector-item" data-category="race" open>
+          <summary class="vector-summary">
+            <div class="vector-summary-main">
+              <span class="vector-num">VECTOR 07</span>
+              <h3 class="vector-name">Cero Carreras de Memoria</h3>
+              <span class="package-badge">go test -race ./...</span>
+            </div>
+            <div class="vector-summary-meta">
+              <span class="vector-status-pill">100% Suite -race OK</span>
+              <svg class="vector-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+          </summary>
+          <div class="vector-body">
+            <div class="why-box">
+              <div class="why-title">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                <span>El Por Qué de la Prueba:</span>
+              </div>
+              <p class="why-text">
+                Los sistemas multi-goroutine en Go pueden corromper el runtime con data races silenciosos. El test asegura que mapas, colas y locks estén sincronizados atómicamente.
+              </p>
+            </div>
+            <div class="tests-section">
+              <span class="tests-label">Batería de Pruebas Automatizadas:</span>
+              <div class="tests-list">
+                <span class="test-name-tag">100% de la suite con -race</span>
+                <span class="test-name-tag">go test -race ./...</span>
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </section>
+
     <footer>
-      <p>Gentle Mesh · RFC para la comunidad de Gentleman Programming</p>
+      <p>Gentle Mesh · RFC Oficial para la comunidad de Gentleman Programming</p>
       <div class="footer-links">
-        <a href="gentle-mesh-secure-environment.html" class="footer-link">Topología</a>
+        <a href="gentle-mesh-secure-environment.html" class="footer-link">Topología Pentagonal</a>
         <span>·</span>
-        <a href="gentle-mesh-test-verification-gates.html" class="footer-link">Compuertas</a>
+        <a href="gentle-mesh-test-verification-gates.html" class="footer-link">Compuertas de Verificación</a>
+        <span>·</span>
+        <a href="propuesta-discord.html" class="footer-link">Propuesta Discord</a>
+        <span>·</span>
+        <a href="https://github.com/Rafaeldelinares/gentle-mesh/blob/main/docs/rfcs/001-remote-agent-transport.md" target="_blank" rel="noopener noreferrer" class="footer-link">RFC 001 GitHub</a>
       </div>
     </footer>
   </div>
@@ -785,10 +1568,45 @@
             toast.classList.remove('show');
           }, 2200);
         }).catch(function () {
-          // Fallback
           prompt('Copiar IP:', ip);
         });
       });
+
+      // Quick filter for test catalog
+      var filterBtns = document.querySelectorAll('.filter-pill');
+      var vectorItems = document.querySelectorAll('.test-vector-item');
+      var toggleAllBtn = document.getElementById('toggle-all-btn');
+
+      filterBtns.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          filterBtns.forEach(function (b) { b.classList.remove('active'); });
+          btn.classList.add('active');
+          var cat = btn.getAttribute('data-filter');
+          vectorItems.forEach(function (item) {
+            if (cat === 'all' || item.getAttribute('data-category') === cat) {
+              item.style.display = '';
+              if (cat !== 'all') {
+                item.open = true;
+              }
+            } else {
+              item.style.display = 'none';
+            }
+          });
+        });
+      });
+
+      if (toggleAllBtn) {
+        var allOpen = true;
+        toggleAllBtn.addEventListener('click', function () {
+          allOpen = !allOpen;
+          vectorItems.forEach(function (item) {
+            if (item.style.display !== 'none') {
+              item.open = allOpen;
+            }
+          });
+          toggleAllBtn.querySelector('.toggle-text').textContent = allOpen ? 'Colapsar Todos' : 'Expandir Todos';
+        });
+      }
     })();
   </script>
 </body>
