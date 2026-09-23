@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Propuesta para Discord (#ideas-y-propuestas) — Gentle Mesh</title>
-  <meta name="description" content="Propuesta de RFC 001 de Gentle Mesh formateada para Discord (#ideas-y-propuestas) con copiado rápido en 1-click.">
+  <title>Reflexión Gentle Desktop Móvil (#ideas-y-propuestas) — Gentle Mesh</title>
+  <meta name="description" content="Reflexión técnica sobre Gentle Desktop en móvil/tablet y el rol de Gentle Mesh formateada para Discord (#ideas-y-propuestas) con copiado rápido en 1-click.">
   <script>
     (function () {
       try {
@@ -139,6 +139,14 @@
       color: #4752c4;
     }
 
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+    }
+
     .theme-toggle-btn {
       background: var(--bg-subtle);
       border: 1px solid var(--border);
@@ -216,14 +224,6 @@
 
     .nav-pill svg {
       flex-shrink: 0;
-    }
-
-    .badge-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--success);
-      box-shadow: 0 0 8px var(--success);
     }
 
     /* Main Card */
@@ -463,7 +463,7 @@
         </span>
         <span class="badge">
           <span class="badge-dot"></span>
-          RFC 001
+          Gentle Desktop Móvil
         </span>
         <button type="button" class="theme-toggle-btn" id="theme-btn" aria-label="Cambiar tema">
           <svg id="theme-icon-sun" style="display:none;" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
@@ -473,8 +473,9 @@
       </div>
     </div>
 
+    <!-- Navigation Pills -->
     <nav class="nav-pills" aria-label="Selección de propuesta">
-      <a href="propuesta-discord.html" class="nav-pill active" aria-current="page">
+      <a href="propuesta-discord.html" class="nav-pill">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
           <polyline points="14 2 14 8 20 8"></polyline>
@@ -484,7 +485,7 @@
         </svg>
         Propuesta RFC 001
       </a>
-      <a href="propuesta-discord-mobile.html" class="nav-pill">
+      <a href="propuesta-discord-mobile.html" class="nav-pill active" aria-current="page">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
           <line x1="12" y1="18" x2="12.01" y2="18"></line>
@@ -500,7 +501,7 @@
             <svg class="discord-icon" width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
               <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.929 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.894.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/>
             </svg>
-            Propuesta para Discord (#ideas-y-propuestas)
+            Reflexión Gentle Desktop Móvil (#ideas-y-propuestas)
           </h1>
           <p class="subtitle">Texto listo para publicar con formato Markdown para la comunidad de Gentleman Programming.</p>
         </div>
@@ -516,7 +517,7 @@
               </svg>
               Markdown
             </span>
-            <span class="meta-item" id="char-count">1,879 caracteres</span>
+            <span class="meta-item" id="char-count">1,917 caracteres</span>
           </div>
           <button id="copy-btn" class="btn btn-copy" onclick="copyProposal()" aria-label="Copiar propuesta al portapapeles">
             <svg id="copy-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -528,32 +529,48 @@
         </div>
       </div>
       <div class="card-body">
-        <pre id="proposal-content" class="proposal-pre">**[Propuesta / RFC 001] Gentle Mesh: Transporte distribuido y coordinación territorial para subagentes en Gentle AI**
+        <pre id="proposal-content" class="proposal-pre">**[Reflexión Técnica] ¿Cómo podría funcionar Gentle Desktop en móvil o tablet? El rol de Gentle Mesh**
 
-Buenas tardes a todos y a Alan.
+Tras ver el MVP de **Gentle Desktop** de Alan, pensé en un caso clave: ¿cómo llevamos esa experiencia a un iPad o móvil?
 
-Vi la demo reciente del MVP de **Gentle Desktop**: un paso brillante para acercar el ecosistema a una experiencia más visual.
+En PC es directo. Pero en móviles (iOS/Android) es inviable correr subagentes locales: el SO mata procesos de fondo a los 30s, no hay Docker y procesar visión localmente drenaría la batería.
 
-Con 58 años y más de tres décadas en software, es la primera vez en mucho tiempo que un paradigma me despierta tanto entusiasmo técnico. Con ese espíritu vengo prototipando una pieza complementaria: **Gentle Mesh**.
+### La solución: Modelo Cliente Liviano (Thin Client)
+La UI vive en el móvil, pero el cómputo pesado corre en tu PC, servidor o homelab:
 
-### La inquietud técnica
-Al sumar interfaces ricas o subagentes intensivos en Pi:
-1. **Sobrecarga cliente:** Compilaciones y suites de test pesadas saturan la laptop local. La UI necesita delegar a servidores remotos (VPS, homelabs o rigs con GPU).
-2. **"Crear sistemas entre varios":** Si varios agentes colaboran en paralelo, el conflicto de integración es inevitable si tocan la misma rama o `edit_surfaces` concurrentes.
+```text
+┌────────────────────────┐
+│     Móvil / Tablet     │
+│     Gentle Desktop     │
+│ • UI táctil y chat     │
+│ • Fotos, PDFs, capturas│
+│ • Batería intacta (2%) │
+└───────────┬────────────┘
+            │ HTTP POST / SSE
+            │ (vía Tailscale)
+            ▼
+┌────────────────────────┐
+│  Servidor Remoto / PC  │
+│    Gentle Mesh + Pi    │
+│ • Nodos GPU / Visión   │
+│ • Compiladores y tests │
+│ • Crash-safe en disco  │
+└────────────────────────┘
+```
 
-### La solución: Gentle Mesh (Go puro, estático ~15MB)
-- **Transporte HTTP + SSE:** Streaming determinista de tokens y eventos en tiempo real con reanudación `Last-Event-ID`. Al ser API HTTP estándar, le habla tanto el CLI de Pi como Gentle Desktop en Electron, o un cliente móvil en tablet a futuro.
-- **Protocolo Territorial y Radar (`/v1/mesh/radar`):** Bloqueo preventivo de ramas y solapamiento de archivos antes de admitir tareas concurrentes.
-- **Enrutamiento por tags:** Derivación a nodos según capacidades (`gpu`, `heavy`, `fast`, `testing`).
+### ¿Cómo opera el flujo?
+1. **Despacho multimodal:** Sacás foto a una pizarra o captura de un bug y la enviás por API (`POST /v1/tasks`).
+2. **Enrutamiento por tags:** El mesh deriva la tarea a un nodo con GPU o modelo de visión, sin quemar el móvil.
+3. **Streaming en vivo (SSE):** Flujo de tokens, diffs y logs en tiempo real.
+4. **Reanudación (`Last-Event-ID`):** Si bloqueás la pantalla, el servidor sigue trabajando sin perder eventos.
+5. **Coordinación territorial:** Previene colisiones de merge si varios agentes trabajan en paralelo.
 
-Validado bajo `go test -race` (140+ tests) y clúster de 6 nodos en Docker.
+Toda esta infraestructura en Go ya está implementada y validada con 140+ tests (`go test -race`).
 
-Dejo la demo interactiva y la especificación:
 🌐 **Demo en vivo (GitHub Pages):** https://rafaeldelinares.github.io/gentle-mesh/
 📁 **Repo y RFC 001:** https://github.com/Rafaeldelinares/gentle-mesh
 
-Comparto esto con sincera humildad, con ganas de aportar y conocer la visión y feedback de Alan y la comunidad. ¡Muchas gracias!
-</pre>
+¿Cómo ven esta arquitectura para conectar interfaces táctiles y multimodales con servidores remotos?</pre>
       </div>
     </div>
 
@@ -587,7 +604,7 @@ Comparto esto con sincera humildad, con ganas de aportar y conocer la visión y 
       <polyline points="20 6 9 17 4 12"></polyline>
     </svg>`;
 
-    const copyIconSvg = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    const copyIconSvg = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
       <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
     </svg>`;

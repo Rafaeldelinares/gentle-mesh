@@ -1,0 +1,42 @@
+**[Reflexión Técnica] ¿Cómo podría funcionar Gentle Desktop en móvil o tablet? El rol de Gentle Mesh**
+
+Tras ver el MVP de **Gentle Desktop** de Alan, pensé en un caso clave: ¿cómo llevamos esa experiencia a un iPad o móvil?
+
+En PC es directo. Pero en móviles (iOS/Android) es inviable correr subagentes locales: el SO mata procesos de fondo a los 30s, no hay Docker y procesar visión localmente drenaría la batería.
+
+### La solución: Modelo Cliente Liviano (Thin Client)
+La UI vive en el móvil, pero el cómputo pesado corre en tu PC, servidor o homelab:
+
+```text
+┌────────────────────────┐
+│     Móvil / Tablet     │
+│     Gentle Desktop     │
+│ • UI táctil y chat     │
+│ • Fotos, PDFs, capturas│
+│ • Batería intacta (2%) │
+└───────────┬────────────┘
+            │ HTTP POST / SSE
+            │ (vía Tailscale)
+            ▼
+┌────────────────────────┐
+│  Servidor Remoto / PC  │
+│    Gentle Mesh + Pi    │
+│ • Nodos GPU / Visión   │
+│ • Compiladores y tests │
+│ • Crash-safe en disco  │
+└────────────────────────┘
+```
+
+### ¿Cómo opera el flujo?
+1. **Despacho multimodal:** Sacás foto a una pizarra o captura de un bug y la enviás por API (`POST /v1/tasks`).
+2. **Enrutamiento por tags:** El mesh deriva la tarea a un nodo con GPU o modelo de visión, sin quemar el móvil.
+3. **Streaming en vivo (SSE):** Flujo de tokens, diffs y logs en tiempo real.
+4. **Reanudación (`Last-Event-ID`):** Si bloqueás la pantalla, el servidor sigue trabajando sin perder eventos.
+5. **Coordinación territorial:** Previene colisiones de merge si varios agentes trabajan en paralelo.
+
+Toda esta infraestructura en Go ya está implementada y validada con 140+ tests (`go test -race`).
+
+🌐 **Demo en vivo (GitHub Pages):** https://rafaeldelinares.github.io/gentle-mesh/
+📁 **Repo y RFC 001:** https://github.com/Rafaeldelinares/gentle-mesh
+
+¿Cómo ven esta arquitectura para conectar interfaces táctiles y multimodales con servidores remotos?
