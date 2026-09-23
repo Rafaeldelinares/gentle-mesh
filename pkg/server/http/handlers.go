@@ -19,6 +19,7 @@ func (s *Server) registerRoutes(mux *stdhttp.ServeMux) {
 	mux.HandleFunc("POST /v1/mesh/join", s.handleMeshJoin)
 	mux.HandleFunc("POST /v1/mesh/heartbeat", s.handleMeshHeartbeat)
 	mux.HandleFunc("GET /v1/mesh/nodes", s.handleMeshNodes)
+	mux.HandleFunc("GET /v1/mesh/radar", s.handleMeshRadar)
 	mux.HandleFunc("POST /v1/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /v1/tasks/{id}", s.handleGetTask)
 	mux.HandleFunc("GET /v1/tasks/{id}/events", s.handleTaskEvents)
@@ -84,6 +85,19 @@ func (s *Server) handleMeshNodes(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		nodes = []*protocol.NodeInfo{}
 	}
 	writeJSON(w, stdhttp.StatusOK, map[string]any{"nodes": nodes})
+}
+
+func (s *Server) handleMeshRadar(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	territories := s.taskManager.ActiveTerritories()
+	if territories == nil {
+		territories = []protocol.ActiveTerritory{}
+	}
+	report := protocol.RadarReport{
+		ClusterName:  "gentle-mesh",
+		Timestamp:    time.Now().Unix(),
+		ActiveAgents: territories,
+	}
+	writeJSON(w, stdhttp.StatusOK, report)
 }
 
 func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) {

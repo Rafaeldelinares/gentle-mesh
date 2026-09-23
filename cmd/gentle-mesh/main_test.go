@@ -457,6 +457,123 @@ func TestNodes_OutputFormatting(t *testing.T) {
 	})
 }
 
+func TestRadar_OutputFormatting(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("formats table with active agents correctly", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/mesh/radar" {
+				http.NotFound(w, r)
+				return
+			}
+			if r.Header.Get("Authorization") != "Bearer radar-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+
+			report := protocol.RadarReport{
+				ClusterName: "gentle-mesh",
+				Timestamp:   time.Now().Unix(),
+				ActiveAgents: []protocol.ActiveTerritory{
+					{
+						TaskID:         "task-001",
+						NodeID:         "node-gpu-1",
+						Agent:          "worker",
+						Phase:          protocol.AgentPhaseApply,
+						Domain:         "auth",
+						BlastRadius:    protocol.BlastRadiusSharedSchema,
+						EditSurfaces:   []string{"pkg/auth/jwt.go", "pkg/auth/middleware.go"},
+						CurrentAction:  "Running tests with race detector",
+						LastActivityAt: time.Now().Unix(),
+					},
+					{
+						TaskID:         "task-002",
+						NodeID:         "",
+						Agent:          "explore",
+						Phase:          protocol.AgentPhaseExplore,
+						Domain:         "database",
+						BlastRadius:    protocol.BlastRadiusReadOnly,
+						EditSurfaces:   []string{"pkg/db/schema.sql"},
+						CurrentAction:  "Running tool read",
+						LastActivityAt: time.Now().Unix(),
+					},
+				},
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(report)
+		}))
+		defer ts.Close()
+
+		var stdout, stderr bytes.Buffer
+		err := runCLI(ctx, []string{
+			"radar",
+			"-coordinator", ts.URL,
+			"-token", "radar-token",
+		}, &stdout, &stderr)
+
+		if err != nil {
+			t.Fatalf("unexpected error running radar: %v", err)
+		}
+
+		out := stdout.String()
+		for _, col := range []string{"NODE/TASK ID", "AGENT", "PHASE", "DOMAIN", "BLAST RADIUS", "SURFACES", "CURRENT ACTION"} {
+			if !strings.Contains(out, col) {
+				t.Errorf("missing column %q in radar output: %s", col, out)
+			}
+		}
+
+		if !strings.Contains(out, "node-gpu-1/task-001") ||
+			!strings.Contains(out, "worker") ||
+			!strings.Contains(out, "apply") ||
+			!strings.Contains(out, "auth") ||
+			!strings.Contains(out, "shared-schema") ||
+			!strings.Contains(out, "pkg/auth/jwt.go,pkg/auth/middleware.go") ||
+			!strings.Contains(out, "Running tests with race detector") {
+			t.Errorf("missing task-001 row details in output: %s", out)
+		}
+
+		if !strings.Contains(out, "task-002") ||
+			!strings.Contains(out, "explore") ||
+			!strings.Contains(out, "database") ||
+			!strings.Contains(out, "read-only") ||
+			!strings.Contains(out, "pkg/db/schema.sql") ||
+			!strings.Contains(out, "Running tool read") {
+			t.Errorf("missing task-002 row details in output: %s", out)
+		}
+	})
+
+	t.Run("handles empty active agents in radar", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(protocol.RadarReport{
+				ClusterName:  "gentle-mesh",
+				Timestamp:    time.Now().Unix(),
+				ActiveAgents: []protocol.ActiveTerritory{},
+			})
+		}))
+		defer ts.Close()
+
+		var stdout, stderr bytes.Buffer
+		err := runCLI(ctx, []string{
+			"radar",
+			"-coordinator", ts.URL,
+		}, &stdout, &stderr)
+
+		if err != nil {
+			t.Fatalf("unexpected error running radar: %v", err)
+		}
+
+		out := stdout.String()
+		expectedMsg := "No active agents currently running in the mesh radar."
+		if !strings.Contains(out, expectedMsg) {
+			t.Errorf("expected %q in output, got: %s", expectedMsg, out)
+		}
+	})
+}
+
 func TestRun_DispatchAndSSEConsumption(t *testing.T) {
 	tasksDir := t.TempDir()
 	simRunner := runner.NewSimulatedRunner(runner.SimulatedOptions{

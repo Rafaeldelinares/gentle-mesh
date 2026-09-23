@@ -3,6 +3,7 @@ package protocol
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"path"
 	"strings"
@@ -34,16 +35,55 @@ type PeerRegisterRequest struct {
 	AuthToken   string `json:"auth_token,omitempty"`
 }
 
+// BlastRadius defines the architectural impact boundary of an agent's planned or running work.
+type BlastRadius string
+
+const (
+	BlastRadiusReadOnly     BlastRadius = "read-only"
+	BlastRadiusIsolated     BlastRadius = "isolated-branch"
+	BlastRadiusSharedSchema BlastRadius = "shared-schema"
+	BlastRadiusBreaking     BlastRadius = "breaking-change"
+)
+
+// AgentPhase represents the current lifecycle execution phase of a subagent.
+type AgentPhase string
+
+const (
+	AgentPhaseExplore AgentPhase = "explore"
+	AgentPhasePlan    AgentPhase = "plan"
+	AgentPhaseApply   AgentPhase = "apply"
+	AgentPhaseVerify  AgentPhase = "verify"
+)
+
 // ActiveTerritory represents an ongoing task's claimed territory within a repository.
 type ActiveTerritory struct {
-	TaskID       string   `json:"task_id"`
-	Repo         string   `json:"repo"`
-	Branch       string   `json:"branch"`
-	EditSurfaces []string `json:"edit_surfaces"`
-	Agent        string   `json:"agent"`
-	TaskSummary  string   `json:"task_summary"`
-	NodeID       string   `json:"node_id"`
-	StartedAt    int64    `json:"started_at"`
+	TaskID         string      `json:"task_id"`
+	Repo           string      `json:"repo"`
+	Branch         string      `json:"branch"`
+	EditSurfaces   []string    `json:"edit_surfaces"`
+	Agent          string      `json:"agent"`
+	TaskSummary    string      `json:"task_summary"`
+	NodeID         string      `json:"node_id"`
+	StartedAt      int64       `json:"started_at"`
+	Domain         string      `json:"domain,omitempty"`
+	BlastRadius    BlastRadius `json:"blast_radius,omitempty"`
+	Phase          AgentPhase  `json:"phase,omitempty"`
+	CurrentAction  string      `json:"current_action,omitempty"`
+	LastActivityAt int64       `json:"last_activity_at,omitempty"`
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for ActiveTerritory,
+// defaulting BlastRadius to BlastRadiusIsolated ("isolated-branch") if omitted or empty.
+func (t *ActiveTerritory) UnmarshalJSON(data []byte) error {
+	type Alias ActiveTerritory
+	aux := (*Alias)(t)
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if t.BlastRadius == "" {
+		t.BlastRadius = BlastRadiusIsolated
+	}
+	return nil
 }
 
 // Fingerprint returns a deterministic SHA-256 fingerprint of the territory's repo and task summary.
@@ -64,6 +104,13 @@ type TerritoryManifest struct {
 	ClusterName string            `json:"cluster_name"`
 	Timestamp   int64             `json:"timestamp"`
 	Territories []ActiveTerritory `json:"territories"`
+}
+
+// RadarReport provides a real-time snapshot of all active subagents across the mesh cluster.
+type RadarReport struct {
+	ClusterName  string            `json:"cluster_name"`
+	Timestamp    int64             `json:"timestamp"`
+	ActiveAgents []ActiveTerritory `json:"active_agents"`
 }
 
 // ConflictType categorizes the reason why two territories clash.

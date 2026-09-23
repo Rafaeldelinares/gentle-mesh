@@ -709,3 +709,145 @@ func TestConcurrencyAndBoundaryConditions(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestBlastRadiusConstants(t *testing.T) {
+	tests := []struct {
+		got  protocol.BlastRadius
+		want string
+	}{
+		{protocol.BlastRadiusReadOnly, "read-only"},
+		{protocol.BlastRadiusIsolated, "isolated-branch"},
+		{protocol.BlastRadiusSharedSchema, "shared-schema"},
+		{protocol.BlastRadiusBreaking, "breaking-change"},
+	}
+
+	for _, tc := range tests {
+		if string(tc.got) != tc.want {
+			t.Errorf("expected BlastRadius %q, got %q", tc.want, tc.got)
+		}
+	}
+}
+
+func TestAgentPhaseConstants(t *testing.T) {
+	tests := []struct {
+		got  protocol.AgentPhase
+		want string
+	}{
+		{protocol.AgentPhaseExplore, "explore"},
+		{protocol.AgentPhasePlan, "plan"},
+		{protocol.AgentPhaseApply, "apply"},
+		{protocol.AgentPhaseVerify, "verify"},
+	}
+
+	for _, tc := range tests {
+		if string(tc.got) != tc.want {
+			t.Errorf("expected AgentPhase %q, got %q", tc.want, tc.got)
+		}
+	}
+}
+
+func TestActiveTerritory_ExtendedFieldsJSON(t *testing.T) {
+	t.Run("serializes and deserializes all extended multidimensional fields", func(t *testing.T) {
+		territory := protocol.ActiveTerritory{
+			TaskID:         "task-radar-001",
+			Repo:           "github.com/gentleman-programming/gentle-mesh",
+			Branch:         "feature/radar-protocol",
+			EditSurfaces:   []string{"pkg/protocol/federation.go", "pkg/server/task/task.go"},
+			Agent:          "worker",
+			TaskSummary:    "Implement radar protocol and live action tracking",
+			NodeID:         "node-alpha-1",
+			StartedAt:      1725002000,
+			Domain:         "auth",
+			BlastRadius:    protocol.BlastRadiusSharedSchema,
+			Phase:          protocol.AgentPhaseApply,
+			CurrentAction:  "Running tests with race detector",
+			LastActivityAt: 1725002050,
+		}
+
+		data, err := json.Marshal(territory)
+		if err != nil {
+			t.Fatalf("failed to marshal territory: %v", err)
+		}
+
+		var parsed protocol.ActiveTerritory
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal territory: %v", err)
+		}
+
+		if parsed.Domain != territory.Domain {
+			t.Errorf("Domain mismatch: got %q, want %q", parsed.Domain, territory.Domain)
+		}
+		if parsed.BlastRadius != territory.BlastRadius {
+			t.Errorf("BlastRadius mismatch: got %q, want %q", parsed.BlastRadius, territory.BlastRadius)
+		}
+		if parsed.Phase != territory.Phase {
+			t.Errorf("Phase mismatch: got %q, want %q", parsed.Phase, territory.Phase)
+		}
+		if parsed.CurrentAction != territory.CurrentAction {
+			t.Errorf("CurrentAction mismatch: got %q, want %q", parsed.CurrentAction, territory.CurrentAction)
+		}
+		if parsed.LastActivityAt != territory.LastActivityAt {
+			t.Errorf("LastActivityAt mismatch: got %d, want %d", parsed.LastActivityAt, territory.LastActivityAt)
+		}
+	})
+
+	t.Run("defaults BlastRadius to isolated-branch when omitted from JSON", func(t *testing.T) {
+		jsonPayload := `{"task_id":"task-unspecified","repo":"github.com/org/repo","agent":"worker"}`
+		var parsed protocol.ActiveTerritory
+		if err := json.Unmarshal([]byte(jsonPayload), &parsed); err != nil {
+			t.Fatalf("failed to unmarshal territory without blast_radius: %v", err)
+		}
+
+		if parsed.BlastRadius != protocol.BlastRadiusIsolated {
+			t.Errorf("expected default BlastRadius %q, got %q", protocol.BlastRadiusIsolated, parsed.BlastRadius)
+		}
+	})
+}
+
+func TestRadarReportJSONSerialization(t *testing.T) {
+	report := protocol.RadarReport{
+		ClusterName: "gentle-mesh",
+		Timestamp:   1725003000,
+		ActiveAgents: []protocol.ActiveTerritory{
+			{
+				TaskID:         "task-1",
+				Repo:           "github.com/org/repo",
+				Branch:         "feature/auth",
+				EditSurfaces:   []string{"pkg/auth/jwt.go"},
+				Agent:          "worker",
+				TaskSummary:    "Implement JWT verification",
+				NodeID:         "node-gpu-1",
+				StartedAt:      1725002800,
+				Domain:         "auth",
+				BlastRadius:    protocol.BlastRadiusIsolated,
+				Phase:          protocol.AgentPhaseApply,
+				CurrentAction:  "Editing pkg/auth/jwt.go",
+				LastActivityAt: 1725002950,
+			},
+		},
+	}
+
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("failed to marshal RadarReport: %v", err)
+	}
+
+	var parsed protocol.RadarReport
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal RadarReport: %v", err)
+	}
+
+	if parsed.ClusterName != report.ClusterName {
+		t.Errorf("ClusterName mismatch: got %q, want %q", parsed.ClusterName, report.ClusterName)
+	}
+	if parsed.Timestamp != report.Timestamp {
+		t.Errorf("Timestamp mismatch: got %d, want %d", parsed.Timestamp, report.Timestamp)
+	}
+	if len(parsed.ActiveAgents) != 1 {
+		t.Fatalf("expected 1 active agent, got %d", len(parsed.ActiveAgents))
+	}
+	agent := parsed.ActiveAgents[0]
+	if agent.Domain != "auth" || agent.Phase != protocol.AgentPhaseApply || agent.CurrentAction != "Editing pkg/auth/jwt.go" {
+		t.Errorf("unexpected agent territory contents: %+v", agent)
+	}
+}

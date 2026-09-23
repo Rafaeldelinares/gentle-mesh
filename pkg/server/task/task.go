@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +37,13 @@ type ManagedTask struct {
 	FinishedAt     int64
 	Completion     *protocol.CompletionPayload
 	Error          *protocol.ErrorPayload
+	Domain         string
+	BlastRadius    protocol.BlastRadius
+	Phase          protocol.AgentPhase
+	CurrentAction  string
+	LastActivityAt int64
+	EditSurfaces   []string
+	NodeID         string
 	ctx            context.Context
 	cancel         context.CancelFunc
 	eventSeq       atomic.Int64
@@ -53,11 +61,14 @@ func NewManagedTask(
 	cancel context.CancelFunc,
 	logger *JSONLLogger,
 ) *ManagedTask {
+	now := time.Now().Unix()
 	return &ManagedTask{
 		TaskID:         taskID,
 		Request:        req,
 		Status:         protocol.TaskStatusQueued,
-		CreatedAt:      time.Now().Unix(),
+		CreatedAt:      now,
+		LastActivityAt: now,
+		BlastRadius:    protocol.BlastRadiusIsolated,
 		ctx:            ctx,
 		cancel:         cancel,
 		logger:         logger,
@@ -118,6 +129,7 @@ func (t *ManagedTask) TransitionTo(status protocol.TaskStatus) error {
 
 	t.Status = status
 	now := time.Now()
+	t.LastActivityAt = now.Unix()
 	if t.Status == protocol.TaskStatusRunning && t.StartedAt == 0 {
 		t.StartedAt = now.Unix()
 	}
@@ -173,6 +185,7 @@ func (t *ManagedTask) EmitEvent(eventType protocol.EventType, payload any) (prot
 	}
 
 	now := time.Now()
+	t.LastActivityAt = now.Unix()
 	switch eventType {
 	case protocol.EventStatus:
 		var sp protocol.StatusPayload
@@ -192,12 +205,57 @@ func (t *ManagedTask) EmitEvent(eventType protocol.EventType, payload any) (prot
 				}
 			}
 		}
+	case protocol.EventToolCall:
+		var tp protocol.ToolCallPayload
+		if err := evt.UnmarshalPayload(&tp); err == nil {
+			toolName := tp.Tool
+			t.CurrentAction = fmt.Sprintf("Running tool %s", toolName)
+			switch toolName {
+			case "read", "grep", "find":
+				t.Phase = protocol.AgentPhaseExplore
+			case "edit", "write":
+				t.Phase = protocol.AgentPhaseApply
+			case "bash":
+				t.Phase = protocol.AgentPhaseVerify
+			}
+			if toolName == "edit" || toolName == "write" {
+				if tp.Args != nil {
+					for _, k := range []string{"path", "file", "target"} {
+						if val, ok := tp.Args[k].(string); ok && val != "" {
+							t.addEditSurfaceLocked(val)
+							break
+						}
+					}
+				}
+			}
+		}
+	case protocol.EventThought:
+		var th protocol.ThoughtPayload
+		if err := evt.UnmarshalPayload(&th); err == nil && th.Text != "" {
+			action := th.Text
+			if idx := strings.Index(action, "\n"); idx != -1 {
+				action = action[:idx]
+			}
+			action = strings.TrimSpace(action)
+			runes := []rune(action)
+			if len(runes) > 100 {
+				action = string(runes[:100])
+			}
+			if action != "" {
+				t.CurrentAction = action
+			}
+		}
 	case protocol.EventCompletion:
 		var cp protocol.CompletionPayload
 		if err := evt.UnmarshalPayload(&cp); err == nil {
 			t.Completion = &cp
+			for _, f := range cp.FilesChanged {
+				t.addEditSurfaceLocked(f)
+			}
 		}
 		t.Status = protocol.TaskStatusCompleted
+		t.Phase = protocol.AgentPhaseVerify
+		t.CurrentAction = "Task completed"
 		if t.FinishedAt == 0 {
 			t.FinishedAt = now.Unix()
 			t.finishedTime = now
@@ -296,6 +354,79 @@ func (t *ManagedTask) WaitForQuery(ctx context.Context, queryID string) (string,
 			return "", ErrQueryTimedOut
 		}
 		return "", ctx.Err()
+	}
+}
+
+// SetScope thread-safely updates the architectural domain, blast radius, execution phase,
+// and current micro-action.
+func (t *ManagedTask) SetScope(domain string, blastRadius protocol.BlastRadius, phase protocol.AgentPhase, action string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.Domain = domain
+	if blastRadius != "" {
+		t.BlastRadius = blastRadius
+	} else if t.BlastRadius == "" {
+		t.BlastRadius = protocol.BlastRadiusIsolated
+	}
+	if phase != "" {
+		t.Phase = phase
+	}
+	t.CurrentAction = action
+	t.LastActivityAt = time.Now().Unix()
+}
+
+// SetEditSurfaces sets the slice of files or directories touched by the task.
+func (t *ManagedTask) SetEditSurfaces(surfaces []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.EditSurfaces = append([]string(nil), surfaces...)
+}
+
+func (t *ManagedTask) addEditSurfaceLocked(surface string) {
+	if surface == "" {
+		return
+	}
+	for _, s := range t.EditSurfaces {
+		if s == surface {
+			return
+		}
+	}
+	t.EditSurfaces = append(t.EditSurfaces, surface)
+}
+
+// Territory returns an ActiveTerritory snapshot of the current task.
+func (t *ManagedTask) Territory() protocol.ActiveTerritory {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	blastRadius := t.BlastRadius
+	if blastRadius == "" {
+		blastRadius = protocol.BlastRadiusIsolated
+	}
+
+	surfaces := make([]string, len(t.EditSurfaces))
+	copy(surfaces, t.EditSurfaces)
+
+	lastActivity := t.LastActivityAt
+	if lastActivity == 0 {
+		lastActivity = t.CreatedAt
+	}
+
+	return protocol.ActiveTerritory{
+		TaskID:         t.TaskID,
+		Repo:           t.Request.GitRepo,
+		Branch:         t.Request.GitBranch,
+		EditSurfaces:   surfaces,
+		Agent:          t.Request.Agent,
+		TaskSummary:    t.Request.Task,
+		NodeID:         t.NodeID,
+		StartedAt:      t.StartedAt,
+		Domain:         t.Domain,
+		BlastRadius:    blastRadius,
+		Phase:          t.Phase,
+		CurrentAction:  t.CurrentAction,
+		LastActivityAt: lastActivity,
 	}
 }
 

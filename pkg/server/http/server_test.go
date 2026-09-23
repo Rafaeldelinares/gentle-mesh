@@ -896,3 +896,172 @@ func TestServer_ValidationErrors(t *testing.T) {
 		t.Errorf("expected 404 for nonexistent task cancel, got %d", resp5.StatusCode)
 	}
 }
+
+func TestServer_MeshRadar(t *testing.T) {
+	srv, ts := setupTestServer(t)
+
+	// 1. Initial radar when empty
+	resp, err := ts.Client().Get(ts.URL + "/v1/mesh/radar")
+	if err != nil {
+		t.Fatalf("GET /v1/mesh/radar failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var report protocol.RadarReport
+	if err := json.NewDecoder(resp.Body).Decode(&report); err != nil {
+		t.Fatalf("failed decoding radar report: %v", err)
+	}
+
+	if report.ClusterName != "gentle-mesh" {
+		t.Errorf("expected cluster_name gentle-mesh, got %q", report.ClusterName)
+	}
+	if len(report.ActiveAgents) != 0 {
+		t.Fatalf("expected 0 active agents initially, got %d", len(report.ActiveAgents))
+	}
+
+	// 2. Create task directly via task manager to control live event emission
+	taskReq := protocol.TaskRequest{
+		Agent:     "worker",
+		Task:      "Refactor authentication middleware",
+		GitRepo:   "github.com/gentleman-programming/gentle-mesh",
+		GitBranch: "feature/auth-radar",
+	}
+	mt, err := srv.TaskManager().CreateTask(taskReq)
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	// Verify task appears in radar (currently queued)
+	resp2, err := ts.Client().Get(ts.URL + "/v1/mesh/radar")
+	if err != nil {
+		t.Fatalf("GET /v1/mesh/radar failed: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	if err := json.NewDecoder(resp2.Body).Decode(&report); err != nil {
+		t.Fatalf("failed decoding radar report: %v", err)
+	}
+
+	if len(report.ActiveAgents) != 1 {
+		t.Fatalf("expected 1 active agent in radar, got %d", len(report.ActiveAgents))
+	}
+	agent0 := report.ActiveAgents[0]
+	if agent0.TaskID != mt.TaskID {
+		t.Errorf("expected task ID %s, got %s", mt.TaskID, agent0.TaskID)
+	}
+	if agent0.BlastRadius != protocol.BlastRadiusIsolated {
+		t.Errorf("expected default blast radius isolated-branch, got %s", agent0.BlastRadius)
+	}
+
+	// 3. Set custom scope
+	mt.SetScope("auth", protocol.BlastRadiusSharedSchema, protocol.AgentPhasePlan, "Planning auth migration")
+	mt.SetEditSurfaces([]string{"pkg/auth/jwt.go", "pkg/auth/middleware.go"})
+
+	resp3, err := ts.Client().Get(ts.URL + "/v1/mesh/radar")
+	if err != nil {
+		t.Fatalf("GET /v1/mesh/radar failed: %v", err)
+	}
+	defer resp3.Body.Close()
+
+	if err := json.NewDecoder(resp3.Body).Decode(&report); err != nil {
+		t.Fatalf("failed decoding radar report: %v", err)
+	}
+
+	agent0 = report.ActiveAgents[0]
+	if agent0.Domain != "auth" {
+		t.Errorf("expected domain auth, got %q", agent0.Domain)
+	}
+	if agent0.BlastRadius != protocol.BlastRadiusSharedSchema {
+		t.Errorf("expected blast radius shared-schema, got %q", agent0.BlastRadius)
+	}
+	if agent0.Phase != protocol.AgentPhasePlan {
+		t.Errorf("expected phase plan, got %q", agent0.Phase)
+	}
+	if agent0.CurrentAction != "Planning auth migration" {
+		t.Errorf("expected action 'Planning auth migration', got %q", agent0.CurrentAction)
+	}
+	if len(agent0.EditSurfaces) != 2 {
+		t.Errorf("expected 2 edit surfaces, got %d", len(agent0.EditSurfaces))
+	}
+
+	// 4. Live action transitions via events:
+	// Tool call "read" -> Phase explore
+	_, err = mt.EmitEvent(protocol.EventToolCall, protocol.ToolCallPayload{
+		CallID: "call-1",
+		Tool:   "read",
+		Args:   map[string]any{"path": "pkg/auth/jwt.go"},
+	})
+	if err != nil {
+		t.Fatalf("EmitEvent tool call read failed: %v", err)
+	}
+	terr := mt.Territory()
+	if terr.Phase != protocol.AgentPhaseExplore || terr.CurrentAction != "Running tool read" {
+		t.Errorf("expected phase explore and action 'Running tool read', got phase=%q action=%q", terr.Phase, terr.CurrentAction)
+	}
+
+	// Tool call "edit" -> Phase apply
+	_, err = mt.EmitEvent(protocol.EventToolCall, protocol.ToolCallPayload{
+		CallID: "call-2",
+		Tool:   "edit",
+		Args:   map[string]any{"path": "pkg/auth/claims.go"},
+	})
+	if err != nil {
+		t.Fatalf("EmitEvent tool call edit failed: %v", err)
+	}
+	terr = mt.Territory()
+	if terr.Phase != protocol.AgentPhaseApply || terr.CurrentAction != "Running tool edit" {
+		t.Errorf("expected phase apply and action 'Running tool edit', got phase=%q action=%q", terr.Phase, terr.CurrentAction)
+	}
+
+	// Tool call "bash" -> Phase verify
+	_, err = mt.EmitEvent(protocol.EventToolCall, protocol.ToolCallPayload{
+		CallID: "call-3",
+		Tool:   "bash",
+		Args:   map[string]any{"command": "go test ./pkg/auth"},
+	})
+	if err != nil {
+		t.Fatalf("EmitEvent tool call bash failed: %v", err)
+	}
+	terr = mt.Territory()
+	if terr.Phase != protocol.AgentPhaseVerify || terr.CurrentAction != "Running tool bash" {
+		t.Errorf("expected phase verify and action 'Running tool bash', got phase=%q action=%q", terr.Phase, terr.CurrentAction)
+	}
+
+	// Thought event -> sets truncated text
+	_, err = mt.EmitEvent(protocol.EventThought, protocol.ThoughtPayload{
+		Text: "Analyzing test failure in TestTokenExpiry\nExtra line to be truncated",
+	})
+	if err != nil {
+		t.Fatalf("EmitEvent thought failed: %v", err)
+	}
+	terr = mt.Territory()
+	if terr.CurrentAction != "Analyzing test failure in TestTokenExpiry" {
+		t.Errorf("expected truncated single-line thought action, got %q", terr.CurrentAction)
+	}
+
+	// 5. Completion event -> Phase verify, Action "Task completed"
+	_, err = mt.EmitEvent(protocol.EventCompletion, protocol.CompletionPayload{
+		Result: "Successfully refactored auth middleware",
+	})
+	if err != nil {
+		t.Fatalf("EmitEvent completion failed: %v", err)
+	}
+
+	// Radar should no longer show the completed task
+	resp4, err := ts.Client().Get(ts.URL + "/v1/mesh/radar")
+	if err != nil {
+		t.Fatalf("GET /v1/mesh/radar failed: %v", err)
+	}
+	defer resp4.Body.Close()
+
+	if err := json.NewDecoder(resp4.Body).Decode(&report); err != nil {
+		t.Fatalf("failed decoding radar report: %v", err)
+	}
+	if len(report.ActiveAgents) != 0 {
+		t.Errorf("expected completed task to be omitted from active radar, got %d agents", len(report.ActiveAgents))
+	}
+}

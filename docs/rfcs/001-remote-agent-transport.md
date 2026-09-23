@@ -229,6 +229,11 @@ Cada misión activa reclama un **Territorio Activo (`ActiveTerritory`)** con la 
 * `task_summary`: Resumen conciso en lenguaje natural del objetivo de la misión.
 * `node_id`: Identificador del nodo físico/VM donde corre el subproceso Pi.
 * `started_at`: Epoch Unix en segundos en que inició la ejecución.
+* `domain`: Dominio arquitectónico asignado a la misión (ej. `auth`, `database`, `ui`).
+* `blast_radius`: Radio de impacto arquitectónico (`read-only`, `isolated-branch`, `shared-schema`, `breaking-change`).
+* `phase`: Fase activa del ciclo de vida del agente (`explore`, `plan`, `apply`, `verify`).
+* `current_action`: Micro-acción o intención inmediata que el agente está ejecutando en tiempo real (ej. `Running tool edit`, `Running tests with race detector`).
+* `last_activity_at`: Epoch Unix en segundos de la última emisión de evento o actividad del agente.
 
 ---
 
@@ -289,6 +294,84 @@ En su lugar, Gentle Mesh implementa **Live Stream Hooking**:
    * Queda suscrito al stream en tiempo real junto con el cliente original (Pub/Sub fan-out).
    * Consume el evento final `completion` y el commit Git resultante.
 4. **Beneficio directo:** Cero tokens adicionales consumidos, cero tiempo de CPU duplicado y una experiencia transparente para el desarrollador.
+
+---
+
+### 6.6. Dimensiones Multidimensionales de Alcance (3 Dimensions of Scope)
+El protocolo territorial de Gentle Mesh trasciende el bloqueo binario de archivos mediante un modelo de alcance tridimensional que describe con precisión quirúrgica el perímetro de intervención de cada subagente:
+
+1. **Dominio Arquitectónico (`domain`):**
+   * Delimita el subsistema de negocio o capa funcional donde opera la misión (ej. `auth`, `database`, `billing`, `ui`, `protocol`).
+   * Permite a los coordinadores federados y desarrolladores humanos discernir rápidamente qué subsistemas tienen subagentes concurrentes.
+2. **Superficies de Edición Autorizadas (`edit_surfaces`):**
+   * Conjunto restrictivo y acotado de rutas relativas o patrones glob (`pkg/auth/*`, `cmd/cli/login.go`).
+   * Constituye la barrera física de detección de solapamiento en `ClashesWith()`.
+3. **Radio de Impacto (`blast_radius`):**
+   * Modela la criticidad sistémica y el riesgo de propagación de los cambios introducidos por el subagente:
+     * `read-only`: Tarea exclusivamente analítica o de mapeo; no muta disco ni modifica refs de Git.
+     * `isolated-branch`: Cambios encapsulados en una rama de feature aislada sin alteración de contratos compartidos (valor predeterminado).
+     * `shared-schema`: Modificaciones a tablas relacionales compartidas, migraciones de base de datos o contratos de transporte comunes.
+     * `breaking-change`: Modificaciones disruptivas que invalidan interfaces públicas, APIs o tipos consumidos por otros agentes o servicios.
+
+---
+
+### 6.7. Rastreo de Intención Activa y Micro-Acciones en Tiempo Real
+Para superar la opacidad de los subprocesos en ejecución remota ("caja negra"), el demonio de Gentle Mesh infiere y proyecta continuamente la **intención activa** y la **fase de ciclo de vida** de cada subagente a partir del flujo de eventos SSE emitidos:
+
+* **Fases del Agente (`AgentPhase`):**
+  * `explore`: Inferencia activa durante llamadas a herramientas exploratorias y de lectura (`read`, `grep`, `find`).
+  * `plan`: Formulación de planes, descomposiciones de tareas o cadenas de pensamiento preliminares.
+  * `apply`: Mutación de código fuente mediante herramientas de escritura y parcheo (`edit`, `write`).
+  * `verify`: Validación técnica, compilación estática y ejecución de pruebas automatizadas (`bash`, `go test`).
+* **Micro-Acciones (`current_action`):**
+  * Cada `EventToolCall` actualiza inmediatamente la acción visible (`Running tool read`, `Running tool edit`).
+  * Cada `EventThought` extrae y trunca la primera línea relevante de razonamiento del agente (hasta 100 caracteres) para proveer visibilidad inmediata de su objetivo mental actual.
+  * Cada `EventCompletion` transiciona la fase a `verify` y reporta `Task completed`.
+* **Frescura de Actividad (`last_activity_at`):**
+  * Marca de tiempo Unix actualizada con cada transición o evento, posibilitando la detección automática de agentes congelados o desconectados.
+
+---
+
+### 6.8. Radar de la Malla (Mesh Radar): Endpoint y CLI
+El **Radar de la Malla** unifica la telemetría territorial y la intención activa de todos los nodos en una vista global viva.
+
+#### Endpoint HTTP `GET /v1/mesh/radar`
+Consulta el radar de subagentes activos en el clúster:
+* **Headers:** `Authorization: Bearer <TOKEN>` (opcional)
+* **Respuesta (`RadarReport`):**
+  ```json
+  {
+    "cluster_name": "gentle-mesh",
+    "timestamp": 1725004500,
+    "active_agents": [
+      {
+        "task_id": "task-1725004000-a1b2c3d4",
+        "node_id": "vps-la-fabrica-gpu",
+        "agent": "worker",
+        "phase": "apply",
+        "domain": "auth",
+        "blast_radius": "shared-schema",
+        "edit_surfaces": ["pkg/auth/jwt.go", "pkg/auth/middleware.go"],
+        "current_action": "Editing pkg/auth/jwt.go",
+        "started_at": 1725004000,
+        "last_activity_at": 1725004495
+      }
+    ]
+  }
+  ```
+
+#### Subcomando CLI `gentle-mesh radar`
+Permite a cualquier operador inspeccionar el radar directamente desde la terminal:
+```bash
+$ gentle-mesh radar -coordinator http://mesh.internal:8080 -token secret-token
+NODE/TASK ID                          AGENT   PHASE    DOMAIN  BLAST RADIUS   SURFACES                       CURRENT ACTION
+vps-la-fabrica-gpu/task-1725004000... worker  apply    auth    shared-schema  pkg/auth/jwt.go,pkg/auth/mi... Editing pkg/auth/jwt.go
+node-alpha-arm64/task-1725004120...   explore explore  db      read-only      pkg/db/schema.sql              Running tool read
+```
+Si no existen subagentes activos en ejecución, el comando reporta limpiamente:
+```bash
+No active agents currently running in the mesh radar.
+```
 
 ---
 

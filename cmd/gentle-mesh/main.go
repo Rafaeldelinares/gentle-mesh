@@ -51,6 +51,8 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		return runWorker(ctx, cmdArgs, stdout, stderr)
 	case "nodes":
 		return runNodes(ctx, cmdArgs, stdout, stderr)
+	case "radar":
+		return runRadar(ctx, cmdArgs, stdout, stderr)
 	case "run":
 		return runRun(ctx, cmdArgs, stdout, stderr)
 	case "help", "-h", "--help":
@@ -69,6 +71,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  server    Run the mesh coordinator HTTP REST and SSE server")
 	fmt.Fprintln(w, "  worker    Run a mesh worker node registering with coordinator")
 	fmt.Fprintln(w, "  nodes     List registered mesh nodes and status")
+	fmt.Fprintln(w, "  radar     Display real-time active subagents radar and scope")
 	fmt.Fprintln(w, "  run       Submit a task and stream SSE execution events")
 	fmt.Fprintln(w, "  help      Show help for gentle-mesh")
 }
@@ -361,6 +364,107 @@ func runNodes(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	if len(data.Nodes) == 0 {
 		fmt.Fprintln(stdout, "(No nodes registered in the mesh)")
 	}
+
+	return nil
+}
+
+// runRadar queries the coordinator radar endpoint and displays an active subagent radar table.
+func runRadar(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("radar", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	coordinator := fs.String("coordinator", "http://localhost:8080", "Coordinator base URL")
+	token := fs.String("token", "", "Optional bearer authentication token")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	coordURL := strings.TrimRight(*coordinator, "/") + "/v1/mesh/radar"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, coordURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to build radar request: %w", err)
+	}
+	if *token != "" {
+		req.Header.Set("Authorization", "Bearer "+*token)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to query coordinator radar at %s: %w", coordURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to get radar (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var report protocol.RadarReport
+	if err := json.NewDecoder(resp.Body).Decode(&report); err != nil {
+		return fmt.Errorf("failed to parse radar response: %w", err)
+	}
+
+	if len(report.ActiveAgents) == 0 {
+		fmt.Fprintln(stdout, "No active agents currently running in the mesh radar.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(stdout, 0, 8, 2, ' ', 0)
+	fmt.Fprintln(w, "NODE/TASK ID\tAGENT\tPHASE\tDOMAIN\tBLAST RADIUS\tSURFACES\tCURRENT ACTION")
+	for _, a := range report.ActiveAgents {
+		idStr := a.TaskID
+		if a.NodeID != "" && a.TaskID != "" {
+			idStr = fmt.Sprintf("%s/%s", a.NodeID, a.TaskID)
+		} else if a.NodeID != "" {
+			idStr = a.NodeID
+		}
+		if idStr == "" {
+			idStr = "-"
+		}
+
+		agentStr := a.Agent
+		if agentStr == "" {
+			agentStr = "-"
+		}
+
+		phaseStr := string(a.Phase)
+		if phaseStr == "" {
+			phaseStr = "-"
+		}
+
+		domainStr := a.Domain
+		if domainStr == "" {
+			domainStr = "-"
+		}
+
+		blastStr := string(a.BlastRadius)
+		if blastStr == "" {
+			blastStr = string(protocol.BlastRadiusIsolated)
+		}
+
+		surfacesStr := strings.Join(a.EditSurfaces, ",")
+		if surfacesStr == "" {
+			surfacesStr = "-"
+		}
+
+		actionStr := a.CurrentAction
+		if actionStr == "" {
+			actionStr = "-"
+		}
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			idStr,
+			agentStr,
+			phaseStr,
+			domainStr,
+			blastStr,
+			surfacesStr,
+			actionStr,
+		)
+	}
+	_ = w.Flush()
 
 	return nil
 }
