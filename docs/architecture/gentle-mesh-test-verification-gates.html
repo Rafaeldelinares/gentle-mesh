@@ -5535,6 +5535,123 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       }
     }
 
+  
+    /* ==========================================================
+       BUILT WITH GENTLE-AI BRAND BADGES
+       ========================================================== */
+    .toolbar-brand-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 2.75rem;
+      padding: 0.35rem 0.65rem;
+      background: var(--toolbar-bg);
+      border: 1px solid var(--toolbar-border);
+      border-radius: 0.625rem;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+      text-decoration: none;
+      transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+      flex-shrink: 0;
+    }
+    .toolbar-brand-badge:hover {
+      background: var(--toolbar-hover, rgba(255, 255, 255, 0.1));
+      border-color: #818cf8;
+      transform: translateY(-1px);
+    }
+    .toolbar-brand-badge img {
+      height: 20px;
+      width: auto;
+      display: block;
+    }
+
+    .step-modal-footer-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .step-modal-brand-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.25rem 0.45rem;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid color-mix(in srgb, var(--toolbar-border) 60%, transparent);
+      text-decoration: none;
+      transition: all 0.15s ease;
+      flex-shrink: 0;
+    }
+    .step-modal-brand-badge:hover {
+      background: rgba(255, 255, 255, 0.12);
+      border-color: #818cf8;
+      transform: translateY(-1px);
+    }
+    .step-modal-brand-badge img {
+      height: 18px;
+      width: auto;
+      display: block;
+    }
+    .step-modal-btn-close {
+      color: var(--text-muted);
+    }
+    .step-modal-btn-close:hover {
+      color: var(--text);
+      border-color: #f43f5e !important;
+    }
+
+    .tour-header-brand-badge {
+      display: inline-flex;
+      align-items: center;
+      opacity: 0.85;
+      transition: opacity 0.15s ease, transform 0.15s ease;
+      text-decoration: none;
+      flex-shrink: 0;
+      vertical-align: middle;
+    }
+    .tour-header-brand-badge:hover {
+      opacity: 1;
+      transform: translateY(-1px);
+    }
+    .tour-header-brand-badge img {
+      height: 14px;
+      width: auto;
+      display: block;
+    }
+
+    @media (max-width: 600px) {
+      .toolbar-brand-badge {
+        height: 2.25rem;
+        padding: 0.25rem 0.45rem;
+      }
+      .toolbar-brand-badge img {
+        height: 16px;
+      }
+      .step-modal-footer-brand {
+        order: 4;
+        width: 100%;
+        justify-content: space-between;
+        margin-top: 0.25rem;
+      }
+    }
+
+    html[data-present="true"]:not([data-embed="true"]) .toolbar-brand-badge {
+      height: 2.2rem;
+      padding: 0.25rem 0.5rem;
+    }
+    html[data-present="true"]:not([data-embed="true"]) .toolbar-brand-badge img {
+      height: 16px;
+    }
+
+    @media print {
+      .toolbar-brand-badge,
+      .step-modal-brand-badge,
+      .tour-header-brand-badge {
+        display: none !important;
+      }
+    }
+
   </style>
 </head>
 <body>
@@ -5542,6 +5659,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
        Motion appears only for trace-enabled artifacts and has no shortcut;
        Keyboard: T toggles theme, S cycles style, F toggles the stage, E opens export. -->
   <div class="toolbar" role="toolbar" aria-label="Diagram actions">
+    <a href="https://github.com/Gentleman-Programming/gentle-ai" target="_blank" rel="noopener noreferrer" class="toolbar-brand-badge" title="Built with Gentle-AI">
+      <img src="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/brand/built-with-gentle-ai.png" alt="Built with Gentle-AI">
+    </a>
     <button id="btn-theme" type="button"
             title="Toggle theme (T)"
             aria-label="Toggle color theme"
@@ -15640,6 +15760,12 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           </select>
         </div>
         <button type="button" class="step-nav-btn" id="step-btn-next" aria-label="Paso siguiente">Siguiente →</button>
+        <div class="step-modal-footer-brand">
+          <a href="https://github.com/Gentleman-Programming/gentle-ai" target="_blank" rel="noopener noreferrer" class="step-modal-brand-badge" title="Built with Gentle-AI">
+            <img src="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/brand/built-with-gentle-ai.png" alt="Built with Gentle-AI">
+          </a>
+          <button type="button" class="step-nav-btn step-modal-btn-close" id="step-btn-close-modal" aria-label="Cerrar modal de explicación" onclick="document.getElementById('step-modal-close').click()">✕ Cerrar</button>
+        </div>
       </div>
     </div>
   </dialog>
@@ -15864,6 +15990,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       <div class="tour-header-left">
         <div class="tour-header-top-row">
           <span class="tour-step-badge" id="tour-step-badge">Paso 01 de 09</span>
+          <a href="https://github.com/Gentleman-Programming/gentle-ai" target="_blank" rel="noopener noreferrer" class="tour-header-brand-badge" title="Built with Gentle-AI">
+            <img src="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/brand/built-with-gentle-ai.png" alt="Built with Gentle-AI">
+          </a>
           <span class="tour-phase-badge" id="tour-phase-badge"></span>
         </div>
         <h3 class="tour-step-title" id="tour-step-title"></h3>
