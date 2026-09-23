@@ -85,9 +85,114 @@ Flujo continuo de eventos tipados:
 ### `POST /v1/tasks/{id}/steer` (Mensaje en Caliente)
 Permite reorientar al subagente remoto antes de su siguiente llamada al modelo (paridad con `subagent_send_message`).
 
+### `POST /v1/tasks/{id}/reply` (Respuesta a Consulta / Human-in-the-Loop)
+Permite al orquestador o humano responder a un evento `query` emitido por el subagente remoto (paridad con `subagent_reply`).
+* **Payload:**
+  ```json
+  {
+    "query_id": "q_42",
+    "answer": "Confirmado, aplicar migración"
+  }
+  ```
+
 ---
 
-## 5. Hoja de Ruta de la Prueba de Concepto (PoC)
+## 5. Protocolo de Membresía y Descubrimiento de la Malla (`/v1/mesh`)
+
+Para operar como una verdadera malla federada (Mesh), los nodos remotos anuncian sus capacidades al orquestador dinámicamente:
+
+### `POST /v1/mesh/join` (Registro de Nodo)
+* **Payload:**
+  ```json
+  {
+    "node_id": "vps-la-fabrica-gpu",
+    "endpoint": "http://100.64.0.15:8080",
+    "hardware": {
+      "cpus": 32,
+      "ram_gb": 64,
+      "has_gpu": true,
+      "os": "linux/amd64"
+    },
+    "agents_advertised": [
+      {
+        "name": "heavy-tester",
+        "description": "Suites masivas con Docker y Postgres",
+        "tags": ["docker", "postgres", "long-running"]
+      }
+    ],
+    "max_concurrency": 4
+  }
+  ```
+
+### `POST /v1/mesh/heartbeat` (Keepalive)
+* Pings periódicos (cada 15-30s) para confirmar disponibilidad y carga activa (`active_tasks`). Desconexión tras 3 latidos perdidos.
+
+### `GET /v1/mesh/nodes` (Catálogo de Nodos y Agentes)
+* Permite al orquestador y a `subagent_list_agents` descubrir en tiempo real qué agentes remotos están federados y disponibles.
+
+---
+
+## 6. Resiliencia, Persistencia y Ciclo de Vida de Tareas
+
+Para garantizar desconexiones seguras sin pérdida de progreso ni consumo desmedido de recursos:
+
+1. **Persistencia Append-Only (JSONL en Disco):**
+   * Cada tarea mantiene un log continuo en `/var/log/gentle-mesh/tasks/{task_id}.jsonl`.
+   * Permite retransmisión desde cualquier punto histórico sin saturar la RAM del servidor.
+2. **Reconexión Transparente (`Last-Event-ID`):**
+   * Todo evento SSE incluye un ID monótono (`id: 101`). Si el cliente se desconecta, envía el header HTTP estándar `Last-Event-ID` al reconectar y el servidor reproduce los eventos faltantes antes de continuar en vivo.
+3. **Desacople de Consumo (Non-blocking Pub/Sub):**
+   * Si la conexión del cliente es lenta o inestable, la goroutine de streaming no bloquea la ejecución del runner de Pi en el servidor.
+4. **Limpieza en Dos Etapas (Configurable):**
+   * *Etapa 1 (Inmediata):* El Git Worktree efímero se destruye inmediatamente tras la finalización o cancelación de la tarea para liberar espacio en disco.
+   * *Etapa 2 (TTL diferido):* La metadata y el archivo `.jsonl` se conservan durante un periodo configurable (`GENTLE_MESH_TASK_TTL`, por defecto 24 horas) para permitir inspección y recuperación diferida, tras lo cual se purgan automáticamente.
+
+---
+
+## 7. Seguridad, Supervisión Autónoma y Aislamiento del Host
+
+Para operar de forma 100% desatendida sin necesidad de supervisión humana activa:
+
+1. **Desacople de Capacidad (Cerebro vs Músculo):**
+   * El orquestador (laptop/cliente) es ultra-liviano: solo despacha JSON y lee streams de texto, pudiendo coordinar decenas de tareas simultáneas sin consumo de CPU.
+   * Los límites de concurrencia y memoria residen exclusivamente en los **Worker Nodes remotos**, protegiendo su hardware físico contra saturación mediante colas de espera FIFO (`status: "queued"`).
+2. **Supervisión Autónoma de Tareas (Sin Human-in-the-Loop):**
+   * *Detección de Congelamiento / Inactividad:* Si un proceso pasa 5 minutos sin emitir eventos ni actividad de CPU, se aborta automáticamente por inactividad.
+   * *Detección Semántica de Bucles:* Ventana deslizante que detecta herramientas fallando 3 veces consecutivas o cambios oscilatorios en el mismo archivo, inyectando auto-corrección o abortando con `loop_detected`.
+   * *Auto-Commit de Resguardo:* Si una tarea expira por timeout o se cancela, el demonio ejecuta automáticamente un commit WIP (`mesh(wip): progreso parcial [task-id]`) para preservar todo el trabajo realizado hasta ese segundo.
+3. **Reanudación y Autocuración sin Fricción:**
+   * La reconexión tras cortes de red o reinicios de host es 100% automática y desatendida, reanudando desde el último checkpoint o sincronizando eventos pasados sin requerir confirmación manual.
+4. **Aislamiento Estricto a Nivel de Kernel:**
+   * *Process Groups (`Setpgid: true`):* Todo subproceso y sus comandos hijos se encapsulan en un grupo aislado; las señales de terminación jamás alcanzan a servicios del host (Nginx, Postgres, SSH).
+   * *Jaula de Directorios:* Confinamiento estricto bajo `GENTLE_MESH_WORKSPACES_ROOT` con validación canónica de symlinks.
+   * *Scrubbing de Entorno:* Lista blanca de variables de entorno hacia el subagente para no filtrar secretos del servidor anfitrión.
+
+---
+
+## 8. Trade-offs y Limitaciones Conocidas (Decisiones v1 vs v2)
+
+Durante la conceptualización inicial del Punto 1 (Workspace y Transporte de Código), se identificaron cuatro limitaciones ("pegas") deliberadamente asumidas para la PoC v1:
+
+1. **Triangulación y Dependencia de Git Remoto (`origin`):**
+   * *Diagnóstico:* La laptop y el servidor remoto se sincronizan a través de GitHub/GitLab.
+   * *Impacto:* El servidor remoto requiere credenciales con permisos de push, y el flujo no opera 100% offline o en LAN pura sin salida a internet.
+   * *Evolución v2:* Sincronización punto a punto mediante streaming directo del delta (`git diff` + tarball de archivos untracked vía payload HTTP).
+
+2. **Riesgo de "Stale Code" (Código Desfasado):**
+   * *Diagnóstico:* Si el desarrollador olvida hacer `git push` en su máquina local antes de delegar, el agente remoto ejecuta sobre commits antiguos.
+   * *Mitigación v1:* Validación en el cliente CLI local que alerte si el working tree local tiene commits o cambios sin pushear.
+
+3. **Resiliencia de Worktrees y Recuperación Post-Crash:**
+   * *Diagnóstico:* Tareas abortadas por caídas súbitas del demonio pueden dejar worktrees huérfanos en `/tmp/gentle-mesh/worktrees/`.
+   * *Mitigación v1:* Rutina obligatoria de saneamiento en el arranque del servidor (`git worktree prune`).
+
+4. **Conflictos de Merge Asincrónicos:**
+   * *Diagnóstico:* Si el desarrollador continúa editando localmente mientras el subagente remoto trabaja, la integración de la rama devuelta puede generar conflictos.
+   * *Mitigación v1:* El evento `completion` devuelve el hash y lista de archivos modificados para inspección previa a la integración.
+
+---
+
+## 9. Hoja de Ruta de la Prueba de Concepto (PoC)
 
 * [ ] **Fase 1:** Especificación de tipos en Go (`pkg/protocol/`).
 * [ ] **Fase 2:** Servidor HTTP con simulación de runner (`pkg/server/`).
