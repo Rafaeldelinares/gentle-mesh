@@ -8,7 +8,7 @@ Implementar la primera versión ejecutable y testeada de Gentle Mesh en Go, vali
 ## Tasks
 
 - [x] Task 1: Especificar tipos canónicos y eventos SSE en `pkg/protocol` bajo TDD estricto. (Commit: `6fcab26`, 18 tests passing with race detector)
-- [ ] Task 2: Implementar el registro de nodos de malla (`pkg/server/registry`) con `/join`, `/heartbeat` y catálogo en memoria.
+- [x] Task 2: Implementar el registro de nodos de malla (`pkg/server/registry`) con `/join`, `/heartbeat`, catálogo en memoria, branch locking exclusivo e idempotencia. (Commit: `9b56521`, 36 tests passing with race detector)
 - [ ] Task 3: Implementar el gestor de ciclo de vida de tareas y logger JSONL append-only (`pkg/server/task`).
 - [ ] Task 4: Diseñar la abstracción `Runner` y el `SimulatedRunner` con generación realista de eventos SSE (`pkg/server/runner`).
 - [ ] Task 5: Construir el servidor HTTP y manejador de streaming SSE con soporte para `Last-Event-ID`, `/reply` y cancelación (`pkg/server/http`).
