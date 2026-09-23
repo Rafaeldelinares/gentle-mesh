@@ -374,7 +374,7 @@
               </svg>
               Markdown
             </span>
-            <span class="meta-item" id="char-count">2,850 caracteres</span>
+            <span class="meta-item" id="char-count">1,879 caracteres</span>
           </div>
           <button id="copy-btn" class="btn btn-copy" onclick="copyProposal()" aria-label="Copiar propuesta al portapapeles">
             <svg id="copy-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -386,33 +386,32 @@
         </div>
       </div>
       <div class="card-body">
-        <pre id="proposal-content" class="proposal-pre">**[Propuesta / RFC 001] Gentle Mesh: Transporte distribuido y coordinación territorial para subagentes en Gentle AI y Pi**
+        <pre id="proposal-content" class="proposal-pre">**[Propuesta / RFC 001] Gentle Mesh: Transporte distribuido y coordinación territorial para subagentes en Gentle AI**
 
-Buenas tardes. Quisiera presentar a Alan y a la comunidad una propuesta técnica y PoC funcional: **Gentle Mesh**.
+Buenas tardes a todos y a Alan.
 
-Tras más de 30 años en desarrollo (tengo 58), es la primera vez en mucho tiempo que un paradigma me devuelve el entusiasmo de ver ideas complejas plasmadas en sistemas con esta agilidad. El ecosistema en Pi y Gentle AI tiene un potencial enorme.
+Vi la demo reciente del MVP de **Gentle Desktop**: un paso brillante para acercar el ecosistema a una experiencia más visual.
+
+Con 58 años y más de tres décadas en software, es la primera vez en mucho tiempo que un paradigma me despierta tanto entusiasmo técnico. Con ese espíritu vengo prototipando una pieza complementaria: **Gentle Mesh**.
 
 ### La inquietud técnica
-Al delegar a subagentes de forma intensiva aparecen dos límites:
-1. **Sobrecarga local:** Builds pesados o suites de tests saturan la máquina del dev.
-2. **Coordinación multi-agente ("crear sistemas entre varios"):** Chequear solo CPU/RAM es insuficiente. Si dos agentes tocan concurrentemente el mismo repo, rama o superficies de código (`edit_surfaces`), el resultado son desastres de merge en Git y despilfarro de tokens.
+Al sumar interfaces ricas o subagentes intensivos en Pi:
+1. **Sobrecarga cliente:** Compilaciones y suites de test pesadas saturan la laptop local. La UI necesita delegar a servidores remotos (VPS, homelabs o rigs con GPU).
+2. **"Crear sistemas entre varios":** Si varios agentes colaboran en paralelo, el conflicto de integración es inevitable si tocan la misma rama o `edit_surfaces` concurrentes.
 
-### La propuesta: Gentle Mesh
-Un servicio en **Go (100% biblioteca estándar, sin frameworks externos, binario estático de ~15MB)**:
-- **Transporte HTTP + SSE:** Streaming en tiempo real con reconexión (`Last-Event-ID`).
-- **Enrutamiento por tags:** Delegar tareas a servidores remotos/GPU y livianas al nodo local.
-- **Protocolo de Territorio:** Detección preventiva de colisiones de ramas y solapamiento de código (`edit_surfaces`) antes de admitir tareas.
-- **Radar de Actividad:** Monitoreo en vivo de qué toca cada agente (`domain`, `blast_radius`, `phase`).
+### La solución: Gentle Mesh (Go puro, estático ~15MB)
+- **Transporte HTTP + SSE:** Streaming determinista de tokens y eventos en tiempo real con reanudación `Last-Event-ID`. Al ser API HTTP estándar, le habla tanto el CLI de Pi como Gentle Desktop en Electron, o un cliente móvil en tablet a futuro.
+- **Protocolo Territorial y Radar (`/v1/mesh/radar`):** Bloqueo preventivo de ramas y solapamiento de archivos antes de admitir tareas concurrentes.
+- **Enrutamiento por tags:** Derivación a nodos según capacidades (`gpu`, `heavy`, `fast`, `testing`).
 
-### Estado del trabajo (PoC funcional)
-- Tests pasando con detector de carreras (`go test -race ./...`).
-- Ejecución distribuida validada en cluster de 6 nodos en Docker.
-- Especificación formal en RFC 001.
+Validado bajo `go test -race` (140+ tests) y clúster de 6 nodos en Docker.
 
-🔗 **Repo:** https://github.com/Rafaeldelinares/gentle-mesh
-📄 **RFC:** `docs/rfcs/001-remote-agent-transport.md`
+Dejo la demo interactiva y la especificación:
+🌐 **Demo en vivo (GitHub Pages):** https://rafaeldelinares.github.io/gentle-mesh/
+📁 **Repo y RFC 001:** https://github.com/Rafaeldelinares/gentle-mesh
 
-Comparto esto con humildad para aportar al debate arquitectónico. Me encantaría conocer la mirada y críticas de Alan y la comunidad. ¡Muchas gracias!</pre>
+Comparto esto con sincera humildad, con ganas de aportar y conocer la visión y feedback de Alan y la comunidad. ¡Muchas gracias!
+</pre>
       </div>
     </div>
 
@@ -457,10 +456,10 @@ Comparto esto con humildad para aportar al debate arquitectónico. Me encantarí
     document.addEventListener('DOMContentLoaded', () => {
       const el = document.getElementById('proposal-content');
       if (el) {
-        const chars = el.textContent.length;
+        const chars = Array.from(el.textContent).length;
         const charCountEl = document.getElementById('char-count');
         if (charCountEl) {
-          charCountEl.textContent = `${chars.toLocaleString()} caracteres`;
+          charCountEl.textContent = `${chars.toLocaleString('en-US')} caracteres`;
         }
       }
     });

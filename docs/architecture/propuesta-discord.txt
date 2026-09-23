@@ -1,34 +1,25 @@
-[Propuesta / RFC 001] Gentle Mesh: Transporte distribuido y coordinación territorial para subagentes en Gentle AI y Pi
+**[Propuesta / RFC 001] Gentle Mesh: Transporte distribuido y coordinación territorial para subagentes en Gentle AI**
 
-Buenas tardes a todos.
+Buenas tardes a todos y a Alan.
 
-Me gustaría someter a consideración de la comunidad y de Alan una propuesta técnica y una prueba de concepto en la que he venido trabajando intensamente: Gentle Mesh.
+Vi la demo reciente del MVP de **Gentle Desktop**: un paso brillante para acercar el ecosistema a una experiencia más visual.
 
-Tras más de tres décadas en el desarrollo de software (tengo 58 años), es la primera vez en mucho tiempo que un paradigma me despierta nuevamente la profunda satisfacción de ver ideas complejas plasmadas en sistemas reales con esta agilidad. El ecosistema que Alan y la comunidad están forjando alrededor de Pi y Gentle AI tiene un potencial arquitectónico extraordinario.
+Con 58 años y más de tres décadas en software, es la primera vez en mucho tiempo que un paradigma me despierta tanto entusiasmo técnico. Con ese espíritu vengo prototipando una pieza complementaria: **Gentle Mesh**.
 
 ### La inquietud técnica
-Al utilizar subagentes de forma más intensiva, observo dos desafíos naturales para la escalabilidad:
-1. La sobrecarga de la máquina local: Tareas pesadas de compilación, ejecución de tests extensos o investigación paralela saturan la estación de trabajo principal del desarrollador.
-2. La coordinación multi-agente ("crear sistemas entre varios"): Si distribuimos agentes en distintas máquinas, los criterios tradicionales de admisión (slots de CPU o memoria disponible) son insuficientes. Si dos agentes autónomos intentan trabajar concurrentemente sobre el mismo repositorio, la misma rama o las mismas zonas de código (edit_surfaces), el resultado inevitable son conflictos de integración destructivos y un consumo estéril de tokens.
+Al sumar interfaces ricas o subagentes intensivos en Pi:
+1. **Sobrecarga cliente:** Compilaciones y suites de test pesadas saturan la laptop local. La UI necesita delegar a servidores remotos (VPS, homelabs o rigs con GPU).
+2. **"Crear sistemas entre varios":** Si varios agentes colaboran en paralelo, el conflicto de integración es inevitable si tocan la misma rama o `edit_surfaces` concurrentes.
 
-### La propuesta: Gentle Mesh
-He diseñado e implementado un servicio de coordinación y transporte escrito exclusivamente en Go (utilizando únicamente la biblioteca estándar, sin frameworks externos y con compilación estática de ~15MB):
+### La solución: Gentle Mesh (Go puro, estático ~15MB)
+- **Transporte HTTP + SSE:** Streaming determinista de tokens y eventos en tiempo real con reanudación `Last-Event-ID`. Al ser API HTTP estándar, le habla tanto el CLI de Pi como Gentle Desktop en Electron, o un cliente móvil en tablet a futuro.
+- **Protocolo Territorial y Radar (`/v1/mesh/radar`):** Bloqueo preventivo de ramas y solapamiento de archivos antes de admitir tareas concurrentes.
+- **Enrutamiento por tags:** Derivación a nodos según capacidades (`gpu`, `heavy`, `fast`, `testing`).
 
-- Transporte HTTP + SSE: Streaming determinista de eventos y tokens en tiempo real, con capacidad de reanudación transparente mediante Last-Event-ID.
-- Enrutamiento por capacidades: Delegación de tareas a nodos específicos según etiquetas (ej. servidores con GPU para análisis pesado, máquinas secundarias para suites de prueba, o ejecución local).
-- Protocolo de Territorio y Conciencia Situacional: Validación preventiva antes de admitir cualquier tarea. Si otra máquina o agente ya tiene bloqueada la rama o existe solapamiento en las superficies de edición (edit_surfaces), el sistema detecta la colisión a tiempo.
-- Radar de Actividad: Monitoreo en tiempo real del estado de cada agente en la malla (domain, blast_radius, phase, current_action).
+Validado bajo `go test -race` (140+ tests) y clúster de 6 nodos en Docker.
 
-### Estado del trabajo
-No se trata de una propuesta teórica, sino de una implementación funcional:
-- Toda la suite de pruebas unitarias y de integración en Go supera el detector de condiciones de carrera (go test -race ./...).
-- Se validó la ejecución distribuida sobre una topología de 6 nodos en Docker.
-- Se documentó formalmente el diseño técnico en el RFC 001.
+Dejo la demo interactiva y la especificación:
+🌐 **Demo en vivo (GitHub Pages):** https://rafaeldelinares.github.io/gentle-mesh/
+📁 **Repo y RFC 001:** https://github.com/Rafaeldelinares/gentle-mesh
 
-El repositorio es de acceso público:
-🔗 Repositorio: https://github.com/Rafaeldelinares/gentle-mesh
-📄 Especificación técnica: docs/rfcs/001-remote-agent-transport.md
-
-Comparto esto con sincera humildad, con el único afán de aportar a la discusión arquitectónica del ecosistema. Me interesaría mucho conocer las observaciones, críticas técnicas y orientación de Alan y de los colegas de la comunidad sobre la viabilidad y dirección de este enfoque.
-
-Muchas gracias por el espacio y por la lectura.
+Comparto esto con sincera humildad, con ganas de aportar y conocer la visión y feedback de Alan y la comunidad. ¡Muchas gracias!
