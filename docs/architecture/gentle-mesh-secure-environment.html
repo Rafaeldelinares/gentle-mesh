@@ -10256,7 +10256,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
       var overviewPlayback = true;
       function followStoryStep(step, options) {
         if (overviewPlayback) {
-          if (Archify.view && typeof Archify.view.reset === function) {
+          if (Archify.view && typeof Archify.view.reset === "function") {
             Archify.view.reset({ automatic: true });
           }
           return null;
