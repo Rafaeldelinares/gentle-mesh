@@ -1,0 +1,27 @@
+# Binarios compilados
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Artefactos de Test y Cobertura
+*.out
+*.test
+*.prof
+coverage.txt
+.coverage
+
+# Herramientas locales y Pi
+.atl/
+*.secret
+.env
+.env.local
+
+# IDEs y Editores
+.idea/
+.vscode/
+*.swp
+*~
