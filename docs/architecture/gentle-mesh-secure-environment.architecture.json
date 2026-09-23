@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Gentle Mesh — Topología y Entorno Seguro de Ejecución",
+    "output": "docs/architecture/gentle-mesh-secure-environment.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "full-mesh",
+        "label": "Topología completa de la malla",
+        "focus": ["client", "auth_gate", "coordinator", "territory_gate", "branch_lock", "dispatcher", "worker_alpha", "worker_delta", "worker_beta", "worker_gamma", "worker_epsilon", "task_store"],
+        "note": "Visión global del cliente, coordinador y los 5 workers federados dentro de la red aislada."
+      },
+      {
+        "id": "security-perimeter",
+        "label": "Perímetro de seguridad y admisión",
+        "focus": ["client", "auth_gate", "coordinator", "territory_gate", "branch_lock"],
+        "note": "Compuertas de hardening HTTP, autenticación en tiempo constante y prevención de colisiones territoriales."
+      },
+      {
+        "id": "dispatch-execution",
+        "label": "Despacho federado y persistencia",
+        "focus": ["coordinator", "dispatcher", "worker_alpha", "worker_delta", "worker_beta", "worker_gamma", "worker_epsilon", "task_store"],
+        "note": "Ruteo dinámico por tags a nodos especializados con persistencia JSONL crash-safe."
+      }
+    ]
+  },
+  "components": [
+    { "id": "client", "type": "external", "label": "Gentle Client CLI", "sublabel": "gentle-mesh run / Pi SDK", "tag": "POSIX / Subagent", "pos": [40, 270], "size": [130, 60] },
+    { "id": "auth_gate", "type": "security", "label": "Security Shield", "sublabel": "timing-safe + 1MB limit", "tag": "crypto/subtle", "pos": [260, 270], "size": [140, 60] },
+    { "id": "coordinator", "type": "backend", "label": "Coordinator Daemon", "sublabel": "HTTP REST + SSE :8080", "tag": "Pure Go stdlib", "brand": "go", "pos": [480, 270], "size": [150, 60] },
+    { "id": "territory_gate", "type": "security", "label": "Territory Admission", "sublabel": "FindConflict edit surfaces", "tag": "HTTP 409 Conflict", "pos": [480, 110], "size": [150, 60] },
+    { "id": "branch_lock", "type": "database", "label": "Branch Lock Manager", "sublabel": "Normalized git branch locks", "tag": "Race-free Git", "pos": [480, 430], "size": [150, 60] },
+    { "id": "dispatcher", "type": "messagebus", "label": "Mesh Dispatcher", "sublabel": "MeshRunner + SelectNode", "tag": "Tag & Load routing", "pos": [710, 270], "size": [150, 60] },
+    { "id": "task_store", "type": "database", "label": "Task Log Store", "sublabel": "Selective fsync + JSONL", "tag": "Crash-Safe I/O", "pos": [710, 430], "size": [150, 60] },
+    { "id": "worker_alpha", "type": "backend", "label": "Worker Alpha", "sublabel": "agent: worker (go,fast)", "tag": "concurrency: 2", "brand": "docker", "pos": [940, 60], "size": [160, 55] },
+    { "id": "worker_delta", "type": "backend", "label": "Worker Delta", "sublabel": "agent: worker (gpu,ml)", "tag": "concurrency: 1", "brand": "docker", "pos": [940, 145], "size": [160, 55] },
+    { "id": "worker_beta", "type": "backend", "label": "Worker Beta", "sublabel": "agent: worker (heavy,docker)", "tag": "concurrency: 4", "brand": "docker", "pos": [940, 230], "size": [160, 55] },
+    { "id": "worker_gamma", "type": "backend", "label": "Worker Gamma", "sublabel": "agent: explore (research)", "tag": "concurrency: 2", "brand": "docker", "pos": [940, 315], "size": [160, 55] },
+    { "id": "worker_epsilon", "type": "backend", "label": "Worker Epsilon", "sublabel": "agent: verify (ci,testing)", "tag": "concurrency: 2", "brand": "docker", "pos": [940, 400], "size": [160, 55] }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Docker Isolated Network: gentle-mesh-net (Bridge)",
+      "wraps": ["auth_gate", "coordinator", "territory_gate", "branch_lock", "dispatcher", "task_store", "worker_alpha", "worker_delta", "worker_beta", "worker_gamma", "worker_epsilon"]
+    },
+    {
+      "kind": "security-group",
+      "label": "Coordinator Process & Security Enclave",
+      "wraps": ["auth_gate", "coordinator", "territory_gate", "branch_lock", "dispatcher", "task_store"]
+    }
+  ],
+  "connections": [
+    { "id": "c-cli-auth", "from": "client", "to": "auth_gate", "label": "POST /v1/tasks", "variant": "emphasis", "labelDy": -22 },
+    { "id": "c-auth-coord", "from": "auth_gate", "to": "coordinator", "variant": "security" },
+    { "id": "c-coord-territory", "from": "coordinator", "to": "territory_gate", "label": "admission", "fromSide": "top", "toSide": "bottom" },
+    { "id": "c-coord-branch", "from": "coordinator", "to": "branch_lock", "fromSide": "bottom", "toSide": "top" },
+    { "id": "c-coord-disp", "from": "coordinator", "to": "dispatcher", "variant": "emphasis" },
+    { "id": "c-coord-store", "from": "coordinator", "to": "task_store", "label": "log event", "fromSide": "bottom", "toSide": "left" },
+    { "id": "c-disp-alpha", "from": "dispatcher", "to": "worker_alpha", "fromSide": "top", "toSide": "left" },
+    { "id": "c-disp-delta", "from": "dispatcher", "to": "worker_delta", "fromSide": "right", "toSide": "left" },
+    { "id": "c-disp-beta", "from": "dispatcher", "to": "worker_beta", "fromSide": "right", "toSide": "left" },
+    { "id": "c-disp-gamma", "from": "dispatcher", "to": "worker_gamma", "fromSide": "right", "toSide": "left" },
+    { "id": "c-disp-epsilon", "from": "dispatcher", "to": "worker_epsilon", "fromSide": "bottom", "toSide": "left" }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Perímetro de Seguridad",
+      "items": [
+        "Auth Bearer con subtle.ConstantTimeCompare contra ataques de timing",
+        "MaxBytesReader (1MB/64KB) y defer recover() ante panics"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Control de Concurrencia",
+      "items": [
+        "Territory Admission rechaza solapamientos de EditSurfaces (HTTP 409)",
+        "BranchLockManager normaliza URLs y asegura exclusividad en git"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Malla y Resiliencia",
+      "items": [
+        "MeshRunner rutea tareas por tags y carga activa a workers remotos",
+        "JSONL con fsync selectivo y reconexión SSE por Last-Event-ID"
+      ]
+    }
+  ]
+}

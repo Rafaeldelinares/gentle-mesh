@@ -101,6 +101,28 @@ func TestFlagParsingAndValidation(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("extractPortFromEndpoint helper", func(t *testing.T) {
+		tests := []struct {
+			endpoint string
+			expected string
+		}{
+			{"http://worker-alpha:8081", ":8081"},
+			{"http://localhost:9000/", ":9000"},
+			{"worker-beta:7777", ":7777"},
+			{"http://localhost", ":8081"},
+			{"https://node.internal", ":8081"},
+			{"", ":8081"},
+			{"invalid-url:::", ":8081"},
+		}
+
+		for _, tc := range tests {
+			res := extractPortFromEndpoint(tc.endpoint)
+			if res != tc.expected {
+				t.Errorf("endpoint %q: expected %q, got %q", tc.endpoint, tc.expected, res)
+			}
+		}
+	})
 }
 
 func TestServer_StartupAndGracefulShutdown(t *testing.T) {
@@ -289,6 +311,14 @@ func TestWorker_JoinAndHeartbeatCycle(t *testing.T) {
 	}
 	if heartbeatToken != "Bearer test-secret-token" {
 		t.Errorf("expected heartbeat token Bearer test-secret-token, got: %s", heartbeatToken)
+	}
+	for i, hb := range heartbeats {
+		if hb.ActiveTasks != 0 {
+			t.Errorf("heartbeat %d: expected ActiveTasks=0, got %d", i, hb.ActiveTasks)
+		}
+	}
+	if !strings.Contains(stdout.String(), "Worker HTTP server started") {
+		t.Errorf("expected worker HTTP server start log in stdout, got: %s", stdout.String())
 	}
 }
 

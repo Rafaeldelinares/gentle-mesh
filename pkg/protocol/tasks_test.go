@@ -57,6 +57,41 @@ func TestTaskRequestJSONSerialization(t *testing.T) {
 	}
 }
 
+func TestTaskRequestTagsJSONSerialization(t *testing.T) {
+	req := protocol.TaskRequest{
+		Agent: "worker",
+		Task:  "Run GPU-accelerated model training",
+		Tags:  []string{"gpu", "fast"},
+	}
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("failed to marshal TaskRequest with Tags: %v", err)
+	}
+
+	var parsed protocol.TaskRequest
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal TaskRequest with Tags: %v", err)
+	}
+
+	if !reflect.DeepEqual(parsed.Tags, req.Tags) {
+		t.Errorf("expected Tags %v, got %v", req.Tags, parsed.Tags)
+	}
+
+	// Verify omitempty
+	reqNoTags := protocol.TaskRequest{
+		Agent: "worker",
+		Task:  "Minimal task without tags",
+	}
+	dataNoTags, err := json.Marshal(reqNoTags)
+	if err != nil {
+		t.Fatalf("failed to marshal TaskRequest without Tags: %v", err)
+	}
+	if strings.Contains(string(dataNoTags), `"tags"`) {
+		t.Errorf("expected tags to be omitted when empty, got: %s", string(dataNoTags))
+	}
+}
+
 func TestTaskRequestOmitempty(t *testing.T) {
 	req := protocol.TaskRequest{
 		Agent: "worker",

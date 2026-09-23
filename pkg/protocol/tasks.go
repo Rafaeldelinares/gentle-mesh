@@ -26,6 +26,7 @@ type TaskRequest struct {
 	EditSurfaces   []string    `json:"edit_surfaces,omitempty"`
 	Patch          string      `json:"patch,omitempty"`
 	TimeoutSeconds int         `json:"timeout_seconds,omitempty"`
+	Tags           []string    `json:"tags,omitempty"`
 }
 
 // TaskResponse represents the initial acknowledgement returned when a task is accepted.

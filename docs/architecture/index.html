@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Gentle Mesh — Arquitectura y Verificación</title>
+  <meta name="description" content="Visualizaciones interactivas de arquitectura, topología de red segura y compuertas de verificación para Gentle Mesh.">
+  <script>
+    (function () {
+      try {
+        var theme = localStorage.getItem('archify-theme');
+        if (!theme) {
+          theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (_) {}
+    })();
+  </script>
+  <style>
+    :root {
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+      --bg-color: #f8fafc;
+      --bg-subtle: #edf2f7;
+      --surface: #ffffff;
+      --surface-hover: #fcfdfe;
+      --border: #e2e8f0;
+      --border-focus: #3b82f6;
+
+      --text-main: #0f172a;
+      --text-secondary: #475569;
+      --text-muted: #64748b;
+
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --primary-rgb: 37, 99, 235;
+
+      --accent-card1: #0ea5e9;
+      --accent-card1-bg: rgba(14, 165, 233, 0.08);
+      --accent-card2: #10b981;
+      --accent-card2-bg: rgba(16, 185, 129, 0.08);
+
+      --badge-bg: #ecfdf5;
+      --badge-border: #a7f3d0;
+      --badge-text: #065f46;
+      --badge-dot: #10b981;
+
+      --tag-bg: #f1f5f9;
+      --tag-border: #e2e8f0;
+      --tag-text: #334155;
+
+      --shadow-card: 0 4px 12px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.08);
+      --shadow-card-hover: 0 16px 32px rgba(15, 23, 42, 0.09), 0 4px 8px rgba(15, 23, 42, 0.04);
+      --card-radius: 20px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg-color: #0b0f19;
+        --bg-subtle: #111827;
+        --surface: #131c2e;
+        --surface-hover: #182238;
+        --border: #1e293b;
+        --border-focus: #60a5fa;
+
+        --text-main: #f8fafc;
+        --text-secondary: #94a3b8;
+        --text-muted: #64748b;
+
+        --primary: #3b82f6;
+        --primary-hover: #60a5fa;
+        --primary-rgb: 59, 130, 246;
+
+        --accent-card1: #38bdf8;
+        --accent-card1-bg: rgba(56, 189, 248, 0.12);
+        --accent-card2: #34d399;
+        --accent-card2-bg: rgba(52, 211, 153, 0.12);
+
+        --badge-bg: rgba(16, 185, 129, 0.12);
+        --badge-border: rgba(16, 185, 129, 0.25);
+        --badge-text: #34d399;
+        --badge-dot: #10b981;
+
+        --tag-bg: #1e293b;
+        --tag-border: #334155;
+        --tag-text: #cbd5e1;
+
+        --shadow-card: 0 4px 20px rgba(0, 0, 0, 0.4);
+        --shadow-card-hover: 0 16px 36px rgba(0, 0, 0, 0.6), 0 0 20px rgba(59, 130, 246, 0.15);
+      }
+    }
+
+    :root[data-theme="dark"] {
+      --bg-color: #0b0f19;
+      --bg-subtle: #111827;
+      --surface: #131c2e;
+      --surface-hover: #182238;
+      --border: #1e293b;
+      --border-focus: #60a5fa;
+
+      --text-main: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+
+      --primary: #3b82f6;
+      --primary-hover: #60a5fa;
+      --primary-rgb: 59, 130, 246;
+
+      --accent-card1: #38bdf8;
+      --accent-card1-bg: rgba(56, 189, 248, 0.12);
+      --accent-card2: #34d399;
+      --accent-card2-bg: rgba(52, 211, 153, 0.12);
+
+      --badge-bg: rgba(16, 185, 129, 0.12);
+      --badge-border: rgba(16, 185, 129, 0.25);
+      --badge-text: #34d399;
+      --badge-dot: #10b981;
+
+      --tag-bg: #1e293b;
+      --tag-border: #334155;
+      --tag-text: #cbd5e1;
+
+      --shadow-card: 0 4px 20px rgba(0, 0, 0, 0.4);
+      --shadow-card-hover: 0 16px 36px rgba(0, 0, 0, 0.6), 0 0 20px rgba(59, 130, 246, 0.15);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html, body {
+      overflow-x: hidden;
+      max-width: 100vw;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      min-height: 100vh;
+      line-height: 1.5;
+      display: flex;
+      flex-direction: column;
+      transition: background-color 0.25s ease, color 0.25s ease;
+      background-image: 
+        radial-gradient(at 15% 15%, rgba(59, 130, 246, 0.05) 0px, transparent 50%),
+        radial-gradient(at 85% 85%, rgba(16, 185, 129, 0.04) 0px, transparent 50%);
+      background-attachment: fixed;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 1.5rem 1rem 3rem;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Top navigation / controls */
+    .top-bar {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+
+    .theme-toggle-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      border-radius: 9999px;
+      padding: 0.5rem 0.85rem;
+      font-size: 0.85rem;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      cursor: pointer;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+      transition: all 0.2s ease;
+      touch-action: manipulation;
+    }
+
+    .theme-toggle-btn:hover {
+      color: var(--text-main);
+      border-color: var(--border-focus);
+      transform: translateY(-1px);
+    }
+
+    .theme-toggle-btn svg {
+      width: 16px;
+      height: 16px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    /* Header Section */
+    header {
+      margin-bottom: 2rem;
+      text-align: center;
+    }
+
+    .brand-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+      color: var(--primary);
+      margin-bottom: 0.75rem;
+    }
+
+    h1 {
+      font-size: clamp(1.65rem, 5vw, 2.5rem);
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      color: var(--text-main);
+      line-height: 1.2;
+      margin-bottom: 0.75rem;
+    }
+
+    .subtitle {
+      font-size: clamp(1rem, 2.8vw, 1.2rem);
+      color: var(--text-secondary);
+      max-width: 680px;
+      margin: 0 auto 1.5rem;
+      font-weight: 400;
+    }
+
+    /* Network connection badge */
+    .network-badge-wrapper {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 2.25rem;
+    }
+
+    .network-badge {
+      display: inline-flex;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 0.75rem;
+      background: var(--badge-bg);
+      border: 1px solid var(--badge-border);
+      color: var(--badge-text);
+      padding: 0.6rem 1.15rem;
+      border-radius: 9999px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      box-shadow: 0 2px 6px rgba(16, 185, 129, 0.08);
+      max-width: 100%;
+    }
+
+    .status-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-weight: 600;
+    }
+
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background-color: var(--badge-dot);
+      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+      animation: pulse-ring 2.2s infinite ease-out;
+    }
+
+    @keyframes pulse-ring {
+      0% {
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+      }
+      70% {
+        box-shadow: 0 0 0 7px rgba(16, 185, 129, 0);
+      }
+      100% {
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+      }
+    }
+
+    .badge-sep {
+      opacity: 0.35;
+      font-weight: 300;
+    }
+
+    .badge-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .badge-label {
+      opacity: 0.85;
+      font-size: 0.8rem;
+    }
+
+    .code-val {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      font-size: 0.84rem;
+      letter-spacing: -0.01em;
+    }
+
+    .copy-pill-btn {
+      background: none;
+      border: none;
+      color: inherit;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2px 4px;
+      margin-left: 2px;
+      border-radius: 4px;
+      opacity: 0.8;
+      transition: all 0.15s ease;
+    }
+
+    .copy-pill-btn:hover {
+      opacity: 1;
+      background: rgba(0,0,0,0.06);
+    }
+
+    .copy-pill-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    /* Cards Grid */
+    .cards-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.5rem;
+      width: 100%;
+    }
+
+    @media (min-width: 720px) {
+      .cards-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1.75rem;
+      }
+    }
+
+    /* Card Component */
+    .card {
+      position: relative;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--card-radius);
+      padding: 1.75rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      box-shadow: var(--shadow-card);
+      transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), 
+                  box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1), 
+                  border-color 0.25s ease;
+      overflow: hidden;
+    }
+
+    .card::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 4px;
+      background: var(--card-accent);
+      opacity: 0.9;
+      transition: height 0.25s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-4px);
+      box-shadow: var(--shadow-card-hover);
+      border-color: var(--border-focus);
+    }
+
+    .card:hover::before {
+      height: 6px;
+    }
+
+    .card:active {
+      transform: translateY(-1px);
+    }
+
+    .card-topology {
+      --card-accent: var(--accent-card1);
+    }
+
+    .card-verification {
+      --card-accent: var(--accent-card2);
+    }
+
+    .card-header-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1.25rem;
+      background: var(--icon-bg);
+      color: var(--card-accent);
+    }
+
+    .card-topology .card-header-icon {
+      --icon-bg: var(--accent-card1-bg);
+    }
+
+    .card-verification .card-header-icon {
+      --icon-bg: var(--accent-card2-bg);
+    }
+
+    .card-header-icon svg {
+      width: 26px;
+      height: 26px;
+      stroke-width: 2;
+    }
+
+    .card-title {
+      font-size: clamp(1.2rem, 3vw, 1.45rem);
+      font-weight: 700;
+      color: var(--text-main);
+      line-height: 1.3;
+      margin-bottom: 0.65rem;
+      letter-spacing: -0.015em;
+    }
+
+    .card-subtitle {
+      font-size: 0.95rem;
+      color: var(--text-secondary);
+      line-height: 1.5;
+      margin-bottom: 1.5rem;
+      font-weight: 400;
+    }
+
+    /* Tags */
+    .card-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+      margin-bottom: 1.75rem;
+    }
+
+    .tag {
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      font-weight: 500;
+      color: var(--tag-text);
+      background: var(--tag-bg);
+      border: 1px solid var(--tag-border);
+      padding: 0.3rem 0.65rem;
+      border-radius: 8px;
+      white-space: nowrap;
+      user-select: none;
+    }
+
+    .tag.primary-tag {
+      border-color: rgba(var(--primary-rgb), 0.3);
+      color: var(--primary);
+      background: rgba(var(--primary-rgb), 0.08);
+      font-weight: 600;
+    }
+
+    /* Action button */
+    .card-action {
+      margin-top: auto;
+      position: relative;
+    }
+
+    .card-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      min-height: 52px;
+      padding: 0.85rem 1.25rem;
+      border-radius: 12px;
+      font-size: 1rem;
+      font-weight: 600;
+      text-decoration: none;
+      color: #ffffff;
+      background: var(--primary);
+      border: none;
+      box-shadow: 0 4px 10px rgba(var(--primary-rgb), 0.25);
+      transition: all 0.2s ease;
+      touch-action: manipulation;
+      cursor: pointer;
+      gap: 0.6rem;
+    }
+
+    .card-btn svg {
+      width: 18px;
+      height: 18px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2.2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      transition: transform 0.2s ease;
+    }
+
+    .card:hover .card-btn {
+      background: var(--primary-hover);
+      box-shadow: 0 6px 14px rgba(var(--primary-rgb), 0.35);
+    }
+
+    .card:hover .card-btn svg {
+      transform: translateX(3px);
+    }
+
+    /* Stretched link for complete card tap friendliness */
+    .card-btn::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: var(--card-radius);
+      z-index: 1;
+    }
+
+    /* Footer */
+    footer {
+      margin-top: 3.5rem;
+      text-align: center;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border);
+      padding-top: 1.5rem;
+    }
+
+    .footer-links {
+      display: flex;
+      justify-content: center;
+      gap: 1.25rem;
+      margin-top: 0.5rem;
+    }
+
+    .footer-link {
+      color: var(--text-secondary);
+      text-decoration: none;
+      transition: color 0.15s ease;
+    }
+
+    .footer-link:hover {
+      color: var(--primary);
+    }
+
+    /* Copy toast notification */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(100px);
+      background: #0f172a;
+      color: #ffffff;
+      padding: 0.65rem 1.25rem;
+      border-radius: 9999px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+      z-index: 100;
+      pointer-events: none;
+      opacity: 0;
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .toast.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+
+    /* Fold phone specific adaptations (~320px - 400px folded screen) */
+    @media (max-width: 480px) {
+      .container {
+        padding: 1rem 0.75rem 2.5rem;
+      }
+      .card {
+        padding: 1.35rem 1.15rem;
+        border-radius: 16px;
+      }
+      .network-badge {
+        padding: 0.5rem 0.85rem;
+        font-size: 0.78rem;
+        gap: 0.5rem;
+      }
+      .badge-sep {
+        display: none;
+      }
+      .badge-item {
+        margin: 0.1rem 0;
+      }
+      .card-tags {
+        gap: 0.35rem;
+        margin-bottom: 1.25rem;
+      }
+      .tag {
+        font-size: 0.72rem;
+        padding: 0.25rem 0.5rem;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div class="top-bar">
+      <button type="button" class="theme-toggle-btn" id="theme-btn" aria-label="Cambiar tema">
+        <svg id="theme-icon-sun" style="display:none;" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+        <svg id="theme-icon-moon" style="display:none;" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+        <span id="theme-btn-text">Tema</span>
+      </button>
+    </div>
+
+    <header>
+      <div class="brand-eyebrow">
+        <span>Gentle AI</span>
+        <span>•</span>
+        <span>RFC Infrastructure</span>
+      </div>
+      <h1>Gentle Mesh — Arquitectura y Verificación</h1>
+      <p class="subtitle">Visualizaciones Interactivas Archify (Showcase)</p>
+
+      <div class="network-badge-wrapper">
+        <div class="network-badge">
+          <div class="status-indicator">
+            <span class="status-dot"></span>
+            <span>Malla Conectada</span>
+          </div>
+          <span class="badge-sep">|</span>
+          <div class="badge-item">
+            <span class="badge-label">Nodo:</span>
+            <span class="code-val">cachyos-x8664</span>
+          </div>
+          <span class="badge-sep">|</span>
+          <div class="badge-item">
+            <span class="badge-label">Tailscale:</span>
+            <span class="code-val" id="ip-text">100.77.192.58:8888</span>
+            <button type="button" class="copy-pill-btn" id="copy-btn" title="Copiar IP" aria-label="Copiar IP de Tailscale">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect width="14" height="14" x="8" y="8" rx="2" ry="2"/>
+                <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="cards-grid">
+      <!-- Card 1: Topología y Entorno Seguro de Ejecución -->
+      <article class="card card-topology">
+        <div>
+          <div class="card-header-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              <circle cx="12" cy="11" r="3"/>
+            </svg>
+          </div>
+          <h2 class="card-title">Topología y Entorno Seguro de Ejecución</h2>
+          <p class="card-subtitle">Aislamiento de Red Docker, Enclave de Seguridad, Territory Admission y Despacho Federado</p>
+
+          <div class="card-tags">
+            <span class="tag primary-tag">Red Aislada</span>
+            <span class="tag">Timing-Safe Auth</span>
+            <span class="tag">FindConflict</span>
+            <span class="tag">Branch Lock</span>
+            <span class="tag">5 Workers</span>
+          </div>
+        </div>
+
+        <div class="card-action">
+          <a href="gentle-mesh-secure-environment.html" class="card-btn">
+            <span>Ver Diagrama de Topología</span>
+            <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </a>
+        </div>
+      </article>
+
+      <!-- Card 2: Matriz de Pruebas y Compuertas de Seguridad -->
+      <article class="card card-verification">
+        <div>
+          <div class="card-header-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 11l3 3L22 4"/>
+              <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+            </svg>
+          </div>
+          <h2 class="card-title">Matriz de Pruebas y Compuertas de Seguridad</h2>
+          <p class="card-subtitle">Pipeline de Verificación y Cobertura de Tests (G1 a G5) bajo go test -race</p>
+
+          <div class="card-tags">
+            <span class="tag primary-tag">go test -race</span>
+            <span class="tag">G1 Auth</span>
+            <span class="tag">G2 Territory</span>
+            <span class="tag">G3 BranchLock</span>
+            <span class="tag">G4 PanicShield</span>
+            <span class="tag">G5 SSE</span>
+          </div>
+        </div>
+
+        <div class="card-action">
+          <a href="gentle-mesh-test-verification-gates.html" class="card-btn">
+            <span>Explorar Matriz de Compuertas</span>
+            <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </a>
+        </div>
+      </article>
+    </main>
+
+    <footer>
+      <p>Gentle Mesh · RFC para la comunidad de Gentleman Programming</p>
+      <div class="footer-links">
+        <a href="gentle-mesh-secure-environment.html" class="footer-link">Topología</a>
+        <span>·</span>
+        <a href="gentle-mesh-test-verification-gates.html" class="footer-link">Compuertas</a>
+      </div>
+    </footer>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+    <span>IP de Tailscale copiada</span>
+  </div>
+
+  <script>
+    (function () {
+      var themeBtn = document.getElementById('theme-btn');
+      var sunIcon = document.getElementById('theme-icon-sun');
+      var moonIcon = document.getElementById('theme-icon-moon');
+      var themeText = document.getElementById('theme-btn-text');
+
+      function updateThemeUI(theme) {
+        if (theme === 'dark') {
+          sunIcon.style.display = 'inline-block';
+          moonIcon.style.display = 'none';
+          themeText.textContent = 'Claro';
+        } else {
+          sunIcon.style.display = 'none';
+          moonIcon.style.display = 'inline-block';
+          themeText.textContent = 'Oscuro';
+        }
+      }
+
+      var currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+      updateThemeUI(currentTheme);
+
+      themeBtn.addEventListener('click', function () {
+        var active = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', active);
+        try {
+          localStorage.setItem('archify-theme', active);
+        } catch (_) {}
+        updateThemeUI(active);
+      });
+
+      // Copy IP feature
+      var copyBtn = document.getElementById('copy-btn');
+      var toast = document.getElementById('toast');
+      var toastTimer = null;
+
+      copyBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var ip = document.getElementById('ip-text').textContent.trim();
+        navigator.clipboard.writeText(ip).then(function () {
+          toast.classList.add('show');
+          clearTimeout(toastTimer);
+          toastTimer = setTimeout(function () {
+            toast.classList.remove('show');
+          }, 2200);
+        }).catch(function () {
+          // Fallback
+          prompt('Copiar IP:', ip);
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

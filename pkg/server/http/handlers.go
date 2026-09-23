@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/gentleman-programming/gentle-mesh/pkg/server/federation"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/task"
@@ -23,6 +24,12 @@ func (s *Server) registerRoutes(mux *stdhttp.ServeMux) {
 	mux.HandleFunc("POST /v1/mesh/heartbeat", s.handleMeshHeartbeat)
 	mux.HandleFunc("GET /v1/mesh/nodes", s.handleMeshNodes)
 	mux.HandleFunc("GET /v1/mesh/radar", s.handleMeshRadar)
+	mux.HandleFunc("POST /v1/mesh/peers/register", s.handleMeshPeerRegister)
+	mux.HandleFunc("POST /v1/mesh/peers", s.handleMeshPeerRegister)
+	mux.HandleFunc("GET /v1/mesh/peers", s.handleMeshPeersList)
+	mux.HandleFunc("DELETE /v1/mesh/peers/{id}", s.handleMeshPeerDelete)
+	mux.HandleFunc("POST /v1/mesh/peers/{id}/sync", s.handleMeshPeerSync)
+	mux.HandleFunc("GET /v1/mesh/territory", s.handleMeshTerritory)
 	mux.HandleFunc("POST /v1/tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /v1/tasks/{id}", s.handleGetTask)
 	mux.HandleFunc("GET /v1/tasks/{id}/events", s.handleTaskEvents)
@@ -105,6 +112,62 @@ func (s *Server) handleMeshRadar(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	writeJSON(w, stdhttp.StatusOK, report)
 }
 
+func (s *Server) handleMeshPeerRegister(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, 64<<10)
+	var req protocol.PeerRegisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request payload: %v", err)})
+		return
+	}
+
+	peerInfo, err := s.territoryManager.RegisterPeer(req)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, stdhttp.StatusOK, peerInfo)
+}
+
+func (s *Server) handleMeshPeersList(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	peers := s.territoryManager.ListPeers()
+	if peers == nil {
+		peers = []protocol.PeerInfo{}
+	}
+	writeJSON(w, stdhttp.StatusOK, map[string]any{"peers": peers})
+}
+
+func (s *Server) handleMeshPeerDelete(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	id := r.PathValue("id")
+	if err := s.territoryManager.DeregisterPeer(id); err != nil {
+		if errors.Is(err, federation.ErrPeerNotFound) {
+			writeJSON(w, stdhttp.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, stdhttp.StatusOK, map[string]string{"status": "deregistered"})
+}
+
+func (s *Server) handleMeshPeerSync(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	id := r.PathValue("id")
+	manifest, err := s.territoryManager.SyncPeer(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, federation.ErrPeerNotFound) {
+			writeJSON(w, stdhttp.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, stdhttp.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, stdhttp.StatusOK, manifest)
+}
+
+func (s *Server) handleMeshTerritory(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	writeJSON(w, stdhttp.StatusOK, s.territoryManager.LocalManifest())
+}
+
 func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	r.Body = stdhttp.MaxBytesReader(w, r.Body, 1<<20)
 	var req protocol.TaskRequest
@@ -142,9 +205,7 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 			BlastRadius:  req.BlastRadius,
 			TaskSummary:  req.Task,
 		}
-		active := s.taskManager.ActiveTerritories()
-		manifest := protocol.TerritoryManifest{Territories: active}
-		if conflict := manifest.FindConflict(targetTerritory); conflict != nil {
+		if conflict := s.territoryManager.FindConflict(targetTerritory); conflict != nil {
 			errStr := conflict.Message
 			if conflict.ConflictType == protocol.ConflictBranchLocked && !strings.Contains(errStr, "branch is locked") {
 				errStr = "branch is locked by another task: " + errStr

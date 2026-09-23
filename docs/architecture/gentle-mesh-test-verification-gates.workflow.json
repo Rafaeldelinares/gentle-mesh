@@ -1,0 +1,87 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Gentle Mesh — Matriz de Pruebas y Compuertas de Seguridad",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "full-test-pipeline",
+        "label": "Pipeline completo de validación",
+        "focus": ["test_runner", "gate_auth", "gate_territory", "gate_branch", "gate_dispatch", "gate_stream", "verified"],
+        "note": "Traza completa de la tarea pasando por cada compuerta de seguridad y sus tests unitarios asociados."
+      },
+      {
+        "id": "admission-tests",
+        "label": "Pruebas de admisión y colisiones",
+        "focus": ["test_runner", "gate_auth", "gate_territory", "gate_branch", "err_collision"],
+        "note": "Verificación de ataques DoS, rechazo de solapamiento de superficies y bloqueo de ramas concurrentes."
+      },
+      {
+        "id": "runtime-tests",
+        "label": "Pruebas de ejecución y streaming",
+        "focus": ["gate_dispatch", "gate_stream", "verified", "err_panic"],
+        "note": "Aislamiento de pánico en runners, reconexión de eventos SSE y consistencia crash-safe en disco."
+      }
+    ],
+    "output": "docs/architecture/gentle-mesh-test-verification-gates.html"
+  },
+  "lanes": [
+    { "id": "test_suite", "label": "Go Test Runner (go test -v -race)" },
+    { "id": "admission_layer", "label": "Compuertas de Admisión y Seguridad", "variant": "exception" },
+    { "id": "execution_layer", "label": "Compuertas de Ejecución y Malla" },
+    { "id": "persistence_layer", "label": "Compuertas de Persistencia y SSE" }
+  ],
+  "phases": [
+    { "id": "phase_admission", "label": "Fase 1: Admisión Segura", "fromCol": 0, "toCol": 2, "variant": "security" },
+    { "id": "phase_dispatch", "label": "Fase 2: Despacho Federado", "fromCol": 3, "toCol": 4, "variant": "emphasis" },
+    { "id": "phase_delivery", "label": "Fase 3: Persistencia y Cierre", "fromCol": 5, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "grp_admission", "label": "Compuertas de Perímetro", "lane": "admission_layer", "fromCol": 1, "toCol": 2, "variant": "security" },
+    { "id": "grp_execution", "label": "Compuertas de Ejecución", "lane": "execution_layer", "fromCol": 3, "toCol": 4, "variant": "emphasis" },
+    { "id": "grp_persistence", "label": "Compuertas de Eventos", "lane": "persistence_layer", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["test_runner", "gate_auth", "gate_territory", "gate_branch", "gate_dispatch", "gate_stream", "verified"],
+  "nodes": [
+    { "id": "test_runner", "lane": "test_suite", "col": 0, "type": "external", "label": "go test -race", "sublabel": "Suite unit & int", "tag": "100% Pass", "width": 132 },
+    { "id": "gate_auth", "lane": "admission_layer", "col": 1, "type": "security", "label": "G1: Auth Guard", "sublabel": "Bearer + MaxBytes", "tag": "AuthBearer", "width": 132 },
+    { "id": "gate_territory", "lane": "admission_layer", "col": 2, "type": "security", "label": "G2: Territory", "sublabel": "FindConflict", "tag": "Collision", "width": 132 },
+    { "id": "err_collision", "lane": "admission_layer", "col": 3, "type": "security", "label": "HTTP 409", "sublabel": "Rechazo colisión", "tag": "Conflict", "width": 132 },
+    { "id": "gate_branch", "lane": "execution_layer", "col": 2, "type": "database", "label": "G3: Branch Lock", "sublabel": "Git normalizado", "tag": "BranchLock", "width": 132 },
+    { "id": "gate_dispatch", "lane": "execution_layer", "col": 3, "type": "messagebus", "label": "G4: Dispatcher", "sublabel": "SelectNode", "tag": "MeshRunner", "width": 132 },
+    { "id": "err_panic", "lane": "execution_layer", "col": 4, "type": "security", "label": "Panic Recovery", "sublabel": "defer recover()", "tag": "Recovery", "width": 132 },
+    { "id": "gate_stream", "lane": "persistence_layer", "col": 4, "type": "backend", "label": "G5: SSE Stream", "sublabel": "Heartbeat + ID", "tag": "LastEventID", "width": 132 },
+    { "id": "verified", "lane": "persistence_layer", "col": 5, "type": "frontend", "label": "Verified Exit", "sublabel": "fsync + Close", "tag": "Safe Close", "width": 132 }
+  ],
+  "edges": [
+    { "id": "e_start", "from": "test_runner", "to": "gate_auth", "label": "ejecutar test", "variant": "emphasis" },
+    { "id": "e_auth_ok", "from": "gate_auth", "to": "gate_territory", "label": "auth válida", "variant": "security" },
+    { "id": "e_territory_conflict", "from": "gate_territory", "to": "err_collision", "label": "colisión", "variant": "security", "role": "error" },
+    { "id": "e_territory_ok", "from": "gate_territory", "to": "gate_branch", "label": "sin colisión", "variant": "emphasis" },
+    { "id": "e_branch_ok", "from": "gate_branch", "to": "gate_dispatch", "label": "rama lockeada", "variant": "emphasis" },
+    { "id": "e_dispatch_panic", "from": "gate_dispatch", "to": "err_panic", "label": "runner crash", "variant": "security", "role": "error" },
+    { "id": "e_dispatch_ok", "from": "gate_dispatch", "to": "gate_stream", "label": "worker activo", "variant": "emphasis" },
+    { "id": "e_stream_ok", "from": "gate_stream", "to": "verified", "label": "cierre seguro", "variant": "emphasis" }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Admisión y Seguridad",
+      "items": [
+        "G1: AuthBearer con timing-safe y límites MaxBytes",
+        "G2: TerritoryCollision y rechazo HTTP 409 por solapamiento"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Ejecución y Resiliencia",
+      "items": [
+        "G3: BranchLockManager con normalización de repositorio",
+        "G4: MeshRunner por tags y captura de panics en runners",
+        "G5: SSE con Last-Event-ID y cierre fsync crash-safe"
+      ]
+    }
+  ]
+}

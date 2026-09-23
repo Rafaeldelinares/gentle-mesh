@@ -1304,3 +1304,333 @@ func TestServer_SSEHeartbeat(t *testing.T) {
 		t.Fatal("timed out waiting for SSE heartbeat ping comment")
 	}
 }
+
+func TestServer_PeeringEndpoints(t *testing.T) {
+	srv, ts := setupTestServer(t, func(cfg *meshhttp.ServerConfig) {
+		cfg.PeerID = "local-coordinator"
+		cfg.ClusterName = "local-cluster"
+	})
+
+	if srv.TerritoryManager() == nil {
+		t.Fatal("expected TerritoryManager to be initialized, got nil")
+	}
+
+	// 1. Get initial local manifest via GET /v1/mesh/territory
+	resp, err := ts.Client().Get(ts.URL + "/v1/mesh/territory")
+	if err != nil {
+		t.Fatalf("GET /v1/mesh/territory failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var initManifest protocol.TerritoryManifest
+	if err := json.NewDecoder(resp.Body).Decode(&initManifest); err != nil {
+		t.Fatalf("failed decoding territory manifest: %v", err)
+	}
+	if initManifest.PeerID != "local-coordinator" {
+		t.Errorf("expected peer ID local-coordinator, got %q", initManifest.PeerID)
+	}
+	if initManifest.ClusterName != "local-cluster" {
+		t.Errorf("expected cluster name local-cluster, got %q", initManifest.ClusterName)
+	}
+	if len(initManifest.Territories) != 0 {
+		t.Errorf("expected 0 initial territories, got %d", len(initManifest.Territories))
+	}
+
+	// 2. Register peer via POST /v1/mesh/peers/register
+	regReq := protocol.PeerRegisterRequest{
+		PeerID:      "remote-peer-1",
+		ClusterName: "remote-cluster-1",
+		Endpoint:    "http://192.168.1.50:8080",
+		AuthToken:   "secret-token",
+	}
+	body, _ := json.Marshal(regReq)
+	resp, err = ts.Client().Post(ts.URL+"/v1/mesh/peers/register", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /v1/mesh/peers/register failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var peerInfo protocol.PeerInfo
+	if err := json.NewDecoder(resp.Body).Decode(&peerInfo); err != nil {
+		t.Fatalf("failed decoding peer info: %v", err)
+	}
+	if peerInfo.PeerID != "remote-peer-1" {
+		t.Errorf("expected peer ID remote-peer-1, got %q", peerInfo.PeerID)
+	}
+	if peerInfo.ClusterName != "remote-cluster-1" {
+		t.Errorf("expected cluster name remote-cluster-1, got %q", peerInfo.ClusterName)
+	}
+	if peerInfo.Endpoint != "http://192.168.1.50:8080" {
+		t.Errorf("expected endpoint http://192.168.1.50:8080, got %q", peerInfo.Endpoint)
+	}
+	if peerInfo.Status != protocol.PeerStatusActive {
+		t.Errorf("expected status active, got %q", peerInfo.Status)
+	}
+
+	// Register second peer via alias POST /v1/mesh/peers
+	regReq2 := protocol.PeerRegisterRequest{
+		PeerID:      "remote-peer-2",
+		ClusterName: "remote-cluster-2",
+		Endpoint:    "http://192.168.1.51:8080",
+	}
+	body2, _ := json.Marshal(regReq2)
+	resp2, err := ts.Client().Post(ts.URL+"/v1/mesh/peers", "application/json", bytes.NewReader(body2))
+	if err != nil {
+		t.Fatalf("POST /v1/mesh/peers failed: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200 on /v1/mesh/peers, got %d", resp2.StatusCode)
+	}
+
+	// Register with empty info returns 400
+	badReq := protocol.PeerRegisterRequest{PeerID: ""}
+	badBody, _ := json.Marshal(badReq)
+	badResp, err := ts.Client().Post(ts.URL+"/v1/mesh/peers/register", "application/json", bytes.NewReader(badBody))
+	if err != nil {
+		t.Fatalf("POST invalid peer failed: %v", err)
+	}
+	badResp.Body.Close()
+	if badResp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected status 400 for empty peer ID, got %d", badResp.StatusCode)
+	}
+
+	// Self-peering returns 400
+	selfReq := protocol.PeerRegisterRequest{
+		PeerID:   "local-coordinator",
+		Endpoint: "http://127.0.0.1:8080",
+	}
+	selfBody, _ := json.Marshal(selfReq)
+	selfResp, err := ts.Client().Post(ts.URL+"/v1/mesh/peers/register", "application/json", bytes.NewReader(selfBody))
+	if err != nil {
+		t.Fatalf("POST self peering failed: %v", err)
+	}
+	selfResp.Body.Close()
+	if selfResp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected status 400 for self-peering, got %d", selfResp.StatusCode)
+	}
+
+	// 3. List peers via GET /v1/mesh/peers
+	resp, err = ts.Client().Get(ts.URL + "/v1/mesh/peers")
+	if err != nil {
+		t.Fatalf("GET /v1/mesh/peers failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var listResp struct {
+		Peers []protocol.PeerInfo `json:"peers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+		t.Fatalf("failed decoding peers list: %v", err)
+	}
+	if len(listResp.Peers) != 2 {
+		t.Fatalf("expected 2 peers, got %d", len(listResp.Peers))
+	}
+	if listResp.Peers[0].PeerID != "remote-peer-1" || listResp.Peers[1].PeerID != "remote-peer-2" {
+		t.Errorf("unexpected peer list order: %+v", listResp.Peers)
+	}
+
+	// 4. Delete peer via DELETE /v1/mesh/peers/{id}
+	delReq, err := http.NewRequest(http.MethodDelete, ts.URL+"/v1/mesh/peers/remote-peer-2", nil)
+	if err != nil {
+		t.Fatalf("creating DELETE request failed: %v", err)
+	}
+	resp, err = ts.Client().Do(delReq)
+	if err != nil {
+		t.Fatalf("DELETE /v1/mesh/peers/remote-peer-2 failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var delResp map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&delResp); err != nil {
+		t.Fatalf("failed decoding delete response: %v", err)
+	}
+	if delResp["status"] != "deregistered" {
+		t.Errorf("expected status 'deregistered', got %q", delResp["status"])
+	}
+
+	// Verify remaining peer count
+	resp, err = ts.Client().Get(ts.URL + "/v1/mesh/peers")
+	if err != nil {
+		t.Fatalf("GET /v1/mesh/peers after delete failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+		t.Fatalf("failed decoding peers list: %v", err)
+	}
+	if len(listResp.Peers) != 1 {
+		t.Fatalf("expected 1 peer after delete, got %d", len(listResp.Peers))
+	}
+
+	// 5. Verify 404 on deleting non-existent peer
+	req404, err := http.NewRequest(http.MethodDelete, ts.URL+"/v1/mesh/peers/non-existent-peer", nil)
+	if err != nil {
+		t.Fatalf("creating DELETE request failed: %v", err)
+	}
+	resp404, err := ts.Client().Do(req404)
+	if err != nil {
+		t.Fatalf("DELETE non-existent peer failed: %v", err)
+	}
+	defer resp404.Body.Close()
+
+	if resp404.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", resp404.StatusCode)
+	}
+
+	// 6. Verify 404 on syncing non-existent peer
+	syncResp404, err := ts.Client().Post(ts.URL+"/v1/mesh/peers/non-existent-peer/sync", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST sync non-existent peer failed: %v", err)
+	}
+	defer syncResp404.Body.Close()
+
+	if syncResp404.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected status 404 on syncing non-existent peer, got %d", syncResp404.StatusCode)
+	}
+
+	// 7. Verify 502 Bad Gateway on syncing unreachable peer
+	dummy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	dummyURL := dummy.URL
+	dummy.Close() // immediately closed, causes connection refused instantly
+
+	unreachableReq := protocol.PeerRegisterRequest{
+		PeerID:   "unreachable-peer",
+		Endpoint: dummyURL,
+	}
+	unreachBody, _ := json.Marshal(unreachableReq)
+	resp, err = ts.Client().Post(ts.URL+"/v1/mesh/peers/register", "application/json", bytes.NewReader(unreachBody))
+	if err != nil {
+		t.Fatalf("POST register unreachable peer failed: %v", err)
+	}
+	resp.Body.Close()
+
+	syncResp502, err := ts.Client().Post(ts.URL+"/v1/mesh/peers/unreachable-peer/sync", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST sync unreachable peer failed: %v", err)
+	}
+	defer syncResp502.Body.Close()
+
+	if syncResp502.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected status 502 Bad Gateway on syncing unreachable peer, got %d", syncResp502.StatusCode)
+	}
+}
+
+func TestServer_FederatedTerritoryConflict(t *testing.T) {
+	_, tsA := setupTestServer(t, func(c *meshhttp.ServerConfig) {
+		c.PeerID = "coord-a"
+		c.ClusterName = "cluster-a"
+	})
+	srvB, tsB := setupTestServer(t, func(c *meshhttp.ServerConfig) {
+		c.PeerID = "coord-b"
+		c.ClusterName = "cluster-b"
+	})
+
+	// On Coord B, create an active task touching GitRepo "github.com/gentleman-programming/gentle-mesh",
+	// branch "main", EditSurfaces ["pkg/auth/*"].
+	taskB, err := srvB.TaskManager().CreateTask(protocol.TaskRequest{
+		Agent:        "worker",
+		Task:         "Implement auth subsystem",
+		GitRepo:      "github.com/gentleman-programming/gentle-mesh",
+		GitBranch:    "main",
+		EditSurfaces: []string{"pkg/auth/*"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task on Coord B: %v", err)
+	}
+
+	// On Coord A, register Coord B as peer pointing to Coord B's test server URL.
+	regPayload := protocol.PeerRegisterRequest{
+		PeerID:      "coord-b",
+		ClusterName: "cluster-b",
+		Endpoint:    tsB.URL,
+	}
+	body, _ := json.Marshal(regPayload)
+	regResp, err := tsA.Client().Post(tsA.URL+"/v1/mesh/peers/register", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("register peer on Coord A failed: %v", err)
+	}
+	defer regResp.Body.Close()
+	if regResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200 on peer register, got %d", regResp.StatusCode)
+	}
+
+	// On Coord A, call POST /v1/mesh/peers/coord-b/sync.
+	syncResp, err := tsA.Client().Post(tsA.URL+"/v1/mesh/peers/coord-b/sync", "application/json", nil)
+	if err != nil {
+		t.Fatalf("sync peer on Coord A failed: %v", err)
+	}
+	defer syncResp.Body.Close()
+	if syncResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200 on peer sync, got %d", syncResp.StatusCode)
+	}
+
+	var syncManifest protocol.TerritoryManifest
+	if err := json.NewDecoder(syncResp.Body).Decode(&syncManifest); err != nil {
+		t.Fatalf("failed decoding sync response: %v", err)
+	}
+	if syncManifest.PeerID != "coord-b" {
+		t.Errorf("expected sync manifest PeerID coord-b, got %q", syncManifest.PeerID)
+	}
+	if len(syncManifest.Territories) != 1 {
+		t.Fatalf("expected 1 active territory in Coord B sync manifest, got %d", len(syncManifest.Territories))
+	}
+
+	// On Coord A, attempt to create a task touching GitRepo "git@github.com:gentleman-programming/gentle-mesh.git",
+	// branch "feature/auth", EditSurfaces ["pkg/auth/login.go"].
+	taskReqA := protocol.TaskRequest{
+		Agent:        "worker",
+		Task:         "Add login endpoint",
+		GitRepo:      "git@github.com:gentleman-programming/gentle-mesh.git",
+		GitBranch:    "feature/auth",
+		EditSurfaces: []string{"pkg/auth/login.go"},
+	}
+	taskBodyA, _ := json.Marshal(taskReqA)
+	createResp, err := tsA.Client().Post(tsA.URL+"/v1/tasks", "application/json", bytes.NewReader(taskBodyA))
+	if err != nil {
+		t.Fatalf("POST /v1/tasks on Coord A failed: %v", err)
+	}
+	defer createResp.Body.Close()
+
+	// Verify Coord A returns HTTP 409 Conflict with conflict details!
+	if createResp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected HTTP 409 Conflict, got %d", createResp.StatusCode)
+	}
+
+	var conflictResp struct {
+		Error    string                     `json:"error"`
+		Conflict *protocol.TerritoryConflict `json:"conflict"`
+		TaskID   string                     `json:"task_id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&conflictResp); err != nil {
+		t.Fatalf("failed decoding conflict response: %v", err)
+	}
+
+	if conflictResp.Conflict == nil {
+		t.Fatal("expected conflict object in response, got nil")
+	}
+	if conflictResp.TaskID != taskB.TaskID {
+		t.Errorf("expected conflict task_id %q, got %q", taskB.TaskID, conflictResp.TaskID)
+	}
+	if conflictResp.Conflict.ConflictType != protocol.ConflictSurfaceOverlap {
+		t.Errorf("expected conflict type %q, got %q", protocol.ConflictSurfaceOverlap, conflictResp.Conflict.ConflictType)
+	}
+	if !strings.Contains(conflictResp.Error, "overlap") {
+		t.Errorf("expected error message to mention overlap, got %q", conflictResp.Error)
+	}
+}

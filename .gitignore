@@ -15,6 +15,7 @@ gentle-mesh
 *.prof
 coverage.txt
 .coverage
+*.visual-check.*
 
 # Herramientas locales y Pi
 .atl/

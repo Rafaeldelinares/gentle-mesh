@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/gentleman-programming/gentle-mesh/pkg/server/federation"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/task"
@@ -25,16 +26,20 @@ type ServerConfig struct {
 	Registry             *registry.Registry
 	TaskManager          *task.TaskManager
 	SSEHeartbeatInterval time.Duration
+	PeerID               string
+	ClusterName          string
+	TerritoryManager     *federation.TerritoryManager
 }
 
 // Server provides the HTTP REST and SSE coordinator daemon for gentle-mesh.
 type Server struct {
-	config      ServerConfig
-	httpServer  *stdhttp.Server
-	registry    *registry.Registry
-	taskManager *task.TaskManager
-	runner      runner.Runner
-	startTime   time.Time
+	config           ServerConfig
+	httpServer       *stdhttp.Server
+	registry         *registry.Registry
+	taskManager      *task.TaskManager
+	runner           runner.Runner
+	territoryManager *federation.TerritoryManager
+	startTime        time.Time
 }
 
 // NewServer initializes a new Server with defaults for omitted configuration fields.
@@ -61,16 +66,35 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		}
 		cfg.TaskManager = tm
 	}
+	if cfg.ClusterName == "" {
+		cfg.ClusterName = "gentle-mesh"
+	}
+	if cfg.PeerID == "" {
+		cfg.PeerID = cfg.ClusterName
+	}
+	if cfg.TerritoryManager == nil {
+		cfg.TerritoryManager = federation.NewTerritoryManager(federation.ManagerConfig{
+			PeerID:      cfg.PeerID,
+			ClusterName: cfg.ClusterName,
+			LocalSource: cfg.TaskManager.ActiveTerritories,
+		})
+	}
 	if cfg.Runner == nil {
-		cfg.Runner = runner.NewSimulatedRunner(runner.SimulatedOptions{})
+		localRunner := runner.NewSimulatedRunner(runner.SimulatedOptions{})
+		cfg.Runner = runner.NewMeshRunner(runner.MeshRunnerOptions{
+			Selector:       cfg.Registry,
+			FallbackRunner: localRunner,
+			Token:          cfg.BearerToken,
+		})
 	}
 
 	s := &Server{
-		config:      cfg,
-		registry:    cfg.Registry,
-		taskManager: cfg.TaskManager,
-		runner:      cfg.Runner,
-		startTime:   time.Now(),
+		config:           cfg,
+		registry:         cfg.Registry,
+		taskManager:      cfg.TaskManager,
+		runner:           cfg.Runner,
+		territoryManager: cfg.TerritoryManager,
+		startTime:        time.Now(),
 	}
 
 	s.httpServer = &stdhttp.Server{
@@ -91,6 +115,11 @@ func (s *Server) Registry() *registry.Registry {
 // TaskManager returns the attached task lifecycle and log manager.
 func (s *Server) TaskManager() *task.TaskManager {
 	return s.taskManager
+}
+
+// TerritoryManager returns the attached territory federation manager.
+func (s *Server) TerritoryManager() *federation.TerritoryManager {
+	return s.territoryManager
 }
 
 // Runner returns the configured task execution runner.

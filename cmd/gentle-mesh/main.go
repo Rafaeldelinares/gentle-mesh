@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
+	"github.com/gentleman-programming/gentle-mesh/pkg/server/worker"
 )
 
 func main() {
@@ -143,6 +145,7 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	concurrency := fs.Int("concurrency", 2, "Maximum task concurrency")
 	heartbeatInterval := fs.Duration("heartbeat-interval", 10*time.Second, "Heartbeat ping interval")
 	token := fs.String("token", "", "Optional bearer authentication token")
+	addr := fs.String("addr", "", "Listen address for worker HTTP server (default: port from endpoint or :8081)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -203,6 +206,34 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return fmt.Errorf("failed to marshal join payload: %w", err)
 	}
 
+	listenAddr := *addr
+	if listenAddr == "" {
+		listenAddr = extractPortFromEndpoint(*endpoint)
+	}
+
+	workerSrv := worker.NewServer(worker.ServerConfig{
+		Addr:        listenAddr,
+		BearerToken: *token,
+	})
+
+	if err := workerSrv.Listen(); err != nil {
+		return fmt.Errorf("failed to bind worker HTTP server on %s: %w", listenAddr, err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = workerSrv.Shutdown(shutdownCtx)
+	}()
+
+	fmt.Fprintf(stdout, "Worker HTTP server started on %s\n", workerSrv.Addr())
+
+	srvErrCh := make(chan error, 1)
+	go func() {
+		if err := workerSrv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			srvErrCh <- err
+		}
+	}()
+
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	// 1. Initial join request
@@ -237,10 +268,12 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		case <-ctx.Done():
 			fmt.Fprintf(stdout, "Worker %s shutting down...\n", id)
 			return nil
+		case err := <-srvErrCh:
+			return fmt.Errorf("worker server error: %w", err)
 		case <-ticker.C:
 			hbReq := protocol.NodeHeartbeatRequest{
 				NodeID:      id,
-				ActiveTasks: 0,
+				ActiveTasks: workerSrv.ActiveTasks(),
 				Timestamp:   time.Now().Unix(),
 			}
 			hbBytes, _ := json.Marshal(hbReq)
@@ -483,6 +516,7 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	domain := fs.String("domain", "", "Architectural domain (e.g. auth, database, ui)")
 	blastRadius := fs.String("blast-radius", "isolated-branch", "Blast radius scope (e.g. isolated-branch, read-only, shared-schema, breaking-change)")
 	surfaces := fs.String("surfaces", "", "Comma-separated edit surfaces (files or directories)")
+	tags := fs.String("tags", "", "Comma-separated required node tags (e.g. gpu, fast)")
 	timeout := fs.Int("timeout", 60, "Task timeout in seconds")
 	token := fs.String("token", "", "Optional bearer authentication token")
 
@@ -506,6 +540,7 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		Domain:         *domain,
 		BlastRadius:    protocol.BlastRadius(*blastRadius),
 		EditSurfaces:   parseCommaSeparated(*surfaces),
+		Tags:           parseCommaSeparated(*tags),
 		TimeoutSeconds: *timeout,
 	}
 
@@ -707,4 +742,25 @@ func parseCommaSeparated(s string) []string {
 		}
 	}
 	return result
+}
+
+// extractPortFromEndpoint extracts the port from a worker endpoint URL (e.g. "http://worker-alpha:8081" -> ":8081"),
+// falling back to ":8081" if absent or invalid.
+func extractPortFromEndpoint(endpoint string) string {
+	if endpoint == "" {
+		return ":8081"
+	}
+	ep := endpoint
+	if !strings.Contains(ep, "://") {
+		ep = "http://" + ep
+	}
+	u, err := url.Parse(ep)
+	if err != nil {
+		return ":8081"
+	}
+	p := u.Port()
+	if p == "" {
+		return ":8081"
+	}
+	return ":" + p
 }
