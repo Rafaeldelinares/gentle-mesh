@@ -1,0 +1,75 @@
+services:
+  coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["server", "-addr", ":8080"]
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 2s
+    networks:
+      - gentle-mesh-net
+
+  worker-alpha:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["worker", "-coordinator", "http://coordinator:8080", "-node-id", "worker-alpha", "-endpoint", "http://worker-alpha:8081", "-agents", "worker", "-tags", "go,fast", "-concurrency", "2", "-heartbeat-interval", "5s"]
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    networks:
+      - gentle-mesh-net
+
+  worker-beta:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["worker", "-coordinator", "http://coordinator:8080", "-node-id", "worker-beta", "-endpoint", "http://worker-beta:8081", "-agents", "worker", "-tags", "heavy,docker", "-concurrency", "4", "-heartbeat-interval", "5s"]
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    networks:
+      - gentle-mesh-net
+
+  worker-gamma:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["worker", "-coordinator", "http://coordinator:8080", "-node-id", "worker-gamma", "-endpoint", "http://worker-gamma:8081", "-agents", "explore", "-tags", "research", "-concurrency", "2", "-heartbeat-interval", "5s"]
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    networks:
+      - gentle-mesh-net
+
+  worker-delta:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["worker", "-coordinator", "http://coordinator:8080", "-node-id", "worker-delta", "-endpoint", "http://worker-delta:8081", "-agents", "worker", "-tags", "gpu,ml", "-concurrency", "1", "-heartbeat-interval", "5s"]
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    networks:
+      - gentle-mesh-net
+
+  worker-epsilon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["worker", "-coordinator", "http://coordinator:8080", "-node-id", "worker-epsilon", "-endpoint", "http://worker-epsilon:8081", "-agents", "verify", "-tags", "ci,testing", "-concurrency", "2", "-heartbeat-interval", "5s"]
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    networks:
+      - gentle-mesh-net
+
+networks:
+  gentle-mesh-net:
+    driver: bridge
