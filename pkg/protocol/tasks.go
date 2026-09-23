@@ -14,15 +14,18 @@ const (
 
 // TaskRequest defines the payload for creating and dispatching a new remote subagent task.
 type TaskRequest struct {
-	IdempotencyKey string `json:"idempotency_key,omitempty"`
-	Agent          string `json:"agent"`
-	Task           string `json:"task"`
-	Context        string `json:"context,omitempty"`
-	WorkspaceRoot  string `json:"workspace_root,omitempty"`
-	GitRepo        string `json:"git_repo,omitempty"`
-	GitBranch      string `json:"git_branch,omitempty"`
-	Patch          string `json:"patch,omitempty"`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+	IdempotencyKey string      `json:"idempotency_key,omitempty"`
+	Agent          string      `json:"agent"`
+	Task           string      `json:"task"`
+	Context        string      `json:"context,omitempty"`
+	WorkspaceRoot  string      `json:"workspace_root,omitempty"`
+	GitRepo        string      `json:"git_repo,omitempty"`
+	GitBranch      string      `json:"git_branch,omitempty"`
+	Domain         string      `json:"domain,omitempty"`
+	BlastRadius    BlastRadius `json:"blast_radius,omitempty"`
+	EditSurfaces   []string    `json:"edit_surfaces,omitempty"`
+	Patch          string      `json:"patch,omitempty"`
+	TimeoutSeconds int         `json:"timeout_seconds,omitempty"`
 }
 
 // TaskResponse represents the initial acknowledgement returned when a task is accepted.

@@ -480,6 +480,9 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	repo := fs.String("repo", "", "Optional Git repository URL")
 	branch := fs.String("branch", "", "Optional Git branch")
 	idempotencyKey := fs.String("idempotency-key", "", "Optional idempotency deduplication key")
+	domain := fs.String("domain", "", "Architectural domain (e.g. auth, database, ui)")
+	blastRadius := fs.String("blast-radius", "isolated-branch", "Blast radius scope (e.g. isolated-branch, read-only, shared-schema, breaking-change)")
+	surfaces := fs.String("surfaces", "", "Comma-separated edit surfaces (files or directories)")
 	timeout := fs.Int("timeout", 60, "Task timeout in seconds")
 	token := fs.String("token", "", "Optional bearer authentication token")
 
@@ -500,6 +503,9 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		Task:           *taskFlag,
 		GitRepo:        *repo,
 		GitBranch:      *branch,
+		Domain:         *domain,
+		BlastRadius:    protocol.BlastRadius(*blastRadius),
+		EditSurfaces:   parseCommaSeparated(*surfaces),
 		TimeoutSeconds: *timeout,
 	}
 

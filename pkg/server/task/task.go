@@ -62,13 +62,19 @@ func NewManagedTask(
 	logger *JSONLLogger,
 ) *ManagedTask {
 	now := time.Now().Unix()
+	blastRadius := req.BlastRadius
+	if blastRadius == "" {
+		blastRadius = protocol.BlastRadiusIsolated
+	}
 	return &ManagedTask{
 		TaskID:         taskID,
 		Request:        req,
 		Status:         protocol.TaskStatusQueued,
 		CreatedAt:      now,
 		LastActivityAt: now,
-		BlastRadius:    protocol.BlastRadiusIsolated,
+		Domain:         req.Domain,
+		BlastRadius:    blastRadius,
+		EditSurfaces:   req.EditSurfaces,
 		ctx:            ctx,
 		cancel:         cancel,
 		logger:         logger,

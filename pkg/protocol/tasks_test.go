@@ -2,6 +2,7 @@ package protocol_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -51,7 +52,7 @@ func TestTaskRequestJSONSerialization(t *testing.T) {
 		t.Fatalf("failed to unmarshal TaskRequest: %v", err)
 	}
 
-	if parsed != req {
+	if !reflect.DeepEqual(parsed, req) {
 		t.Errorf("TaskRequest round-trip mismatch:\ngot  %+v\nwant %+v", parsed, req)
 	}
 }

@@ -627,6 +627,151 @@ func TestRun_DispatchAndSSEConsumption(t *testing.T) {
 	}
 }
 
+func TestRun_DomainBlastRadiusSurfacesFlags(t *testing.T) {
+	t.Run("explicit domain, blast-radius, and surfaces flags", func(t *testing.T) {
+		var receivedReq protocol.TaskRequest
+		var mu sync.Mutex
+
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/tasks" && r.Method == http.MethodPost {
+				mu.Lock()
+				_ = json.NewDecoder(r.Body).Decode(&receivedReq)
+				mu.Unlock()
+
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(protocol.TaskResponse{
+					TaskID:    "task-test-custom",
+					Status:    protocol.TaskStatusCompleted,
+					EventsURL: "/v1/tasks/task-test-custom/events",
+				})
+				return
+			}
+
+			if strings.HasSuffix(r.URL.Path, "/events") {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				flusher, _ := w.(http.Flusher)
+				evt, _ := protocol.NewEvent(1, "task-test-custom", protocol.EventStatus, protocol.StatusPayload{
+					Status: protocol.TaskStatusCompleted,
+				})
+				sseData := evt.FormatSSE()
+				_, _ = w.Write(sseData)
+				if flusher != nil {
+					flusher.Flush()
+				}
+				return
+			}
+
+			http.NotFound(w, r)
+		}))
+		defer ts.Close()
+
+		ctx := context.Background()
+		var stdout, stderr bytes.Buffer
+
+		err := runCLI(ctx, []string{
+			"run",
+			"-coordinator", ts.URL,
+			"-agent", "worker",
+			"-task", "Scaffold auth service",
+			"-domain", "auth",
+			"-blast-radius", "shared-schema",
+			"-surfaces", "pkg/auth/jwt.go, pkg/auth/middleware.go",
+		}, &stdout, &stderr)
+
+		if err != nil {
+			t.Fatalf("unexpected error running task: %v", err)
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		if receivedReq.Domain != "auth" {
+			t.Errorf("expected domain 'auth', got %q", receivedReq.Domain)
+		}
+		if receivedReq.BlastRadius != protocol.BlastRadiusSharedSchema {
+			t.Errorf("expected blast radius %q, got %q", protocol.BlastRadiusSharedSchema, receivedReq.BlastRadius)
+		}
+		expectedSurfaces := []string{"pkg/auth/jwt.go", "pkg/auth/middleware.go"}
+		if len(receivedReq.EditSurfaces) != len(expectedSurfaces) {
+			t.Fatalf("expected %d edit surfaces, got %d (%v)", len(expectedSurfaces), len(receivedReq.EditSurfaces), receivedReq.EditSurfaces)
+		}
+		for i, s := range expectedSurfaces {
+			if receivedReq.EditSurfaces[i] != s {
+				t.Errorf("edit surface[%d]: expected %q, got %q", i, s, receivedReq.EditSurfaces[i])
+			}
+		}
+	})
+
+	t.Run("default blast-radius and empty domain and surfaces", func(t *testing.T) {
+		var receivedReq protocol.TaskRequest
+		var mu sync.Mutex
+
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/tasks" && r.Method == http.MethodPost {
+				mu.Lock()
+				_ = json.NewDecoder(r.Body).Decode(&receivedReq)
+				mu.Unlock()
+
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(protocol.TaskResponse{
+					TaskID:    "task-test-default",
+					Status:    protocol.TaskStatusCompleted,
+					EventsURL: "/v1/tasks/task-test-default/events",
+				})
+				return
+			}
+
+			if strings.HasSuffix(r.URL.Path, "/events") {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				flusher, _ := w.(http.Flusher)
+				evt, _ := protocol.NewEvent(1, "task-test-default", protocol.EventStatus, protocol.StatusPayload{
+					Status: protocol.TaskStatusCompleted,
+				})
+				sseData := evt.FormatSSE()
+				_, _ = w.Write(sseData)
+				if flusher != nil {
+					flusher.Flush()
+				}
+				return
+			}
+
+			http.NotFound(w, r)
+		}))
+		defer ts.Close()
+
+		ctx := context.Background()
+		var stdout, stderr bytes.Buffer
+
+		err := runCLI(ctx, []string{
+			"run",
+			"-coordinator", ts.URL,
+			"-agent", "worker",
+			"-task", "Default task prompt",
+		}, &stdout, &stderr)
+
+		if err != nil {
+			t.Fatalf("unexpected error running task: %v", err)
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		if receivedReq.Domain != "" {
+			t.Errorf("expected empty domain, got %q", receivedReq.Domain)
+		}
+		if receivedReq.BlastRadius != protocol.BlastRadiusIsolated {
+			t.Errorf("expected default blast radius %q, got %q", protocol.BlastRadiusIsolated, receivedReq.BlastRadius)
+		}
+		if len(receivedReq.EditSurfaces) != 0 {
+			t.Errorf("expected empty edit surfaces, got %v", receivedReq.EditSurfaces)
+		}
+	})
+}
+
 func TestRun_ToolCallsAndFailure(t *testing.T) {
 	t.Run("handles tool calls and queries", func(t *testing.T) {
 		tasksDir := t.TempDir()
