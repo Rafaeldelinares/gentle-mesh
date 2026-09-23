@@ -1,8 +1,9 @@
 # RFC 001: Transporte Distribuido y Ejecución de Subagentes Remotos (Gentle Mesh)
 
-* **Autor:** Rafael De Linares & el Gentleman (Ecosistema ByBusiness / Gentle AI)  
+* **Autor:** Rafael De Linares & el Gentleman (Ecosistema Gentle AI)  
 * **Fecha:** Septiembre 2026  
-* **Estado:** Borrador / Propuesta para Gentleman Programming  
+* **Estado:** Propuesta de RFC / Prueba de Concepto (PoC) para la comunidad de Gentleman Programming  
+* **Gobernanza:** *Sujeto a la revisión, orientación y aprobación explícita de Alan Buscaglia (@gentleman-programming)*  
 * **Área:** Infraestructura, Concurrencia Distribuida, Arneses de Agentes  
 
 ---
