@@ -30,6 +30,7 @@ func TestTaskStatusConstants(t *testing.T) {
 
 func TestTaskRequestJSONSerialization(t *testing.T) {
 	req := protocol.TaskRequest{
+		IdempotencyKey: "idem-key-999",
 		Agent:          "worker",
 		Task:           "Run schema migration and verify tests",
 		Context:        "Postgres 16 connection details in env",
@@ -67,6 +68,9 @@ func TestTaskRequestOmitempty(t *testing.T) {
 	}
 
 	s := string(data)
+	if strings.Contains(s, "idempotency_key") {
+		t.Errorf("expected idempotency_key to be omitted, got: %s", s)
+	}
 	if strings.Contains(s, "context") {
 		t.Errorf("expected context to be omitted, got: %s", s)
 	}
@@ -84,6 +88,40 @@ func TestTaskRequestOmitempty(t *testing.T) {
 	}
 	if strings.Contains(s, "timeout_seconds") {
 		t.Errorf("expected timeout_seconds to be omitted, got: %s", s)
+	}
+}
+
+func TestTaskRequestIdempotencyKey(t *testing.T) {
+	// With key
+	reqWithKey := protocol.TaskRequest{
+		IdempotencyKey: "unique-uuid-1234",
+		Agent:          "worker",
+		Task:           "Do work",
+	}
+	data, err := json.Marshal(reqWithKey)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"idempotency_key":"unique-uuid-1234"`) {
+		t.Errorf("expected idempotency_key in JSON, got: %s", string(data))
+	}
+
+	var parsed protocol.TaskRequest
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if parsed.IdempotencyKey != "unique-uuid-1234" {
+		t.Errorf("expected IdempotencyKey to be %q, got %q", "unique-uuid-1234", parsed.IdempotencyKey)
+	}
+
+	// Without key (from raw JSON)
+	rawJSON := []byte(`{"agent":"worker","task":"Do work"}`)
+	var parsedNoKey protocol.TaskRequest
+	if err := json.Unmarshal(rawJSON, &parsedNoKey); err != nil {
+		t.Fatalf("failed to unmarshal: %v", err)
+	}
+	if parsedNoKey.IdempotencyKey != "" {
+		t.Errorf("expected empty IdempotencyKey, got %q", parsedNoKey.IdempotencyKey)
 	}
 }
 

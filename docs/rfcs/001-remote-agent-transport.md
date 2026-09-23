@@ -130,6 +130,13 @@ Para operar como una verdadera malla federada (Mesh), los nodos remotos anuncian
 ### `GET /v1/mesh/nodes` (Catálogo de Nodos y Agentes)
 * Permite al orquestador y a `subagent_list_agents` descubrir en tiempo real qué agentes remotos están federados y disponibles.
 
+### Exclusión Mutua, Locks de Territorio e Idempotencia en la Malla
+Para garantizar que dos nodos de la malla no colisionen ni ejecuten trabajo redundante:
+1. **Lock de Rama Exclusivo (`ExclusiveBranchLock`):**  
+   Dos tareas no pueden ejecutar concurrentemente sobre la misma rama del mismo repositorio (`repo:branch`). El registro de la malla adquiere un lock atómico en memoria al asignar la tarea a un nodo. Si una nueva tarea requiere esa misma rama, permanece en cola hasta que la primera finalice, commitee y libere el lock.
+2. **Detección de Idempotencia y Tareas Duplicadas:**  
+   Si se recibe una solicitud con una clave de idempotencia activa o idéntico fingerprint (`repo + branch + task`), el orquestador no despacha un segundo runner: devuelve el `task_id` existente y reengancha el stream al trabajo en curso.
+
 ---
 
 ## 6. Resiliencia, Persistencia y Ciclo de Vida de Tareas

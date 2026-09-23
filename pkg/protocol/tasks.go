@@ -14,6 +14,7 @@ const (
 
 // TaskRequest defines the payload for creating and dispatching a new remote subagent task.
 type TaskRequest struct {
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	Agent          string `json:"agent"`
 	Task           string `json:"task"`
 	Context        string `json:"context,omitempty"`
