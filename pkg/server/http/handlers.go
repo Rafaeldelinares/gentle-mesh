@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	stdhttp "net/http"
+	"runtime/debug"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
@@ -127,6 +130,31 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		}
 	}
 
+	if req.GitRepo != "" {
+		targetTerritory := protocol.ActiveTerritory{
+			Repo:         req.GitRepo,
+			Branch:       req.GitBranch,
+			Domain:       req.Domain,
+			EditSurfaces: req.EditSurfaces,
+			BlastRadius:  req.BlastRadius,
+			TaskSummary:  req.Task,
+		}
+		active := s.taskManager.ActiveTerritories()
+		manifest := protocol.TerritoryManifest{Territories: active}
+		if conflict := manifest.FindConflict(targetTerritory); conflict != nil {
+			errStr := conflict.Message
+			if conflict.ConflictType == protocol.ConflictBranchLocked && !strings.Contains(errStr, "branch is locked") {
+				errStr = "branch is locked by another task: " + errStr
+			}
+			writeJSON(w, stdhttp.StatusConflict, map[string]any{
+				"error":    errStr,
+				"conflict": conflict,
+				"task_id":  conflict.ExistingTerritory.TaskID,
+			})
+			return
+		}
+	}
+
 	t, err := s.taskManager.CreateTask(req)
 	if err != nil {
 		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -169,6 +197,14 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 
 	go func(mt *task.ManagedTask, r runner.Runner) {
 		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("runner panic on task %s: %v\n%s", mt.TaskID, rec, debug.Stack())
+				_, _ = mt.EmitEvent(protocol.EventError, protocol.ErrorPayload{
+					Code:    "RUNNER_PANIC",
+					Message: fmt.Sprintf("runner panicked: %v", rec),
+					Fatal:   true,
+				})
+			}
 			if mt.Request.GitRepo != "" && mt.Request.GitBranch != "" {
 				_ = s.registry.Locks().ReleaseLock(mt.Request.GitRepo, mt.Request.GitBranch, mt.TaskID)
 			}

@@ -210,6 +210,11 @@ func (m TerritoryManifest) FindConflict(target ActiveTerritory) *TerritoryConfli
 	return nil
 }
 
+// NormalizeRepo standardizes Git repository URLs for reliable matching across SSH, HTTPS, and suffix variations.
+func NormalizeRepo(repo string) string {
+	return normalizeRepo(repo)
+}
+
 func normalizeRepo(repo string) string {
 	r := strings.TrimSpace(repo)
 	if r == "" {

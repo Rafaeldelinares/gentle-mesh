@@ -211,3 +211,43 @@ func TestBranchLockManager_ConcurrentMultipleBranches(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestBranchLockManager_RepoNormalizationVariations(t *testing.T) {
+	mgr := registry.NewBranchLockManager()
+
+	repoHTTPS := "https://github.com/org/repo.git"
+	repoSSH := "git@github.com:org/repo"
+	branch := "main"
+	task1 := "task-1"
+	task2 := "task-2"
+
+	if err := mgr.ClaimLock(repoHTTPS, branch, task1); err != nil {
+		t.Fatalf("failed to claim lock with HTTPS url: %v", err)
+	}
+
+	// Verify it can be retrieved with the SSH url
+	lockedTask, _, locked := mgr.GetLock(repoSSH, branch)
+	if !locked {
+		t.Fatal("expected branch to be locked when queried with SSH url")
+	}
+	if lockedTask != task1 {
+		t.Errorf("expected taskID %q, got %q", task1, lockedTask)
+	}
+
+	// Claiming with SSH url by different task should return ErrBranchLocked
+	err := mgr.ClaimLock(repoSSH, branch, task2)
+	if !errors.Is(err, registry.ErrBranchLocked) {
+		t.Fatalf("expected ErrBranchLocked, got: %v", err)
+	}
+
+	// Release with SSH url by task1 should succeed
+	if err := mgr.ReleaseLock(repoSSH, branch, task1); err != nil {
+		t.Fatalf("expected successful release using SSH url: %v", err)
+	}
+
+	_, _, locked = mgr.GetLock(repoHTTPS, branch)
+	if locked {
+		t.Fatal("expected branch to be unlocked after release")
+	}
+}
+

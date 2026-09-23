@@ -728,9 +728,10 @@ func TestServer_ExclusiveBranchLock(t *testing.T) {
 		t.Fatalf("expected Task 2 status 409 Conflict, got %d", resp2.StatusCode)
 	}
 
-	var conflictResp map[string]string
+	var conflictResp map[string]any
 	_ = json.NewDecoder(resp2.Body).Decode(&conflictResp)
-	if !strings.Contains(conflictResp["error"], "branch is locked") {
+	errStr, _ := conflictResp["error"].(string)
+	if !strings.Contains(errStr, "branch is locked") {
 		t.Errorf("expected branch is locked error, got %v", conflictResp)
 	}
 
@@ -1063,5 +1064,143 @@ func TestServer_MeshRadar(t *testing.T) {
 	}
 	if len(report.ActiveAgents) != 0 {
 		t.Errorf("expected completed task to be omitted from active radar, got %d agents", len(report.ActiveAgents))
+	}
+}
+
+type panicRunner struct{}
+
+func (p *panicRunner) Run(ctx context.Context, req protocol.TaskRequest, sink runner.EventSink) error {
+	panic("simulated runner crash")
+}
+
+func TestServer_TerritorySurfaceOverlapConflict(t *testing.T) {
+	_, ts := setupTestServer(t, func(cfg *meshhttp.ServerConfig) {
+		cfg.Runner = runner.NewSimulatedRunner(runner.SimulatedOptions{
+			Query: &runner.SimulatedQuery{
+				QueryID:  "keep-running",
+				Question: "Waiting...",
+			},
+		})
+	})
+
+	task1Req := protocol.TaskRequest{
+		Agent:        "coder",
+		Task:         "working on auth package",
+		GitRepo:      "org/repo",
+		EditSurfaces: []string{"pkg/auth/*"},
+	}
+	body1, _ := json.Marshal(task1Req)
+
+	resp1, err := ts.Client().Post(ts.URL+"/v1/tasks", "application/json", bytes.NewReader(body1))
+	if err != nil {
+		t.Fatalf("Task 1 POST failed: %v", err)
+	}
+	defer resp1.Body.Close()
+
+	if resp1.StatusCode != http.StatusCreated {
+		t.Fatalf("expected Task 1 status 201 Created, got %d", resp1.StatusCode)
+	}
+
+	task2Req := protocol.TaskRequest{
+		Agent:        "reviewer",
+		Task:         "fix login endpoint",
+		GitRepo:      "org/repo",
+		EditSurfaces: []string{"pkg/auth/login.go"},
+	}
+	body2, _ := json.Marshal(task2Req)
+
+	resp2, err := ts.Client().Post(ts.URL+"/v1/tasks", "application/json", bytes.NewReader(body2))
+	if err != nil {
+		t.Fatalf("Task 2 POST failed: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusConflict {
+		t.Fatalf("expected Task 2 status 409 Conflict, got %d", resp2.StatusCode)
+	}
+
+	var conflictResp struct {
+		Error    string `json:"error"`
+		TaskID   string `json:"task_id"`
+		Conflict struct {
+			ConflictType string `json:"conflict_type"`
+			Message      string `json:"message"`
+		} `json:"conflict"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&conflictResp); err != nil {
+		t.Fatalf("failed decoding conflict response: %v", err)
+	}
+
+	if conflictResp.Conflict.ConflictType != "surface_overlap" {
+		t.Errorf("expected conflict_type 'surface_overlap', got %q", conflictResp.Conflict.ConflictType)
+	}
+}
+
+func TestServer_RunnerPanicRecovery(t *testing.T) {
+	_, ts := setupTestServer(t, func(cfg *meshhttp.ServerConfig) {
+		cfg.Runner = &panicRunner{}
+	})
+
+	taskReq := protocol.TaskRequest{
+		Agent: "coder",
+		Task:  "risky task that panics",
+	}
+	body, _ := json.Marshal(taskReq)
+
+	resp, err := ts.Client().Post(ts.URL+"/v1/tasks", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /v1/tasks failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected status 201 Created, got %d", resp.StatusCode)
+	}
+
+	var taskResp protocol.TaskResponse
+	if err := json.NewDecoder(resp.Body).Decode(&taskResp); err != nil {
+		t.Fatalf("failed decoding task response: %v", err)
+	}
+
+	sseResp, err := ts.Client().Get(ts.URL + taskResp.EventsURL)
+	if err != nil {
+		t.Fatalf("GET events failed: %v", err)
+	}
+	defer sseResp.Body.Close()
+
+	scanner := bufio.NewScanner(sseResp.Body)
+	var sawPanicError bool
+	for {
+		evt, err := readNextSSEEvent(scanner)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("error reading SSE event: %v", err)
+		}
+
+		if evt.Type == protocol.EventError {
+			var ep protocol.ErrorPayload
+			if err := evt.UnmarshalPayload(&ep); err != nil {
+				t.Fatalf("failed unmarshaling error payload: %v", err)
+			}
+			if ep.Code == "RUNNER_PANIC" && ep.Fatal {
+				sawPanicError = true
+			}
+		}
+	}
+
+	if !sawPanicError {
+		t.Fatal("expected to observe EventError with code RUNNER_PANIC and fatal: true")
+	}
+
+	// Verify server does NOT crash and is still responsive
+	healthResp, err := ts.Client().Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz failed: %v", err)
+	}
+	defer healthResp.Body.Close()
+	if healthResp.StatusCode != http.StatusOK {
+		t.Errorf("expected healthz status 200, got %d", healthResp.StatusCode)
 	}
 }

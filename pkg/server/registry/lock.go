@@ -2,8 +2,11 @@ package registry
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 )
 
 var (
@@ -16,6 +19,13 @@ var (
 type branchKey struct {
 	repo   string
 	branch string
+}
+
+func makeBranchKey(repo, branch string) branchKey {
+	return branchKey{
+		repo:   protocol.NormalizeRepo(repo),
+		branch: strings.TrimSpace(branch),
+	}
 }
 
 type branchLock struct {
@@ -41,14 +51,14 @@ func NewBranchLockManager() *BranchLockManager {
 // If already locked by the same taskID, it refreshes the lock and returns nil.
 // If locked by a different taskID, it returns ErrBranchLocked.
 func (m *BranchLockManager) ClaimLock(repo, branch, taskID string) error {
-	if repo == "" || branch == "" {
+	key := makeBranchKey(repo, branch)
+	if key.repo == "" || key.branch == "" {
 		return nil
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	key := branchKey{repo: repo, branch: branch}
 	if existing, exists := m.locks[key]; exists {
 		if existing.taskID != taskID {
 			return ErrBranchLocked
@@ -72,14 +82,14 @@ func (m *BranchLockManager) ClaimLock(repo, branch, taskID string) error {
 // If not locked, it returns nil.
 // If locked by another task, it returns ErrLockNotOwned.
 func (m *BranchLockManager) ReleaseLock(repo, branch, taskID string) error {
-	if repo == "" || branch == "" {
+	key := makeBranchKey(repo, branch)
+	if key.repo == "" || key.branch == "" {
 		return nil
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	key := branchKey{repo: repo, branch: branch}
 	existing, exists := m.locks[key]
 	if !exists {
 		return nil
@@ -96,14 +106,14 @@ func (m *BranchLockManager) ReleaseLock(repo, branch, taskID string) error {
 // GetLock returns the current lock holder, acquisition time, and whether the branch is locked.
 // If repo or branch is empty, it returns false.
 func (m *BranchLockManager) GetLock(repo, branch string) (taskID string, acquiredAt time.Time, locked bool) {
-	if repo == "" || branch == "" {
+	key := makeBranchKey(repo, branch)
+	if key.repo == "" || key.branch == "" {
 		return "", time.Time{}, false
 	}
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	key := branchKey{repo: repo, branch: branch}
 	lock, exists := m.locks[key]
 	if !exists {
 		return "", time.Time{}, false
