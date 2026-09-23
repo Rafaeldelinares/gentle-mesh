@@ -9,59 +9,333 @@
       {
         "id": "full-mesh",
         "label": "Malla pentagonal completa",
-        "focus": ["client", "auth_gate", "coordinator", "territory_gate", "branch_lock", "worker_alpha", "worker_delta", "worker_beta", "worker_gamma", "worker_epsilon", "task_store"],
-        "note": "Orquestador central coordinando 5 workers federados dispuestos en pentágono regular sobre la red aislada gentle-mesh-net."
+        "focus": [
+          "client",
+          "auth_gate",
+          "coordinator",
+          "territory_gate",
+          "branch_lock",
+          "worker_alpha",
+          "worker_delta",
+          "worker_beta",
+          "worker_gamma",
+          "worker_epsilon",
+          "task_store"
+        ],
+        "note": "Orquestador central coordinando 5 workers circulares federados dispuestos en pentágono regular sobre gentle-mesh-net."
       },
       {
         "id": "security-perimeter",
         "label": "Perímetro de admisión y seguridad",
-        "focus": ["client", "auth_gate", "coordinator", "territory_gate", "branch_lock"],
+        "focus": [
+          "client",
+          "auth_gate",
+          "coordinator",
+          "territory_gate",
+          "branch_lock"
+        ],
         "note": "Compuertas de hardening HTTP, autenticación en tiempo constante y validación territorial."
       },
       {
         "id": "pentagon-dispatch",
         "label": "Despacho pentagonal a workers",
-        "focus": ["coordinator", "worker_alpha", "worker_delta", "worker_beta", "worker_gamma", "worker_epsilon"],
-        "note": "Ruteo dinámico por tags a nodos especializados distribuidos simétricamente."
+        "focus": [
+          "coordinator",
+          "worker_alpha",
+          "worker_delta",
+          "worker_beta",
+          "worker_gamma",
+          "worker_epsilon"
+        ],
+        "note": "Ruteo dinámico por tags a nodos especializados circulares distribuidos simétricamente."
       }
     ]
   },
   "components": [
-    { "id": "client", "type": "external", "label": "Gentle Client CLI", "sublabel": "gentle-mesh run / Pi SDK", "tag": "POSIX / Subagent", "pos": [40, 265], "size": [130, 55] },
-    { "id": "auth_gate", "type": "security", "label": "Security Shield", "sublabel": "timing-safe + 1MB limit", "tag": "crypto/subtle", "pos": [230, 265], "size": [130, 55] },
-    { "id": "territory_gate", "type": "security", "label": "Territory Gate", "sublabel": "FindConflict surfaces", "tag": "HTTP 409 Conflict", "pos": [230, 110], "size": [130, 55] },
-    { "id": "branch_lock", "type": "database", "label": "Branch Lock Manager", "sublabel": "Normalized git locks", "tag": "Race-free Git", "pos": [230, 420], "size": [130, 55] },
-    { "id": "task_store", "type": "database", "label": "Task Log Store", "sublabel": "Selective fsync + JSONL", "tag": "Crash-Safe I/O", "pos": [40, 420], "size": [130, 55] },
-    { "id": "coordinator", "type": "backend", "label": "Coordinator", "sublabel": "HTTP REST + SSE :8080", "tag": "Orchestrator Hub", "brand": "go", "pos": [725, 258], "size": [150, 65] },
-    { "id": "worker_alpha", "type": "backend", "label": "Worker Alpha", "sublabel": "agent: worker (go,fast)", "tag": "concurrency: 2", "brand": "docker", "pos": [728, 80], "size": [145, 50] },
-    { "id": "worker_delta", "type": "backend", "label": "Worker Delta", "sublabel": "agent: worker (gpu,ml)", "tag": "concurrency: 1", "brand": "docker", "pos": [904, 208], "size": [145, 50] },
-    { "id": "worker_beta", "type": "backend", "label": "Worker Beta", "sublabel": "agent: worker (heavy,docker)", "tag": "concurrency: 4", "brand": "docker", "pos": [837, 415], "size": [145, 50] },
-    { "id": "worker_gamma", "type": "backend", "label": "Worker Gamma", "sublabel": "agent: explore (research)", "tag": "concurrency: 2", "brand": "docker", "pos": [619, 415], "size": [145, 50] },
-    { "id": "worker_epsilon", "type": "backend", "label": "Worker Epsilon", "sublabel": "agent: verify (ci,testing)", "tag": "concurrency: 2", "brand": "docker", "pos": [552, 208], "size": [145, 50] }
+    {
+      "id": "client",
+      "type": "external",
+      "label": "Gentle Client CLI",
+      "sublabel": "gentle-mesh run / Pi SDK",
+      "tag": "POSIX / Subagent",
+      "pos": [
+        20,
+        275
+      ],
+      "size": [
+        130,
+        55
+      ]
+    },
+    {
+      "id": "auth_gate",
+      "type": "security",
+      "label": "Security Shield",
+      "sublabel": "timing-safe + 1MB limit",
+      "tag": "crypto/subtle",
+      "pos": [
+        220,
+        275
+      ],
+      "size": [
+        130,
+        55
+      ]
+    },
+    {
+      "id": "territory_gate",
+      "type": "security",
+      "label": "Territory Gate",
+      "sublabel": "FindConflict surfaces",
+      "tag": "HTTP 409 Conflict",
+      "pos": [
+        400,
+        215
+      ],
+      "size": [
+        130,
+        55
+      ]
+    },
+    {
+      "id": "branch_lock",
+      "type": "database",
+      "label": "Branch Lock Manager",
+      "sublabel": "Normalized git locks",
+      "tag": "Race-free Git",
+      "pos": [
+        400,
+        335
+      ],
+      "size": [
+        130,
+        55
+      ]
+    },
+    {
+      "id": "task_store",
+      "type": "database",
+      "label": "Task Log Store",
+      "sublabel": "Selective fsync + JSONL",
+      "tag": "Crash-Safe I/O",
+      "pos": [
+        220,
+        420
+      ],
+      "size": [
+        130,
+        55
+      ]
+    },
+    {
+      "id": "coordinator",
+      "type": "backend",
+      "label": "Coordinator",
+      "sublabel": "HTTP REST + SSE",
+      "tag": "Orchestrator Hub",
+      "brand": "go",
+      "pos": [
+        795,
+        265
+      ],
+      "size": [
+        130,
+        70
+      ]
+    },
+    {
+      "id": "worker_delta",
+      "type": "backend",
+      "label": "Delta",
+      "sublabel": "gpu/ml",
+      "tag": "concur:1",
+      "pos": [
+        1001,
+        256
+      ],
+      "size": [
+        88,
+        88
+      ]
+    },
+    {
+      "id": "worker_beta",
+      "type": "backend",
+      "label": "Beta",
+      "sublabel": "heavy",
+      "tag": "concur:4",
+      "pos": [
+        873,
+        432
+      ],
+      "size": [
+        88,
+        88
+      ]
+    },
+    {
+      "id": "worker_gamma",
+      "type": "backend",
+      "label": "Gamma",
+      "sublabel": "research",
+      "tag": "concur:2",
+      "pos": [
+        666,
+        365
+      ],
+      "size": [
+        88,
+        88
+      ]
+    },
+    {
+      "id": "worker_epsilon",
+      "type": "backend",
+      "label": "Epsilon",
+      "sublabel": "ci/test",
+      "tag": "concur:2",
+      "pos": [
+        666,
+        147
+      ],
+      "size": [
+        88,
+        88
+      ]
+    },
+    {
+      "id": "worker_alpha",
+      "type": "backend",
+      "label": "Alpha",
+      "sublabel": "fast/go",
+      "tag": "concur:2",
+      "pos": [
+        873,
+        80
+      ],
+      "size": [
+        88,
+        88
+      ]
+    }
   ],
   "boundaries": [
     {
       "kind": "region",
       "label": "Docker Isolated Network: gentle-mesh-net (Bridge)",
-      "wraps": ["auth_gate", "coordinator", "territory_gate", "branch_lock", "task_store", "worker_alpha", "worker_delta", "worker_beta", "worker_gamma", "worker_epsilon"]
+      "wraps": [
+        "auth_gate",
+        "coordinator",
+        "territory_gate",
+        "branch_lock",
+        "task_store",
+        "worker_alpha",
+        "worker_delta",
+        "worker_beta",
+        "worker_gamma",
+        "worker_epsilon"
+      ]
     },
     {
       "kind": "security-group",
       "label": "Coordinator Enclave",
-      "wraps": ["auth_gate", "coordinator", "territory_gate", "branch_lock", "task_store"]
+      "wraps": [
+        "auth_gate",
+        "coordinator",
+        "territory_gate",
+        "branch_lock",
+        "task_store"
+      ]
     }
   ],
   "connections": [
-    { "id": "c-cli-auth", "from": "client", "to": "auth_gate", "label": "POST /v1/tasks", "variant": "emphasis", "labelAt": [180, 254] },
-    { "id": "c-auth-coord", "from": "auth_gate", "to": "coordinator", "variant": "security" },
-    { "id": "c-coord-territory", "from": "coordinator", "to": "territory_gate", "label": "admission", "fromSide": "top", "toSide": "right" },
-    { "id": "c-coord-branch", "from": "coordinator", "to": "branch_lock", "fromSide": "bottom", "toSide": "right" },
-    { "id": "c-coord-store", "from": "coordinator", "to": "task_store", "label": "log event", "fromSide": "bottom", "toSide": "top" },
-    { "id": "c-coord-alpha", "from": "coordinator", "to": "worker_alpha", "fromSide": "top", "toSide": "bottom", "variant": "emphasis" },
-    { "id": "c-coord-delta", "from": "coordinator", "to": "worker_delta", "fromSide": "right", "toSide": "left", "variant": "emphasis" },
-    { "id": "c-coord-beta", "from": "coordinator", "to": "worker_beta", "fromSide": "right", "toSide": "top", "variant": "emphasis" },
-    { "id": "c-coord-gamma", "from": "coordinator", "to": "worker_gamma", "fromSide": "bottom", "toSide": "top", "variant": "emphasis" },
-    { "id": "c-coord-epsilon", "from": "coordinator", "to": "worker_epsilon", "fromSide": "left", "toSide": "bottom", "variant": "emphasis" }
+    {
+      "id": "c-cli-auth",
+      "from": "client",
+      "to": "auth_gate",
+      "label": "POST /v1/tasks",
+      "variant": "emphasis",
+      "labelAt": [
+        185,
+        265
+      ]
+    },
+    {
+      "id": "c-auth-territory",
+      "from": "auth_gate",
+      "to": "territory_gate",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "c-auth-branch",
+      "from": "auth_gate",
+      "to": "branch_lock",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "c-auth-store",
+      "from": "auth_gate",
+      "to": "task_store",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "c-territory-coord",
+      "from": "territory_gate",
+      "to": "coordinator",
+      "fromSide": "right",
+      "toSide": "left",
+      "label": "admitted"
+    },
+    {
+      "id": "c-branch-coord",
+      "from": "branch_lock",
+      "to": "coordinator",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "c-coord-delta",
+      "from": "coordinator",
+      "to": "worker_delta",
+      "fromSide": "right",
+      "toSide": "left",
+      "variant": "emphasis"
+    },
+    {
+      "id": "c-coord-beta",
+      "from": "coordinator",
+      "to": "worker_beta",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "variant": "emphasis"
+    },
+    {
+      "id": "c-coord-gamma",
+      "from": "coordinator",
+      "to": "worker_gamma",
+      "fromSide": "bottom",
+      "toSide": "right",
+      "variant": "emphasis"
+    },
+    {
+      "id": "c-coord-epsilon",
+      "from": "coordinator",
+      "to": "worker_epsilon",
+      "fromSide": "top",
+      "toSide": "right",
+      "variant": "emphasis"
+    },
+    {
+      "id": "c-coord-alpha",
+      "from": "coordinator",
+      "to": "worker_alpha",
+      "fromSide": "top",
+      "toSide": "left",
+      "variant": "emphasis"
+    }
   ],
   "cards": [
     {
@@ -77,7 +351,7 @@
       "dot": "emerald",
       "title": "Clúster Pentagonal Federado",
       "items": [
-        "5 nodos especializados con aislamiento de red bridge",
+        "5 nodos circulares especializados con red bridge",
         "Enrutamiento por tags (GPU, heavy, fast, research, CI)",
         "Captura de pánicos en runners y streaming SSE con Last-Event-ID"
       ]
