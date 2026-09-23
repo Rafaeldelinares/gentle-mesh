@@ -139,7 +139,160 @@ Para garantizar que dos nodos de la malla no colisionen ni ejecuten trabajo redu
 
 ---
 
-## 6. Resiliencia, Persistencia y Ciclo de Vida de Tareas
+## 6. Federación Mesh-to-Mesh (M2M) y Protocolo de Territorio Compartido (Shared Situational Awareness)
+
+A medida que una organización o equipo distribuye múltiples clústeres de Gentle Mesh (por ejemplo, un clúster local de desarrollo, un clúster en la nube para evaluación masiva y un clúster on-premise con GPUs dedicadas), surge una necesidad crítica: la **Federación Mesh-to-Mesh (M2M)** coordinada sin un único punto de fallo centralizado.
+
+### 6.1. La Insuficiencia de los Chequeos Ingenuos de Capacidad
+En orquestadores de cómputo tradicionales (como Kubernetes o Nomad), la admisión de tareas se basa exclusivamente en métricas de capacidad estática:
+* ¿Hay slots de concurrencia libres? (`active_tasks < max_concurrency`).
+* ¿Hay suficiente CPU y RAM en el nodo?
+
+En un ecosistema de desarrollo autónomo multi-agente, **los chequeos de capacidad ingenua son manifiestamente insuficientes y peligrosos**. Dos nodos en distintos clústeres pueden reportar 90% de CPU libre y cero tareas encoladas, pero si ambos admiten misiones que modifican el mismo repositorio y la misma rama, o tocan las mismas superficies de código (`edit_surfaces`), el resultado es desastroso:
+1. **Despilfarro Masivo de Tokens LLM:** Modelos de frontera costosos (Claude 3.5 Sonnet, GPT-4o) gastando millones de tokens en razonar, mapear y reescribir código idéntico o incompatible en paralelo.
+2. **Desastres de Merge en Git (Merge Disasters):** Conflictos de merge insolubles, ramas pisadas (`git push --force`), sobreescritura silenciosa de commits y worktrees en estados corrompidos o irreconciliables.
+
+Por ello, la pregunta fundamental antes de admitir cualquier tarea no es solo "¿tengo CPU disponible?", sino:  
+> **"¿Alguien más en la malla ya está trabajando en esto o en esta zona del repositorio?"**
+
+El **Protocolo de Territorio Compartido (Shared Situational Awareness)** implementa esta conciencia situacional federada en tiempo real.
+
+---
+
+### 6.2. Intercambio de Peering (`Peering Exchange`)
+Los coordinadores de malla establecen relaciones de peering punto a punto mediante tres endpoints canónicos:
+
+#### `POST /v1/mesh/peers/register` (Registro de Peering M2M)
+Un coordinador anuncia su existencia y endpoint a otro clúster peer para integrarse a la federación:
+* **Headers:** `Authorization: Bearer <TOKEN>`
+* **Payload (`PeerRegisterRequest`):**
+  ```json
+  {
+    "peer_id": "mesh-coord-us-east",
+    "cluster_name": "us-east-gpu-cluster",
+    "endpoint": "https://mesh-us.internal.net:8443",
+    "auth_token": "optional-shared-peer-token"
+  }
+  ```
+* **Respuesta:** `200 OK` con metadata del peer registrado.
+
+#### `GET /v1/mesh/peers` (Catálogo de Peers Federados)
+Retorna la lista de clústeres mesh registrados, su estado de sincronización y salud:
+* **Respuesta (`[]PeerInfo`):**
+  ```json
+  [
+    {
+      "peer_id": "mesh-coord-us-east",
+      "cluster_name": "us-east-gpu-cluster",
+      "endpoint": "https://mesh-us.internal.net:8443",
+      "status": "active",
+      "last_sync": 1725001200
+    }
+  ]
+  ```
+
+#### `GET /v1/mesh/territory` (Consulta de Manifiesto Territorial Activo)
+Permite a cualquier nodo o clúster consultar el mapa de territorios actualmente reclamados por tareas en ejecución:
+* **Respuesta (`TerritoryManifest`):**
+  ```json
+  {
+    "peer_id": "mesh-coord-eu-west",
+    "cluster_name": "la-fabrica-metal",
+    "timestamp": 1725001250,
+    "territories": [
+      {
+        "task_id": "task_9872",
+        "repo": "github.com/gentleman-programming/gentle-mesh",
+        "branch": "feature/federation-protocol",
+        "edit_surfaces": [
+          "pkg/protocol/federation.go",
+          "docs/rfcs/001-remote-agent-transport.md"
+        ],
+        "agent": "worker",
+        "task_summary": "Implementar protocolo canónico de federación M2M",
+        "node_id": "vps-la-fabrica-01",
+        "started_at": 1725000900
+      }
+    ]
+  }
+  ```
+
+---
+
+### 6.3. Esquema del Manifiesto Territorial (`ActiveTerritory`)
+Cada misión activa reclama un **Territorio Activo (`ActiveTerritory`)** con la siguiente semántica estricta:
+* `task_id`: Identificador único de la tarea ejecutada.
+* `repo`: URI canónico del repositorio (normalizado contra variaciones de protocolo `https://`, `git@`, sufijos `.git` y trailing slashes).
+* `branch`: Rama Git sobre la cual el subagente está aplicando cambios.
+* `edit_surfaces`: Lista explícita y acotada de archivos, carpetas o patrones glob (`pkg/protocol/*`) que el subagente tiene autorizado modificar.
+* `agent`: Arquetipo o rol del subagente (ej. `worker`, `heavy-tester`, `architect`).
+* `task_summary`: Resumen conciso en lenguaje natural del objetivo de la misión.
+* `node_id`: Identificador del nodo físico/VM donde corre el subproceso Pi.
+* `started_at`: Epoch Unix en segundos en que inició la ejecución.
+
+---
+
+### 6.4. Reglas de Detección de Colisiones (`Collision Detection Rules`)
+Cuando un cliente o nodo solicita admitir una nueva tarea `T_new`, el orquestador valida `T_new` contra el manifiesto de territorios activos mediante el método de evaluación determinista `ClashesWith(existing)`:
+
+```text
+                  Nueva Tarea T_new
+                         │
+                 ¿Mismo Repositorio? ──── NO ───▶ [Admitir: Sin Conflicto]
+                         │ SÍ
+                 ¿Misma Rama Git?   ──── SÍ ───▶ [Conflicto: branch_locked]
+                         │ NO
+             ¿Solapamiento de EditSurfaces? ─ SÍ ───▶ [Conflicto: surface_overlap]
+                         │ NO
+         ¿TaskID o Resumen/Fingerprint Duplicado? ─ SÍ ─▶ [Conflicto: duplicate_task]
+                         │ NO
+                         ▼
+             [Admitir Tarea en Territorio Limpio]
+```
+
+1. **Bloqueo a Nivel de Rama (`ConflictBranchLocked = "branch_locked"`):**  
+   Si `repo` coincide y ambas tareas reclaman la misma rama (`branch`), la colisión es inmediata. Dos agentes jamás deben comitear concurrentemente sobre el mismo ref de Git.
+2. **Solapamiento a Nivel de Superficie (`ConflictSurfaceOverlap = "surface_overlap"`):**  
+   Incluso si las tareas corren en ramas separadas (ej. `feature/auth-tokens` y `feature/login-redesign`), si sus `edit_surfaces` intersectan (ej. ambas reclaman `pkg/auth/tokens.go`, o una reclama `pkg/auth/` y la otra un archivo dentro de esa carpeta, o coinciden con un glob como `pkg/auth/*`), se dispara una colisión territorial preventiva. Esto evita que dos agentes desarrollen soluciones semánticamente incompatibles en el mismo subsistema que colisionarán más tarde en el merge.
+3. **Huella Semántica de Tarea Duplicada (`ConflictDuplicateTask = "duplicate_task"`):**  
+   Si dos tareas comparten el mismo `TaskID` o su huella semántica determinista (`Fingerprint`, hash SHA-256 de repo y `task_summary` normalizado) coincide, se detecta trabajo redundante.
+
+Cuando se detecta una colisión, el sistema devuelve un payload estructurado `TerritoryConflict`:
+```json
+{
+  "conflict_type": "surface_overlap",
+  "existing_territory": {
+    "task_id": "task_9872",
+    "repo": "github.com/gentleman-programming/gentle-mesh",
+    "branch": "feature/federation-protocol",
+    "edit_surfaces": ["pkg/protocol/federation.go"],
+    "agent": "worker",
+    "task_summary": "Implementar protocolo canónico de federación M2M",
+    "node_id": "vps-la-fabrica-01",
+    "started_at": 1725000900
+  },
+  "message": "edit surfaces overlap on [pkg/protocol/federation.go] with existing task \"task_9872\""
+}
+```
+
+---
+
+### 6.5. Enganche en Vivo de Streams y Deduplicación de Trabajo (Live Stream Hooking)
+Cuando la regla de colisión detecta una tarea duplicada (`duplicate_task`), rechazar la petición con un error HTTP 409 o 500 generaría fricción innecesaria para el usuario u orquestador cliente.
+
+En su lugar, Gentle Mesh implementa **Live Stream Hooking**:
+1. En vez de lanzar un nuevo subproceso runner, el orquestador intercepta la solicitud y devuelve el `task_id` de la tarea en curso que ya está ejecutando ese mismo objetivo.
+2. El cliente secundario es redirigido de inmediato a engancharse al stream SSE activo:  
+   `GET /v1/tasks/{existing_task_id}/events`.
+3. Gracias al soporte de `Last-Event-ID` y persistencia append-only (JSONL), el cliente secundario:
+   * Recibe el histórico de pensamientos (`thought`), llamadas a herramientas (`tool_call`) y resultados ya emitidos.
+   * Queda suscrito al stream en tiempo real junto con el cliente original (Pub/Sub fan-out).
+   * Consume el evento final `completion` y el commit Git resultante.
+4. **Beneficio directo:** Cero tokens adicionales consumidos, cero tiempo de CPU duplicado y una experiencia transparente para el desarrollador.
+
+---
+
+## 7. Resiliencia, Persistencia y Ciclo de Vida de Tareas
 
 Para garantizar desconexiones seguras sin pérdida de progreso ni consumo desmedido de recursos:
 
@@ -156,7 +309,7 @@ Para garantizar desconexiones seguras sin pérdida de progreso ni consumo desmed
 
 ---
 
-## 7. Seguridad, Supervisión Autónoma y Aislamiento del Host
+## 8. Seguridad, Supervisión Autónoma y Aislamiento del Host
 
 Para operar de forma 100% desatendida sin necesidad de supervisión humana activa:
 
@@ -176,7 +329,7 @@ Para operar de forma 100% desatendida sin necesidad de supervisión humana activ
 
 ---
 
-## 8. Trade-offs y Limitaciones Conocidas (Decisiones v1 vs v2)
+## 9. Trade-offs y Limitaciones Conocidas (Decisiones v1 vs v2)
 
 Durante la conceptualización inicial del Punto 1 (Workspace y Transporte de Código), se identificaron cuatro limitaciones ("pegas") deliberadamente asumidas para la PoC v1:
 
@@ -199,7 +352,7 @@ Durante la conceptualización inicial del Punto 1 (Workspace y Transporte de Có
 
 ---
 
-## 9. Hoja de Ruta de la Prueba de Concepto (PoC)
+## 10. Hoja de Ruta de la Prueba de Concepto (PoC)
 
 * [ ] **Fase 1:** Especificación de tipos en Go (`pkg/protocol/`).
 * [ ] **Fase 2:** Servidor HTTP con simulación de runner (`pkg/server/`).
