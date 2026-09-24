@@ -64,6 +64,90 @@ func TestCLI_UsageAndHelp(t *testing.T) {
 	})
 }
 
+func TestCLI_RPC_Subcommand(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("rpc --help prints flags to stdout", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		err := runCLIWithIO(ctx, []string{"rpc", "--help"}, strings.NewReader(""), &stdout, &stderr)
+		if err != nil {
+			t.Fatalf("unexpected error for rpc --help: %v", err)
+		}
+
+		out := stdout.String()
+		for _, flagName := range []string{"-coordinator", "-token", "-agent", "-mode", "-approve", "-session"} {
+			if !strings.Contains(out, flagName) {
+				t.Errorf("expected %q in rpc help output, got: %s", flagName, out)
+			}
+		}
+	})
+
+	t.Run("rpc accepts Pi flags and answers get_state handshake", func(t *testing.T) {
+		stdin := strings.NewReader(`{"id":"handshake-1","type":"get_state"}` + "\n")
+		var stdout, stderr bytes.Buffer
+
+		err := runCLIWithIO(ctx, []string{
+			"rpc",
+			"--mode", "rpc",
+			"--approve",
+			"--session", "/path/file",
+		}, stdin, &stdout, &stderr)
+		if err != nil {
+			t.Fatalf("unexpected error running rpc bridge: %v", err)
+		}
+
+		var found bool
+		for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+
+			var resp struct {
+				ID      string `json:"id"`
+				Type    string `json:"type"`
+				Command string `json:"command"`
+				Success bool   `json:"success"`
+			}
+			if err := json.Unmarshal([]byte(line), &resp); err != nil {
+				t.Fatalf("expected JSON response line %q, got error: %v (stderr: %s)", line, err, stderr.String())
+			}
+			if resp.ID == "handshake-1" && resp.Type == "response" && resp.Command == "get_state" && resp.Success {
+				found = true
+			}
+		}
+
+		if !found {
+			t.Errorf("expected a successful get_state response for handshake-1 on stdout, got: %s", stdout.String())
+		}
+	})
+
+	t.Run("rpc honors GENTLE_MESH_COORDINATOR env default", func(t *testing.T) {
+		t.Setenv("GENTLE_MESH_COORDINATOR", "http://mesh-env.internal:9999")
+
+		stdin := strings.NewReader(`{"id":"env-1","type":"get_state"}` + "\n")
+		var stdout, stderr bytes.Buffer
+
+		if err := runCLIWithIO(ctx, []string{"rpc"}, stdin, &stdout, &stderr); err != nil {
+			t.Fatalf("unexpected error running rpc bridge: %v", err)
+		}
+
+		if !strings.Contains(stdout.String(), "http://mesh-env.internal:9999") {
+			t.Errorf("expected env coordinator URL in bridge state, got: %s", stdout.String())
+		}
+	})
+
+	t.Run("rpc rejects unknown flags", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		err := runCLIWithIO(ctx, []string{"rpc", "--bogus"}, strings.NewReader(""), &stdout, &stderr)
+		if err == nil {
+			t.Fatal("expected error for unknown rpc flag, got nil")
+		}
+		if !strings.Contains(err.Error(), "bogus") {
+			t.Errorf("expected error to mention the unknown flag, got: %v", err)
+		}
+	})
+}
+
 func TestFlagParsingAndValidation(t *testing.T) {
 	ctx := context.Background()
 

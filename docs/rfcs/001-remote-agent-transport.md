@@ -116,6 +116,81 @@ Para permitir que visores gráficos y cockpits multiplataforma se conecten direc
 
 ---
 
+### 4.6. Puente Stdio JSON-RPC (`gentle-mesh rpc`): Compatibilidad Drop-in con Frontends Pi
+
+#### Motivación
+
+El conector HTTP/SSE nativo (4.5) exige que el frontend implemente un cliente REST/SSE específico de la malla. Sin embargo, la mayoría de las interfaces ya existentes de Pi (Open Pi Viewer stock, cockpits móviles, scripts de automatización) hablan un protocolo distinto: **JSON-RPC delimitado por saltos de línea sobre `stdin`/`stdout`**. Obligar a cada frontend a reimplementar el transporte de la malla fragmentaría el ecosistema y bloquearía la adopción.
+
+Para eliminar esa fricción, el cliente CLI incorpora el subcomando `gentle-mesh rpc`: un **proceso adaptador drop-in** que ocupa el lugar exacto donde un frontend Pi lanzaría su entrypoint local, sin requerir ningún cambio en el visor.
+
+```text
+┌──────────────────────────┐   stdin  (JSON-RPC líneas)   ┌───────────────────────┐
+│  Frontend Pi (stock)     │ ───────────────────────────▶ │   gentle-mesh rpc     │
+│  Open Pi Viewer / etc.   │ ◀─────────────────────────── │   (proceso adaptador) │
+└──────────────────────────┘   stdout (eventos + resp.)  └───────────┬───────────┘
+                                                                       │
+                                       POST /v1/tasks  +  GET .../events (SSE)
+                                                                       │
+                                                                       ▼
+                                                        ┌───────────────────────────┐
+                                                        │  Coordinador Gentle Mesh  │
+                                                        │  (ejecuta Pi headless)    │
+                                                        └───────────────────────────┘
+```
+
+#### Anatomía del Puente
+
+1. **Entrada (`stdin`):** lee comandos JSON-RPC delimitados por salto de línea. Cada comando es un objeto `{ "id", "type", "message" }`. Los tipos reconocidos son:
+
+   | Comando | Semántica |
+   | --- | --- |
+   | `prompt` | Despacha un `POST /v1/tasks` remoto y abre el stream SSE asociado. Se ejecuta en goroutine propia, permitiendo múltiples prompts concurrentes. |
+   | `get_state` | Responde con el modelo virtual `gentle-mesh` y el `sessionId` activo. |
+   | `get_messages` | Responde con la lista de mensajes del visor (vacía y stateless en v1). |
+   | `new_session` | Responde con un `sessionId` nuevo. |
+   | `abort` | Cancela todos los prompts en vuelo vía `context.CancelFunc`. |
+
+2. **Traducción a REST:** cada `prompt` se traduce a un `TaskRequest` (`prompt` + `agent`) y se envía al coordinador como `POST /v1/tasks`, autenticado opcionalmente con `Authorization: Bearer <TOKEN>`.
+
+3. **Streaming SSE:** con el `task_id` y `events_url` devueltos, el puente consume `GET /v1/tasks/{id}/events`, parsea frames SSE (`event:`, `data:`, comentarios heartbeat) y resuelve tanto el envelope canónico (`{type, payload}`) como payloads planos. La salida se serializa a través de un `lineWriter` con mutex para que ningún lector observe frames entrelazados entre prompts concurrentes.
+
+4. **Salida (`stdout`):** proyecta cada evento remoto en el bus del visor Pi y garantiza el cierre determinista del mensaje local:
+
+   | Evento de la malla | Evento del visor Pi |
+   | --- | --- |
+   | `thought` | `message_update` (`thinking_delta`) |
+   | `tool_call` | `tool_execution_start` |
+   | `tool_result` | `tool_execution_end` |
+   | `completion` | `message_update` (`text_delta`) + acumulación de texto |
+   | `status` (`completed`/`failed`/`canceled`) | `agent_settled` |
+   | (siempre al cerrar) | `message_end` con el texto acumulado |
+
+#### Flags de Configuración y Compatibilidad
+
+El puente se lanza con la **misma forma de argumentos** que un binario Pi local para poder sustituirlo sin cambiar la configuración del frontend:
+
+```bash
+gentle-mesh rpc -coordinator http://100.107.67.35:8085
+gentle-mesh rpc --mode rpc --approve --session /tmp/pi-session.json -coordinator http://localhost:8080
+```
+
+| Flag | Rol |
+| --- | --- |
+| `-coordinator` | URL base del coordinador. Por defecto `GENTLE_MESH_COORDINATOR` o `http://localhost:8080`. |
+| `-token` | Token Bearer opcional. Por defecto `GENTLE_MESH_TOKEN`. |
+| `-agent` | Rol de subagente despachado por cada prompt. Por defecto `worker`. |
+| `-mode`, `-approve`, `-session` | Flags de compatibilidad del launcher de Pi: se **aceptan e ignoran** para permitir el drop-in. |
+
+#### Garantías y Cierre Limpio
+
+* **Aislamiento por sesión:** el estado mutable (cancels e `io.Writer`) vive en una estructura local a cada `Serve()`, por lo que múltiples invocaciones no comparten salida ni cancelación.
+* **Tolerancia a frames corruptos:** una línea JSON malformada o un comando desconocido se ignora en lugar de abortar la sesión, preservando la compatibilidad hacia adelante con nuevos comandos del visor.
+* **Cierre determinista:** `Serve()` retorna cuando `stdin` alcanza EOF **y** todos los prompts en vuelo terminan (`sync.WaitGroup`), garantizando que todo evento emitido se escriba en `stdout` antes de que el llamador cierre el pipe.
+* **Sin dependencias locales de Node.js/Pi:** el puente es Go puro (`CGO_ENABLED=0`), coherente con la promesa de binario único de 3.
+
+---
+
 ## 5. Protocolo de Membresía y Descubrimiento de la Malla (`/v1/mesh`)
 
 Para operar como una verdadera malla federada (Mesh), los nodos remotos anuncian sus capacidades al orquestador dinámicamente:

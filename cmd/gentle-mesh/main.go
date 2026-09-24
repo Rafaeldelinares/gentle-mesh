@@ -19,6 +19,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/gentleman-programming/gentle-mesh/pkg/client"
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/worker"
@@ -36,8 +37,15 @@ func main() {
 	}
 }
 
-// runCLI parses top-level subcommands and dispatches to corresponding handlers.
+// runCLI parses top-level subcommands and dispatches to corresponding handlers,
+// reading streaming input (e.g. the stdio RPC bridge) from os.Stdin.
 func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	return runCLIWithIO(ctx, args, os.Stdin, stdout, stderr)
+}
+
+// runCLIWithIO is runCLI with an injectable input stream, so streaming
+// subcommands such as "rpc" can be driven from tests or other embedded hosts.
+func runCLIWithIO(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		printUsage(stderr)
 		return errors.New("subcommand is required")
@@ -57,6 +65,8 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		return runRadar(ctx, cmdArgs, stdout, stderr)
 	case "run":
 		return runRun(ctx, cmdArgs, stdout, stderr)
+	case "rpc":
+		return runRPC(ctx, cmdArgs, stdin, stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -75,6 +85,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  nodes     List registered mesh nodes and status")
 	fmt.Fprintln(w, "  radar     Display real-time active subagents radar and scope")
 	fmt.Fprintln(w, "  run       Submit a task and stream SSE execution events")
+	fmt.Fprintln(w, "  rpc       Run stdio-to-HTTP/SSE RPC bridge for Pi frontends")
 	fmt.Fprintln(w, "  help      Show help for gentle-mesh")
 }
 
@@ -511,6 +522,58 @@ func runRadar(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	_ = w.Flush()
 
 	return nil
+}
+
+// runRPC runs the stdio JSON-RPC bridge that lets a Pi frontend drive mesh
+// tasks over a newline-delimited JSON protocol on stdin/stdout. The Pi
+// compatibility flags (-mode, -approve, -session) are accepted and ignored so
+// the bridge can be launched with the same argument shape as a local Pi
+// entrypoint.
+func runRPC(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("rpc", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	// Help is rendered to stdout by the ErrHelp branch below, so suppress the
+	// default stderr usage dump. Parse errors still reach stderr.
+	fs.Usage = func() {}
+
+	coordinator := fs.String("coordinator", envOrDefault("GENTLE_MESH_COORDINATOR", "http://localhost:8080"), "Coordinator base URL")
+	token := fs.String("token", os.Getenv("GENTLE_MESH_TOKEN"), "Optional bearer authentication token")
+	agent := fs.String("agent", "worker", "Subagent role dispatched for each prompt")
+
+	// Pi launcher compatibility flags. They are registered so the bridge can be
+	// launched as `gentle-mesh rpc --mode rpc --approve [--session <file>]`
+	// exactly like a local Pi entrypoint, then intentionally ignored.
+	fs.String("mode", "rpc", "Pi launcher mode (accepted for compatibility, ignored)")
+	fs.Bool("approve", true, "Pi launcher approval flag (accepted for compatibility, ignored)")
+	fs.String("session", "", "Pi launcher session file (accepted for compatibility, ignored)")
+
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintln(stdout, "Usage: gentle-mesh rpc [flags]")
+			fmt.Fprintln(stdout, "")
+			fs.SetOutput(stdout)
+			fs.PrintDefaults()
+			return nil
+		}
+		return err
+	}
+
+	bridge := client.NewBridge(client.Config{
+		CoordinatorURL: *coordinator,
+		Token:          *token,
+		Agent:          *agent,
+	})
+
+	return bridge.Serve(ctx, stdin, stdout)
+}
+
+// envOrDefault returns the value of the named environment variable, or def
+// when it is unset or empty.
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 // runRun dispatches a task to the coordinator and streams SSE events to stdout.

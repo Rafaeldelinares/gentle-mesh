@@ -173,6 +173,23 @@ go run ./cmd/gentle-mesh run -coordinator http://localhost:8080 \
   -surfaces "pkg/auth/jwt.go"
 ```
 
+### Puente Drop-in JSON-RPC (`rpc`) para Open Pi Viewer
+
+Si ya contás con una interfaz gráfica que habla el protocolo RPC de Pi (Open Pi Viewer stock, cockpits móviles o cualquier herramienta que dialogue por `stdin`/`stdout`), no hace falta reescribir el cliente: el subcomando `gentle-mesh rpc` actúa como un **puente transparente drop-in** sobre `stdin`/`stdout`.
+
+Acepta los mismos flags de compatibilidad que un entrypoint local de Pi (`--mode rpc --approve [--session <file>]`) y opera así:
+
+1. **Entrada (`stdin`):** lee solicitudes JSON-RPC delimitadas por saltos de línea (`prompt`, `get_state`, `get_messages`, `new_session`, `abort`), tolerando líneas vacías o malformadas sin abortar la sesión y respetando la concurrencia de múltiples prompts.
+2. **Traducción a REST:** convierte cada `prompt` en un despacho `POST /v1/tasks` contra el coordinador, con el agente configurado y el token Bearer opcional.
+3. **Streaming SSE:** consume el stream de eventos de la tarea (`GET /v1/tasks/{id}/events`) y traduce los eventos remotos (`thought`, `tool_call`, `tool_result`, `completion`, `status`).
+4. **Salida (`stdout`):** escribe líneas JSON-RPC estándar de Pi (`message_start`, `message_update`, `tool_execution_start`, `tool_execution_end`, `agent_settled`, `message_end`), de modo que el visor no distingue que la ejecución ocurrió en un nodo remoto.
+
+```bash
+go run ./cmd/gentle-mesh rpc -coordinator http://100.107.67.35:8085
+```
+
+Flags propios del puente: `-coordinator` (por defecto `GENTLE_MESH_COORDINATOR` o `http://localhost:8080`), `-token` (opcional; por defecto `GENTLE_MESH_TOKEN`) y `-agent` (rol despachado por cada prompt, por defecto `worker`). Los flags `--mode`, `--approve` y `--session` se aceptan e ignoran, permitiendo lanzarlo con la misma forma de argumentos que un binario Pi local. El comando `abort` cancela todos los prompts en vuelo.
+
 ---
 
 ## 4. Documentación y Arquitectura Interactiva (Archify)
