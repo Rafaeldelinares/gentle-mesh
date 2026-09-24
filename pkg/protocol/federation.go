@@ -55,6 +55,31 @@ const (
 	AgentPhaseVerify  AgentPhase = "verify"
 )
 
+// TerritoryMode defines how a coordinator reacts to territory conflicts detected
+// before a task transitions into execution.
+type TerritoryMode string
+
+const (
+	// TerritoryModeQueue queues the task until conflicting territories free up.
+	TerritoryModeQueue TerritoryMode = "queue"
+	// TerritoryModeWarn starts the task despite conflicts, emitting a warning.
+	TerritoryModeWarn TerritoryMode = "warn"
+	// TerritoryModeStrict rejects the task outright when a conflict is detected.
+	TerritoryModeStrict TerritoryMode = "strict"
+	// TerritoryModeDisabled turns territory conflict detection off.
+	TerritoryModeDisabled TerritoryMode = "disabled"
+)
+
+// Valid reports whether m is a recognized TerritoryMode value.
+func (m TerritoryMode) Valid() bool {
+	switch m {
+	case TerritoryModeQueue, TerritoryModeWarn, TerritoryModeStrict, TerritoryModeDisabled:
+		return true
+	default:
+		return false
+	}
+}
+
 // ActiveTerritory represents an ongoing task's claimed territory within a repository.
 type ActiveTerritory struct {
 	TaskID         string      `json:"task_id"`
@@ -197,6 +222,17 @@ func (t ActiveTerritory) ClashesWith(other ActiveTerritory) *TerritoryConflict {
 	}
 
 	return nil
+}
+
+// ClashesWithOther checks if territory t clashes with another territory other,
+// ignoring self-clashes: when both territories carry the same non-empty TaskID,
+// they represent the same task identity and no conflict is reported.
+// For all other cases it behaves exactly like ClashesWith.
+func (t ActiveTerritory) ClashesWithOther(other ActiveTerritory) *TerritoryConflict {
+	if t.TaskID != "" && other.TaskID != "" && t.TaskID == other.TaskID {
+		return nil
+	}
+	return t.ClashesWith(other)
 }
 
 // FindConflict checks the target territory against all active territories advertised in the manifest.

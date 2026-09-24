@@ -415,3 +415,230 @@ func TestTerritoryManager_Concurrency(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestTerritoryManager_RunningManifest(t *testing.T) {
+	local := []protocol.ActiveTerritory{
+		{
+			TaskID: "queued-task-1",
+			Repo:   "github.com/org/repo",
+			Branch: "feature/queued",
+		},
+	}
+	running := []protocol.ActiveTerritory{
+		{
+			TaskID: "running-task-1",
+			Repo:   "github.com/org/repo",
+			Branch: "feature/running",
+		},
+	}
+
+	t.Run("uses RunningSource when provided", func(t *testing.T) {
+		tm := federation.NewTerritoryManager(federation.ManagerConfig{
+			PeerID:        "coord-running",
+			ClusterName:   "cluster-running",
+			LocalSource:   func() []protocol.ActiveTerritory { return local },
+			RunningSource: func() []protocol.ActiveTerritory { return running },
+		})
+
+		manifest := tm.RunningManifest()
+		if manifest.PeerID != "coord-running" || manifest.ClusterName != "cluster-running" {
+			t.Fatalf("unexpected manifest identity: %+v", manifest)
+		}
+		if manifest.Timestamp <= 0 {
+			t.Errorf("expected positive timestamp, got %d", manifest.Timestamp)
+		}
+		if len(manifest.Territories) != 1 || manifest.Territories[0].TaskID != "running-task-1" {
+			t.Fatalf("expected RunningSource territories in manifest, got %+v", manifest.Territories)
+		}
+	})
+
+	t.Run("falls back to LocalSource without RunningSource", func(t *testing.T) {
+		tm := federation.NewTerritoryManager(federation.ManagerConfig{
+			PeerID:      "coord-fallback",
+			ClusterName: "cluster-fallback",
+			LocalSource: func() []protocol.ActiveTerritory { return local },
+		})
+
+		manifest := tm.RunningManifest()
+		if len(manifest.Territories) != 1 || manifest.Territories[0].TaskID != "queued-task-1" {
+			t.Fatalf("expected LocalSource fallback territories, got %+v", manifest.Territories)
+		}
+	})
+
+	t.Run("nil RunningSource result yields empty slice", func(t *testing.T) {
+		tm := federation.NewTerritoryManager(federation.ManagerConfig{
+			PeerID:        "coord-empty",
+			ClusterName:   "cluster-empty",
+			RunningSource: func() []protocol.ActiveTerritory { return nil },
+		})
+
+		manifest := tm.RunningManifest()
+		if manifest.Territories == nil {
+			t.Fatal("expected non-nil empty Territories slice")
+		}
+		if len(manifest.Territories) != 0 {
+			t.Fatalf("expected 0 territories, got %d", len(manifest.Territories))
+		}
+	})
+}
+
+func TestTerritoryManager_FindRunningConflict(t *testing.T) {
+	running := []protocol.ActiveTerritory{
+		{
+			TaskID:       "running-task-1",
+			Repo:         "github.com/gentleman-programming/gentle-mesh",
+			Branch:       "feature/running-branch",
+			EditSurfaces: []string{"pkg/server/runner/*"},
+			Agent:        "worker",
+			TaskSummary:  "Runner optimization",
+		},
+	}
+	localQueued := []protocol.ActiveTerritory{
+		{
+			TaskID: "queued-task-1",
+			Repo:   "github.com/gentleman-programming/gentle-mesh",
+			Branch: "feature/queued-branch",
+		},
+	}
+
+	peerManifest := protocol.TerritoryManifest{
+		PeerID:      "peer-europe",
+		ClusterName: "europe-datacenter",
+		Timestamp:   time.Now().Unix(),
+		Territories: []protocol.ActiveTerritory{
+			{
+				TaskID:       "europe-task-99",
+				Repo:         "github.com/gentleman-programming/gentle-mesh",
+				Branch:       "feature/europe-mesh",
+				EditSurfaces: []string{"pkg/server/http/*"},
+				Agent:        "runner-worker",
+				TaskSummary:  "HTTP routes hardening",
+			},
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(peerManifest)
+	}))
+	defer server.Close()
+
+	tm := federation.NewTerritoryManager(federation.ManagerConfig{
+		PeerID:        "coord-local",
+		ClusterName:   "cluster-local",
+		LocalSource:   func() []protocol.ActiveTerritory { return localQueued },
+		RunningSource: func() []protocol.ActiveTerritory { return running },
+	})
+
+	if _, err := tm.RegisterPeer(protocol.PeerRegisterRequest{
+		PeerID:   "peer-europe",
+		Endpoint: server.URL,
+	}); err != nil {
+		t.Fatalf("RegisterPeer failed: %v", err)
+	}
+	if _, err := tm.SyncPeer(context.Background(), "peer-europe"); err != nil {
+		t.Fatalf("SyncPeer failed: %v", err)
+	}
+
+	t.Run("conflict with running territory", func(t *testing.T) {
+		conflict := tm.FindRunningConflict(protocol.ActiveTerritory{
+			TaskID:       "target-1",
+			Repo:         "github.com/gentleman-programming/gentle-mesh",
+			Branch:       "feature/running-branch",
+			EditSurfaces: []string{"docs/notes.md"},
+		})
+		if conflict == nil || conflict.ConflictType != protocol.ConflictBranchLocked {
+			t.Fatalf("expected running ConflictBranchLocked, got: %v", conflict)
+		}
+		if conflict.ExistingTerritory.TaskID != "running-task-1" {
+			t.Fatalf("expected existing running-task-1, got: %s", conflict.ExistingTerritory.TaskID)
+		}
+	})
+
+	t.Run("conflict with cached peer territory", func(t *testing.T) {
+		conflict := tm.FindRunningConflict(protocol.ActiveTerritory{
+			TaskID:       "target-2",
+			Repo:         "github.com/gentleman-programming/gentle-mesh",
+			Branch:       "feature/target-2",
+			EditSurfaces: []string{"pkg/server/http/router.go"},
+		})
+		if conflict == nil || conflict.ConflictType != protocol.ConflictSurfaceOverlap {
+			t.Fatalf("expected peer ConflictSurfaceOverlap, got: %v", conflict)
+		}
+		if conflict.ExistingTerritory.TaskID != "europe-task-99" {
+			t.Fatalf("expected existing europe-task-99, got: %s", conflict.ExistingTerritory.TaskID)
+		}
+	})
+
+	t.Run("self task identity is ignored against running manifest", func(t *testing.T) {
+		conflict := tm.FindRunningConflict(protocol.ActiveTerritory{
+			TaskID:       "running-task-1",
+			Repo:         "github.com/gentleman-programming/gentle-mesh",
+			Branch:       "feature/running-branch",
+			EditSurfaces: []string{"docs/notes.md"},
+		})
+		if conflict != nil {
+			t.Fatalf("expected same task id to be ignored, got %v: %s", conflict.ConflictType, conflict.Message)
+		}
+	})
+
+	t.Run("self task identity is ignored against peer manifest", func(t *testing.T) {
+		conflict := tm.FindRunningConflict(protocol.ActiveTerritory{
+			TaskID:       "europe-task-99",
+			Repo:         "github.com/gentleman-programming/gentle-mesh",
+			Branch:       "feature/europe-mesh",
+			EditSurfaces: []string{"pkg/server/http/router.go"},
+		})
+		if conflict != nil {
+			t.Fatalf("expected same task id in peer manifest to be ignored, got %v: %s", conflict.ConflictType, conflict.Message)
+		}
+	})
+
+	t.Run("queued local territories are not considered", func(t *testing.T) {
+		conflict := tm.FindRunningConflict(protocol.ActiveTerritory{
+			TaskID: "target-3",
+			Repo:   "github.com/gentleman-programming/gentle-mesh",
+			Branch: "feature/queued-branch",
+		})
+		if conflict != nil {
+			t.Fatalf("expected queued local territory to be ignored, got %v: %s", conflict.ConflictType, conflict.Message)
+		}
+	})
+
+	t.Run("no conflict anywhere", func(t *testing.T) {
+		conflict := tm.FindRunningConflict(protocol.ActiveTerritory{
+			TaskID:       "target-4",
+			Repo:         "github.com/gentleman-programming/gentle-mesh",
+			Branch:       "feature/safe-docs",
+			EditSurfaces: []string{"docs/guides/*"},
+		})
+		if conflict != nil {
+			t.Fatalf("expected no conflict, got %v: %s", conflict.ConflictType, conflict.Message)
+		}
+	})
+
+	t.Run("falls back to local source when RunningSource is nil", func(t *testing.T) {
+		tmFallback := federation.NewTerritoryManager(federation.ManagerConfig{
+			PeerID:      "coord-fallback",
+			ClusterName: "cluster-fallback",
+			LocalSource: func() []protocol.ActiveTerritory {
+				return []protocol.ActiveTerritory{
+					{
+						TaskID: "local-task-1",
+						Repo:   "github.com/org/repo",
+						Branch: "feature/local-branch",
+					},
+				}
+			},
+		})
+
+		conflict := tmFallback.FindRunningConflict(protocol.ActiveTerritory{
+			TaskID: "target-9",
+			Repo:   "github.com/org/repo",
+			Branch: "feature/local-branch",
+		})
+		if conflict == nil || conflict.ConflictType != protocol.ConflictBranchLocked {
+			t.Fatalf("expected ConflictBranchLocked via LocalSource fallback, got: %v", conflict)
+		}
+	})
+}

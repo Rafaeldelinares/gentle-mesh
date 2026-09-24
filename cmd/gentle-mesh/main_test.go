@@ -78,6 +78,88 @@ func TestFlagParsingAndValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("server rejects invalid -territory-mode", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		err := runCLI(ctx, []string{
+			"server",
+			"-tasks-dir", t.TempDir(),
+			"-territory-mode", "invalid-mode",
+		}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("expected error for invalid -territory-mode, got nil")
+		}
+		if !strings.Contains(err.Error(), "invalid -territory-mode") {
+			t.Errorf("expected error to mention %q, got: %v", "invalid -territory-mode", err)
+		}
+	})
+
+	t.Run("server accepts valid -territory-mode values", func(t *testing.T) {
+		for _, mode := range []string{"queue", "warn", "strict", "disabled"} {
+			t.Run(mode, func(t *testing.T) {
+				ln, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatalf("failed to allocate free port: %v", err)
+				}
+				addr := ln.Addr().String()
+				_ = ln.Close()
+
+				tasksDir := t.TempDir()
+				serverCtx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+
+				var stdout, stderr bytes.Buffer
+				errCh := make(chan error, 1)
+				go func() {
+					errCh <- runCLI(serverCtx, []string{
+						"server",
+						"-addr", addr,
+						"-tasks-dir", tasksDir,
+						"-db-path", "none",
+						"-territory-mode", mode,
+					}, &stdout, &stderr)
+				}()
+
+				client := &http.Client{Timeout: 500 * time.Millisecond}
+				healthzURL := fmt.Sprintf("http://%s/healthz", addr)
+				started := false
+				for i := 0; i < 40; i++ {
+					resp, err := client.Get(healthzURL)
+					if err == nil {
+						resp.Body.Close()
+						if resp.StatusCode == http.StatusOK {
+							started = true
+							break
+						}
+					}
+					time.Sleep(50 * time.Millisecond)
+				}
+
+				if !started {
+					cancel()
+					select {
+					case <-errCh:
+					case <-time.After(2 * time.Second):
+					}
+					t.Fatalf("coordinator did not start with -territory-mode %q on %s. Stderr: %s", mode, addr, stderr.String())
+				}
+
+				cancel()
+				select {
+				case err := <-errCh:
+					if err != nil {
+						t.Fatalf("runCLI server failed on shutdown with -territory-mode %q: %v", mode, err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatalf("coordinator did not shut down within timeout for -territory-mode %q", mode)
+				}
+
+				if !strings.Contains(stdout.String(), "territory mode: "+mode) {
+					t.Errorf("expected startup log to report territory mode %q, got: %s", mode, stdout.String())
+				}
+			})
+		}
+	})
+
 	t.Run("parseCommaSeparated helper", func(t *testing.T) {
 		tests := []struct {
 			input    string

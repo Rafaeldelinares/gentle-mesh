@@ -851,3 +851,129 @@ func TestRadarReportJSONSerialization(t *testing.T) {
 		t.Errorf("unexpected agent territory contents: %+v", agent)
 	}
 }
+
+func TestTerritoryMode_Valid(t *testing.T) {
+	tests := []struct {
+		name string
+		mode protocol.TerritoryMode
+		want bool
+	}{
+		{"queue", protocol.TerritoryModeQueue, true},
+		{"warn", protocol.TerritoryModeWarn, true},
+		{"strict", protocol.TerritoryModeStrict, true},
+		{"disabled", protocol.TerritoryModeDisabled, true},
+		{"empty", protocol.TerritoryMode(""), false},
+		{"unknown value", protocol.TerritoryMode("bogus"), false},
+		{"wrong case", protocol.TerritoryMode("Queue"), false},
+		{"trailing space", protocol.TerritoryMode("queue "), false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.mode.Valid(); got != tc.want {
+				t.Errorf("TerritoryMode(%q).Valid() = %v, want %v", tc.mode, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTerritoryModeConstants(t *testing.T) {
+	if protocol.TerritoryModeQueue != "queue" ||
+		protocol.TerritoryModeWarn != "warn" ||
+		protocol.TerritoryModeStrict != "strict" ||
+		protocol.TerritoryModeDisabled != "disabled" {
+		t.Fatalf("TerritoryMode constants drifted from their wire values")
+	}
+}
+
+func TestClashesWithOther_SelfIgnored(t *testing.T) {
+	t.Run("identical task identity does not clash", func(t *testing.T) {
+		target := protocol.ActiveTerritory{
+			TaskID:       "task-42",
+			Repo:         "github.com/org/repo",
+			Branch:       "feature/branch-a",
+			EditSurfaces: []string{"pkg/a.go"},
+			TaskSummary:  "Summary A",
+			NodeID:       "node-a",
+		}
+
+		if conflict := target.ClashesWithOther(target); conflict != nil {
+			t.Fatalf("expected self-identity to be ignored, got %v: %s", conflict.ConflictType, conflict.Message)
+		}
+	})
+
+	t.Run("same task id with clashing fields is ignored", func(t *testing.T) {
+		target := protocol.ActiveTerritory{
+			TaskID:       "task-42",
+			Repo:         "github.com/org/repo",
+			Branch:       "feature/branch-a",
+			EditSurfaces: []string{"pkg/a.go"},
+			TaskSummary:  "Summary A",
+		}
+		other := protocol.ActiveTerritory{
+			TaskID:       "task-42",
+			Repo:         "github.com/org/repo",
+			Branch:       "feature/branch-a",
+			EditSurfaces: []string{"pkg/a.go"},
+			TaskSummary:  "Summary A",
+			NodeID:       "node-b",
+		}
+
+		if conflict := target.ClashesWithOther(other); conflict != nil {
+			t.Fatalf("expected same task id to short-circuit, got %v: %s", conflict.ConflictType, conflict.Message)
+		}
+	})
+
+	t.Run("different task ids still clash", func(t *testing.T) {
+		target := protocol.ActiveTerritory{
+			TaskID:       "task-target",
+			Repo:         "github.com/org/repo",
+			Branch:       "feature/shared-branch",
+			EditSurfaces: []string{"docs/notes.md"},
+		}
+		existing := protocol.ActiveTerritory{
+			TaskID:       "task-existing",
+			Repo:         "github.com/org/repo",
+			Branch:       "feature/shared-branch",
+			EditSurfaces: []string{"docs/other.md"},
+		}
+
+		conflict := target.ClashesWithOther(existing)
+		if conflict == nil {
+			t.Fatalf("expected branch conflict for different task ids, got nil")
+		}
+		if conflict.ConflictType != protocol.ConflictBranchLocked {
+			t.Errorf("expected %s, got %s", protocol.ConflictBranchLocked, conflict.ConflictType)
+		}
+	})
+
+	t.Run("empty task id on one side still checks", func(t *testing.T) {
+		target := protocol.ActiveTerritory{
+			Repo:   "github.com/org/repo",
+			Branch: "feature/anonymous",
+		}
+		existing := protocol.ActiveTerritory{
+			TaskID: "task-existing",
+			Repo:   "github.com/org/repo",
+			Branch: "feature/anonymous",
+		}
+
+		conflict := target.ClashesWithOther(existing)
+		if conflict == nil || conflict.ConflictType != protocol.ConflictBranchLocked {
+			t.Fatalf("expected branch conflict when one side has empty task id, got: %v", conflict)
+		}
+	})
+
+	t.Run("clashesWith still reports duplicate task id", func(t *testing.T) {
+		target := protocol.ActiveTerritory{
+			TaskID: "task-42",
+			Repo:   "github.com/org/repo",
+		}
+		other := target
+
+		conflict := target.ClashesWith(other)
+		if conflict == nil || conflict.ConflictType != protocol.ConflictDuplicateTask {
+			t.Fatalf("ClashesWith must keep reporting duplicate task ids, got: %v", conflict)
+		}
+	})
+}

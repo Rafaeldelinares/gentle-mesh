@@ -4,9 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	stdhttp "net/http"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -14,7 +12,6 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/federation"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/task"
 )
 
@@ -196,7 +193,7 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		}
 	}
 
-	if req.GitRepo != "" {
+	if s.territoryMode == protocol.TerritoryModeStrict && req.GitRepo != "" {
 		targetTerritory := protocol.ActiveTerritory{
 			Repo:         req.GitRepo,
 			Branch:       req.GitBranch,
@@ -216,6 +213,14 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 				"task_id":  conflict.ExistingTerritory.TaskID,
 			})
 			return
+		}
+		if req.GitBranch != "" {
+			if _, _, locked := s.registry.Locks().GetLock(req.GitRepo, req.GitBranch); locked {
+				writeJSON(w, stdhttp.StatusConflict, map[string]string{
+					"error": "branch is locked by another task",
+				})
+				return
+			}
 		}
 	}
 
@@ -242,41 +247,24 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		}
 	}
 
-	if req.GitRepo != "" && req.GitBranch != "" {
-		err := s.registry.Locks().ClaimLock(req.GitRepo, req.GitBranch, t.TaskID)
+	// The scheduler owns dispatch, exclusive branch locking, runner tracking, panic
+	// recovery, and FIFO queue draining. In queue mode a territory conflict enqueues
+	// the task; in strict mode it is rejected here.
+	if _, err := s.scheduler.Schedule(t); err != nil {
+		_ = s.taskManager.CancelTask(t.TaskID, err.Error())
 		if errors.Is(err, registry.ErrBranchLocked) {
-			_ = s.taskManager.CancelTask(t.TaskID, "branch is locked by another task")
 			writeJSON(w, stdhttp.StatusConflict, map[string]string{
 				"error":   "branch is locked by another task",
 				"task_id": t.TaskID,
 			})
 			return
 		}
-		if err != nil {
-			_ = s.taskManager.CancelTask(t.TaskID, err.Error())
-			writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
+		writeJSON(w, stdhttp.StatusConflict, map[string]any{
+			"error":   err.Error(),
+			"task_id": t.TaskID,
+		})
+		return
 	}
-
-	done := s.taskManager.TrackRunner()
-	go func(mt *task.ManagedTask, r runner.Runner) {
-		defer done()
-		defer func() {
-			if rec := recover(); rec != nil {
-				log.Printf("runner panic on task %s: %v\n%s", mt.TaskID, rec, debug.Stack())
-				_, _ = mt.EmitEvent(protocol.EventError, protocol.ErrorPayload{
-					Code:    "RUNNER_PANIC",
-					Message: fmt.Sprintf("runner panicked: %v", rec),
-					Fatal:   true,
-				})
-			}
-			if mt.Request.GitRepo != "" && mt.Request.GitBranch != "" {
-				_ = s.registry.Locks().ReleaseLock(mt.Request.GitRepo, mt.Request.GitBranch, mt.TaskID)
-			}
-		}()
-		_ = r.Run(mt.Context(), mt.Request, mt)
-	}(t, s.runner)
 
 	writeJSON(w, stdhttp.StatusCreated, protocol.TaskResponse{
 		TaskID:    t.TaskID,
@@ -424,6 +412,14 @@ func (s *Server) handleTaskCancel(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		return
 	}
 
+	if s.scheduler.Cancel(id, reason) {
+		writeJSON(w, stdhttp.StatusOK, map[string]string{
+			"task_id": id,
+			"status":  string(protocol.TaskStatusCanceled),
+		})
+		return
+	}
+
 	if err := s.taskManager.CancelTask(id, reason); err != nil {
 		if errors.Is(err, task.ErrTaskAlreadyFinished) {
 			writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -436,6 +432,10 @@ func (s *Server) handleTaskCancel(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 	if t.Request.GitRepo != "" && t.Request.GitBranch != "" {
 		_ = s.registry.Locks().ReleaseLock(t.Request.GitRepo, t.Request.GitBranch, id)
 	}
+	s.scheduler.Drain()
 
-	writeJSON(w, stdhttp.StatusOK, map[string]string{"status": "canceled"})
+	writeJSON(w, stdhttp.StatusOK, map[string]string{
+		"task_id": id,
+		"status":  string(protocol.TaskStatusCanceled),
+	})
 }

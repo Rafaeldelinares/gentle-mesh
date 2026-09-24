@@ -1212,3 +1212,89 @@ func TestTaskManager_WithStore_CancelTask(t *testing.T) {
 		t.Errorf("expected store status canceled, got %s", rec.Status)
 	}
 }
+
+func TestTaskManager_RunningTerritories(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := NewTaskManager(tmpDir, 0)
+	if err != nil {
+		t.Fatalf("NewTaskManager: %v", err)
+	}
+	defer mgr.Close()
+
+	req := func(name, branch string) protocol.TaskRequest {
+		return protocol.TaskRequest{
+			Agent:     "worker",
+			Task:      name,
+			GitRepo:   "github.com/org/repo",
+			GitBranch: branch,
+		}
+	}
+
+	queued, err := mgr.CreateTask(req("queued-task", "feature/queued"))
+	if err != nil {
+		t.Fatalf("CreateTask queued: %v", err)
+	}
+	preparing, err := mgr.CreateTask(req("preparing-task", "feature/preparing"))
+	if err != nil {
+		t.Fatalf("CreateTask preparing: %v", err)
+	}
+	running, err := mgr.CreateTask(req("running-task", "feature/running"))
+	if err != nil {
+		t.Fatalf("CreateTask running: %v", err)
+	}
+
+	// Initially every task is queued: RunningTerritories must be empty while
+	// ActiveTerritories still reports all three.
+	if got := mgr.RunningTerritories(); len(got) != 0 {
+		t.Fatalf("expected 0 running territories for all-queued tasks, got %d: %+v", len(got), got)
+	}
+	if got := mgr.ActiveTerritories(); len(got) != 3 {
+		t.Fatalf("expected ActiveTerritories to still report 3 queued tasks, got %d", len(got))
+	}
+
+	if err := preparing.TransitionTo(protocol.TaskStatusPreparing); err != nil {
+		t.Fatalf("transition to preparing failed: %v", err)
+	}
+	if err := running.TransitionTo(protocol.TaskStatusRunning); err != nil {
+		t.Fatalf("transition to running failed: %v", err)
+	}
+
+	got := mgr.RunningTerritories()
+	if len(got) != 2 {
+		t.Fatalf("expected 2 running territories, got %d: %+v", len(got), got)
+	}
+	ids := make(map[string]bool, len(got))
+	for _, terr := range got {
+		ids[terr.TaskID] = true
+		if terr.Repo != "github.com/org/repo" || terr.Branch == "" {
+			t.Errorf("unexpected territory contents for %s: %+v", terr.TaskID, terr)
+		}
+	}
+	if ids[queued.TaskID] {
+		t.Errorf("queued task %s must be excluded from RunningTerritories", queued.TaskID)
+	}
+	if !ids[preparing.TaskID] {
+		t.Errorf("preparing task %s must be included in RunningTerritories", preparing.TaskID)
+	}
+	if !ids[running.TaskID] {
+		t.Errorf("running task %s must be included in RunningTerritories", running.TaskID)
+	}
+
+	// Terminal states are excluded: complete the running task.
+	if err := running.TransitionTo(protocol.TaskStatusCompleted); err != nil {
+		t.Fatalf("transition to completed failed: %v", err)
+	}
+	got = mgr.RunningTerritories()
+	if len(got) != 1 || got[0].TaskID != preparing.TaskID {
+		t.Fatalf("expected only preparing task after completion, got %+v", got)
+	}
+
+	// Canceling the queued task keeps it excluded.
+	if err := mgr.CancelTask(queued.TaskID, "no longer needed"); err != nil {
+		t.Fatalf("CancelTask failed: %v", err)
+	}
+	got = mgr.RunningTerritories()
+	if len(got) != 1 || got[0].TaskID != preparing.TaskID {
+		t.Fatalf("expected only preparing task after canceling queued task, got %+v", got)
+	}
+}

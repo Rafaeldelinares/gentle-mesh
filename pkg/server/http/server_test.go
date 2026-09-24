@@ -694,6 +694,7 @@ func TestServer_Idempotency(t *testing.T) {
 
 func TestServer_ExclusiveBranchLock(t *testing.T) {
 	_, ts := setupTestServer(t, func(cfg *meshhttp.ServerConfig) {
+		cfg.TerritoryMode = protocol.TerritoryModeStrict
 		cfg.Runner = runner.NewSimulatedRunner(runner.SimulatedOptions{
 			Query: &runner.SimulatedQuery{
 				QueryID:  "lock-wait",
@@ -1090,6 +1091,7 @@ func (p *panicRunner) Run(ctx context.Context, req protocol.TaskRequest, sink ru
 
 func TestServer_TerritorySurfaceOverlapConflict(t *testing.T) {
 	_, ts := setupTestServer(t, func(cfg *meshhttp.ServerConfig) {
+		cfg.TerritoryMode = protocol.TerritoryModeStrict
 		cfg.Runner = runner.NewSimulatedRunner(runner.SimulatedOptions{
 			Query: &runner.SimulatedQuery{
 				QueryID:  "keep-running",
@@ -1538,6 +1540,7 @@ func TestServer_FederatedTerritoryConflict(t *testing.T) {
 	_, tsA := setupTestServer(t, func(c *meshhttp.ServerConfig) {
 		c.PeerID = "coord-a"
 		c.ClusterName = "cluster-a"
+		c.TerritoryMode = protocol.TerritoryModeStrict
 	})
 	srvB, tsB := setupTestServer(t, func(c *meshhttp.ServerConfig) {
 		c.PeerID = "coord-b"
@@ -1745,4 +1748,259 @@ func TestServer_SQLiteStoreInitialization(t *testing.T) {
 			t.Fatalf("expected custom SQLite db file at %s: %v", customDBPath, err)
 		}
 	})
+}
+
+// postTaskHTTP submits a task creation request, asserts HTTP 201 Created, and
+// returns the decoded protocol.TaskResponse.
+func postTaskHTTP(t *testing.T, ts *httptest.Server, req protocol.TaskRequest) protocol.TaskResponse {
+	t.Helper()
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("failed marshaling task request: %v", err)
+	}
+
+	resp, err := ts.Client().Post(ts.URL+"/v1/tasks", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /v1/tasks failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected status 201 Created, got %d", resp.StatusCode)
+	}
+
+	var taskResp protocol.TaskResponse
+	if err := json.NewDecoder(resp.Body).Decode(&taskResp); err != nil {
+		t.Fatalf("failed decoding task response: %v", err)
+	}
+	return taskResp
+}
+
+func TestServer_TerritoryQueueMode_TransparentFIFO(t *testing.T) {
+	gate := newSchedulerGateRunner()
+	srv, ts := setupTestServer(t, func(cfg *meshhttp.ServerConfig) {
+		cfg.TerritoryMode = protocol.TerritoryModeQueue
+		cfg.Runner = gate
+	})
+
+	const repo = "github.com/gentleman-programming/gentle-mesh"
+	const branch = "feature/queue-test"
+
+	first := postTaskHTTP(t, ts, protocol.TaskRequest{
+		Agent:     "worker",
+		Task:      "queue-fifo-1",
+		GitRepo:   repo,
+		GitBranch: branch,
+	})
+	if first.Status != protocol.TaskStatusRunning {
+		t.Fatalf("expected first task status running, got %q", first.Status)
+	}
+
+	second := postTaskHTTP(t, ts, protocol.TaskRequest{
+		Agent:     "worker",
+		Task:      "queue-fifo-2",
+		GitRepo:   repo,
+		GitBranch: branch,
+	})
+	if second.Status != protocol.TaskStatusQueued {
+		t.Fatalf("expected conflicting task to be accepted as queued, got %q", second.Status)
+	}
+	if got := srv.Scheduler().QueueLen(); got != 1 {
+		t.Fatalf("expected scheduler queue length 1, got %d", got)
+	}
+
+	// Completing the running task must drain the queued task automatically.
+	gate.release("queue-fifo-1")
+	waitForCondition(t, func() bool {
+		mt, ok := srv.TaskManager().GetTask(second.TaskID)
+		return ok && mt.CurrentStatus() == protocol.TaskStatusRunning && srv.Scheduler().QueueLen() == 0
+	})
+
+	gate.release("queue-fifo-2")
+	waitForCondition(t, func() bool {
+		mt, ok := srv.TaskManager().GetTask(second.TaskID)
+		return ok && mt.CurrentStatus() == protocol.TaskStatusCompleted
+	})
+}
+
+func TestServer_TerritoryWarnMode(t *testing.T) {
+	gate := newSchedulerGateRunner()
+	srv, ts := setupTestServer(t, func(cfg *meshhttp.ServerConfig) {
+		cfg.TerritoryMode = protocol.TerritoryModeWarn
+		cfg.Runner = gate
+	})
+
+	const repo = "org/repo-warn"
+
+	first := postTaskHTTP(t, ts, protocol.TaskRequest{
+		Agent:        "worker",
+		Task:         "warn-1",
+		GitRepo:      repo,
+		GitBranch:    "main",
+		EditSurfaces: []string{"pkg/auth/*"},
+	})
+	if first.Status != protocol.TaskStatusRunning {
+		t.Fatalf("expected first task status running, got %q", first.Status)
+	}
+
+	second := postTaskHTTP(t, ts, protocol.TaskRequest{
+		Agent:        "worker",
+		Task:         "warn-2",
+		GitRepo:      repo,
+		GitBranch:    "feature/warn",
+		EditSurfaces: []string{"pkg/auth/login.go"},
+	})
+	if second.Status != protocol.TaskStatusRunning {
+		t.Fatalf("warn mode must accept the conflicting task as running, got %q", second.Status)
+	}
+	if got := srv.Scheduler().QueueLen(); got != 0 {
+		t.Fatalf("warn mode must not queue tasks, got %d", got)
+	}
+
+	// The conflicting task must still be told about the collision through a warning.
+	// A bounded client timeout prevents this read from hanging if the warning regresses.
+	streamClient := &http.Client{Timeout: 5 * time.Second}
+	sseResp, err := streamClient.Get(ts.URL + second.EventsURL)
+	if err != nil {
+		t.Fatalf("GET events failed: %v", err)
+	}
+	defer sseResp.Body.Close()
+
+	scanner := bufio.NewScanner(sseResp.Body)
+	var sawWarning bool
+	for !sawWarning {
+		evt, err := readNextSSEEvent(scanner)
+		if err != nil {
+			t.Fatalf("failed reading warning event: %v", err)
+		}
+		if evt.Type != protocol.EventThought {
+			continue
+		}
+		var tp protocol.ThoughtPayload
+		if err := evt.UnmarshalPayload(&tp); err != nil {
+			t.Fatalf("failed unmarshaling thought payload: %v", err)
+		}
+		if strings.Contains(tp.Text, "territory conflict warning") {
+			sawWarning = true
+		}
+	}
+
+	gate.release("warn-1")
+	gate.release("warn-2")
+	waitForCondition(t, func() bool { return srv.Scheduler().RunningLen() == 0 })
+}
+
+func TestServer_TerritoryDisabledMode(t *testing.T) {
+	gate := newSchedulerGateRunner()
+	srv, ts := setupTestServer(t, func(cfg *meshhttp.ServerConfig) {
+		cfg.TerritoryMode = protocol.TerritoryModeDisabled
+		cfg.Runner = gate
+	})
+
+	const repo = "org/repo-disabled"
+
+	first := postTaskHTTP(t, ts, protocol.TaskRequest{
+		Agent:        "worker",
+		Task:         "disabled-1",
+		GitRepo:      repo,
+		GitBranch:    "main",
+		EditSurfaces: []string{"pkg/auth/*"},
+	})
+	if first.Status != protocol.TaskStatusRunning {
+		t.Fatalf("expected first task status running, got %q", first.Status)
+	}
+
+	second := postTaskHTTP(t, ts, protocol.TaskRequest{
+		Agent:        "worker",
+		Task:         "disabled-2",
+		GitRepo:      repo,
+		GitBranch:    "feature/disabled",
+		EditSurfaces: []string{"pkg/auth/login.go"},
+	})
+	if second.Status != protocol.TaskStatusRunning {
+		t.Fatalf("disabled mode must accept the conflicting task as running, got %q", second.Status)
+	}
+	if got := srv.Scheduler().QueueLen(); got != 0 {
+		t.Fatalf("disabled mode must never queue tasks, got %d", got)
+	}
+	if got := srv.Scheduler().RunningLen(); got != 2 {
+		t.Fatalf("expected both tasks dispatched in disabled mode, got %d running", got)
+	}
+
+	gate.release("disabled-1")
+	gate.release("disabled-2")
+	waitForCondition(t, func() bool { return srv.Scheduler().RunningLen() == 0 })
+}
+
+func TestServer_TerritoryQueueMode_CancelQueuedTask(t *testing.T) {
+	gate := newSchedulerGateRunner()
+	srv, ts := setupTestServer(t, func(cfg *meshhttp.ServerConfig) {
+		cfg.TerritoryMode = protocol.TerritoryModeQueue
+		cfg.Runner = gate
+	})
+
+	const repo = "org/repo-cancel-queue"
+	const branch = "feature/cancel-queue"
+
+	first := postTaskHTTP(t, ts, protocol.TaskRequest{
+		Agent:     "worker",
+		Task:      "cancel-queue-1",
+		GitRepo:   repo,
+		GitBranch: branch,
+	})
+	if first.Status != protocol.TaskStatusRunning {
+		t.Fatalf("expected first task status running, got %q", first.Status)
+	}
+
+	second := postTaskHTTP(t, ts, protocol.TaskRequest{
+		Agent:     "worker",
+		Task:      "cancel-queue-2",
+		GitRepo:   repo,
+		GitBranch: branch,
+	})
+	if second.Status != protocol.TaskStatusQueued {
+		t.Fatalf("expected second task status queued, got %q", second.Status)
+	}
+	if got := srv.Scheduler().QueueLen(); got != 1 {
+		t.Fatalf("expected scheduler queue length 1, got %d", got)
+	}
+
+	cancelResp, err := ts.Client().Post(ts.URL+"/v1/tasks/"+second.TaskID+"/cancel", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST cancel failed: %v", err)
+	}
+	defer cancelResp.Body.Close()
+
+	if cancelResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200 OK canceling queued task, got %d", cancelResp.StatusCode)
+	}
+
+	var cancelBody map[string]string
+	if err := json.NewDecoder(cancelResp.Body).Decode(&cancelBody); err != nil {
+		t.Fatalf("failed decoding cancel response: %v", err)
+	}
+	if cancelBody["task_id"] != second.TaskID {
+		t.Errorf("expected cancel task_id %q, got %q", second.TaskID, cancelBody["task_id"])
+	}
+	if cancelBody["status"] != string(protocol.TaskStatusCanceled) {
+		t.Errorf("expected cancel status %q, got %q", protocol.TaskStatusCanceled, cancelBody["status"])
+	}
+
+	if got := srv.Scheduler().QueueLen(); got != 0 {
+		t.Fatalf("expected queued task to be removed from scheduler queue, got %d", got)
+	}
+	if queued := srv.Scheduler().QueuedTasks(); len(queued) != 0 {
+		t.Fatalf("expected empty scheduler queue after cancel, got %v", queued)
+	}
+
+	if mt, ok := srv.TaskManager().GetTask(second.TaskID); !ok || mt.CurrentStatus() != protocol.TaskStatusCanceled {
+		t.Fatalf("expected canceled queued task, got found=%v", ok)
+	}
+	if mt, ok := srv.TaskManager().GetTask(first.TaskID); !ok || mt.CurrentStatus() != protocol.TaskStatusRunning {
+		t.Fatalf("expected running task to remain unaffected, got found=%v", ok)
+	}
+
+	gate.release("cancel-queue-1")
+	waitForCondition(t, func() bool { return srv.Scheduler().RunningLen() == 0 })
 }

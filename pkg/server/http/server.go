@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/federation"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
@@ -32,6 +33,7 @@ type ServerConfig struct {
 	PeerID               string
 	ClusterName          string
 	TerritoryManager     *federation.TerritoryManager
+	TerritoryMode        protocol.TerritoryMode
 }
 
 // Server provides the HTTP REST and SSE coordinator daemon for gentle-mesh.
@@ -42,6 +44,8 @@ type Server struct {
 	taskManager      *task.TaskManager
 	runner           runner.Runner
 	territoryManager *federation.TerritoryManager
+	territoryMode    protocol.TerritoryMode
+	scheduler        *TerritoryScheduler
 	startTime        time.Time
 }
 
@@ -96,9 +100,10 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 	if cfg.TerritoryManager == nil {
 		cfg.TerritoryManager = federation.NewTerritoryManager(federation.ManagerConfig{
-			PeerID:      cfg.PeerID,
-			ClusterName: cfg.ClusterName,
-			LocalSource: cfg.TaskManager.ActiveTerritories,
+			PeerID:        cfg.PeerID,
+			ClusterName:   cfg.ClusterName,
+			LocalSource:   cfg.TaskManager.ActiveTerritories,
+			RunningSource: cfg.TaskManager.RunningTerritories,
 		})
 	}
 	if cfg.Runner == nil {
@@ -110,12 +115,26 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		})
 	}
 
+	mode := cfg.TerritoryMode
+	if !mode.Valid() {
+		mode = protocol.TerritoryModeQueue
+	}
+	scheduler := NewTerritoryScheduler(SchedulerConfig{
+		Mode:             mode,
+		TaskManager:      cfg.TaskManager,
+		TerritoryManager: cfg.TerritoryManager,
+		Registry:         cfg.Registry,
+		Runner:           cfg.Runner,
+	})
+
 	s := &Server{
 		config:           cfg,
 		registry:         cfg.Registry,
 		taskManager:      cfg.TaskManager,
 		runner:           cfg.Runner,
 		territoryManager: cfg.TerritoryManager,
+		territoryMode:    mode,
+		scheduler:        scheduler,
 		startTime:        time.Now(),
 	}
 
@@ -147,6 +166,16 @@ func (s *Server) TerritoryManager() *federation.TerritoryManager {
 // Runner returns the configured task execution runner.
 func (s *Server) Runner() runner.Runner {
 	return s.runner
+}
+
+// Scheduler returns the territory scheduler coordinating queueing and dispatch.
+func (s *Server) Scheduler() *TerritoryScheduler {
+	return s.scheduler
+}
+
+// TerritoryMode returns the normalized territory conflict policy in effect.
+func (s *Server) TerritoryMode() protocol.TerritoryMode {
+	return s.territoryMode
 }
 
 // Config returns a copy of the server configuration.

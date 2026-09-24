@@ -250,6 +250,34 @@ func (m *TaskManager) ActiveTerritories() []protocol.ActiveTerritory {
 	return result
 }
 
+// RunningTerritories returns ActiveTerritory snapshots for tasks currently in
+// Preparing or Running states only, excluding Queued and terminal tasks.
+func (m *TaskManager) RunningTerritories() []protocol.ActiveTerritory {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make([]protocol.ActiveTerritory, 0)
+	for _, t := range m.tasks {
+		t.mu.RLock()
+		status := t.Status
+		t.mu.RUnlock()
+
+		if status == protocol.TaskStatusRunning ||
+			status == protocol.TaskStatusPreparing {
+			result = append(result, t.Territory())
+		}
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].StartedAt == result[j].StartedAt {
+			return result[i].TaskID < result[j].TaskID
+		}
+		return result[i].StartedAt < result[j].StartedAt
+	})
+
+	return result
+}
+
 // CancelTask cancels an active task with the given reason, transitions state to canceled,
 // and notifies live event subscribers.
 func (m *TaskManager) CancelTask(taskID string, reason string) error {

@@ -30,9 +30,12 @@ type ManagerConfig struct {
 	PeerID      string
 	ClusterName string
 	LocalSource func() []protocol.ActiveTerritory
-	HTTPClient  *http.Client
-	SyncTimeout time.Duration
-	MaxFailures int
+	// RunningSource optionally supplies the territories of tasks currently in
+	// Preparing/Running states. When nil, RunningManifest falls back to LocalSource.
+	RunningSource func() []protocol.ActiveTerritory
+	HTTPClient    *http.Client
+	SyncTimeout   time.Duration
+	MaxFailures   int
 }
 
 type peerEntry struct {
@@ -178,6 +181,21 @@ func (tm *TerritoryManager) LocalManifest() protocol.TerritoryManifest {
 		Timestamp:   time.Now().Unix(),
 		Territories: territories,
 	}
+}
+
+// RunningManifest produces a manifest containing the coordinator's currently
+// running/preparing task territories. It uses config.RunningSource when provided;
+// otherwise it falls back to the local source territories.
+func (tm *TerritoryManager) RunningManifest() protocol.TerritoryManifest {
+	manifest := tm.LocalManifest()
+	if tm.config.RunningSource != nil {
+		territories := tm.config.RunningSource()
+		if territories == nil {
+			territories = []protocol.ActiveTerritory{}
+		}
+		manifest.Territories = territories
+	}
+	return manifest
 }
 
 // SyncPeer fetches and updates the remote peer's territory manifest over HTTP.
@@ -348,6 +366,43 @@ func (tm *TerritoryManager) FindConflict(target protocol.ActiveTerritory) *proto
 	for _, manifest := range peerManifests {
 		if conflict := manifest.FindConflict(target); conflict != nil {
 			return conflict
+		}
+	}
+	return nil
+}
+
+// FindRunningConflict checks the target territory against the coordinator's running
+// territory manifest and all cached peer manifests. Records carrying the same TaskID
+// as the target are ignored, since they represent the same task identity rather than
+// a collision. Returns the first TerritoryConflict encountered, or nil.
+func (tm *TerritoryManager) FindRunningConflict(target protocol.ActiveTerritory) *protocol.TerritoryConflict {
+	runningManifest := tm.RunningManifest()
+	for _, existing := range runningManifest.Territories {
+		if conflict := target.ClashesWithOther(existing); conflict != nil {
+			return conflict
+		}
+	}
+
+	tm.mu.RLock()
+	var peerManifests []protocol.TerritoryManifest
+	peerIDs := make([]string, 0, len(tm.peers))
+	for id := range tm.peers {
+		peerIDs = append(peerIDs, id)
+	}
+	sort.Strings(peerIDs)
+	for _, id := range peerIDs {
+		peer := tm.peers[id]
+		if peer.cachedManifest != nil {
+			peerManifests = append(peerManifests, *peer.cachedManifest)
+		}
+	}
+	tm.mu.RUnlock()
+
+	for _, manifest := range peerManifests {
+		for _, existing := range manifest.Territories {
+			if conflict := target.ClashesWithOther(existing); conflict != nil {
+				return conflict
+			}
 		}
 	}
 	return nil

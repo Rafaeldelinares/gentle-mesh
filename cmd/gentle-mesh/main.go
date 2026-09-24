@@ -89,9 +89,15 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	heartbeatTimeout := fs.Duration("heartbeat-timeout", 30*time.Second, "Heartbeat timeout for registered nodes")
 	token := fs.String("token", "", "Optional bearer authentication token")
 	taskTTL := fs.Duration("task-ttl", 24*time.Hour, "Task TTL before pruning")
+	territoryMode := fs.String("territory-mode", string(protocol.TerritoryModeQueue), "Territory conflict scheduling mode (queue, warn, strict, disabled)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	mode := protocol.TerritoryMode(*territoryMode)
+	if !mode.Valid() {
+		return fmt.Errorf("invalid -territory-mode %q: must be one of queue, warn, strict, disabled", *territoryMode)
 	}
 
 	srv, err := meshhttp.NewServer(meshhttp.ServerConfig{
@@ -101,12 +107,13 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		HeartbeatTimeout: *heartbeatTimeout,
 		TaskTTL:          *taskTTL,
 		BearerToken:      *token,
+		TerritoryMode:    mode,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create coordinator server: %w", err)
 	}
 
-	fmt.Fprintf(stdout, "Gentle Mesh coordinator starting on %s (tasks dir: %s)\n", *addr, *tasksDir)
+	fmt.Fprintf(stdout, "Gentle Mesh coordinator starting on %s (tasks dir: %s, territory mode: %s)\n", *addr, *tasksDir, mode)
 
 	errCh := make(chan error, 1)
 	go func() {
