@@ -90,6 +90,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	token := fs.String("token", "", "Optional bearer authentication token")
 	taskTTL := fs.Duration("task-ttl", 24*time.Hour, "Task TTL before pruning")
 	territoryMode := fs.String("territory-mode", string(protocol.TerritoryModeQueue), "Territory conflict scheduling mode (queue, warn, strict, disabled)")
+	workspace := fs.String("workspace", ".", "Base directory for remote workspace file exploration")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -108,6 +109,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		TaskTTL:          *taskTTL,
 		BearerToken:      *token,
 		TerritoryMode:    mode,
+		WorkspaceRoot:    *workspace,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create coordinator server: %w", err)

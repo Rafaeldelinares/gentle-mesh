@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2260,5 +2261,339 @@ func TestServer_CORSWildcardWithoutOrigin(t *testing.T) {
 
 	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Errorf("expected wildcard Access-Control-Allow-Origin, got %q", got)
+	}
+}
+
+// setupWorkspaceServer builds a populated workspace root plus a sibling secret file
+// that lives outside the root, so traversal attempts can be verified.
+func setupWorkspaceServer(t *testing.T) (*meshhttp.Server, *httptest.Server, string) {
+	t.Helper()
+
+	base := t.TempDir()
+	root := filepath.Join(base, "workspace")
+
+	writeFile := func(rel, content string) {
+		t.Helper()
+		full := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("failed to create %s: %v", filepath.Dir(full), err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
+			t.Fatalf("failed to write %s: %v", full, err)
+		}
+	}
+
+	writeFile("a.txt", "alpha")
+	writeFile("b.txt", "bravo")
+	writeFile("test.txt", "hello workspace\n")
+	writeFile("subdir/nested.txt", "nested content")
+	writeFile("subdir/deep/deep.txt", "deep content")
+	writeFile("zdir/zfile.txt", "zulu")
+
+	// Secret file outside the workspace root used to prove traversal is blocked.
+	secretPath := filepath.Join(base, "secret.txt")
+	if err := os.WriteFile(secretPath, []byte("top secret"), 0o600); err != nil {
+		t.Fatalf("failed to write secret file: %v", err)
+	}
+
+	srv, ts := setupTestServer(t, func(cfg *meshhttp.ServerConfig) {
+		cfg.WorkspaceRoot = root
+	})
+	return srv, ts, root
+}
+
+func TestServer_WorkspaceRootDefaultsToDot(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	got := srv.WorkspaceRoot()
+	if got == "" {
+		t.Fatal("expected workspace root to default to a non-empty absolute path")
+	}
+	if !filepath.IsAbs(got) {
+		t.Errorf("expected workspace root %q to be absolute", got)
+	}
+}
+
+func TestServer_WorkspaceTreeRoot(t *testing.T) {
+	srv, ts, root := setupWorkspaceServer(t)
+
+	resp, err := ts.Client().Get(ts.URL + "/v1/workspace/tree")
+	if err != nil {
+		t.Fatalf("GET /v1/workspace/tree failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var res meshhttp.WorkspaceTreeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("failed to decode tree response: %v", err)
+	}
+
+	if res.Root != srv.WorkspaceRoot() {
+		t.Errorf("expected root %q, got %q", srv.WorkspaceRoot(), res.Root)
+	}
+	if res.Root != root {
+		t.Errorf("expected root %q, got %q", root, res.Root)
+	}
+	if res.Path != "." {
+		t.Errorf("expected path %q, got %q", ".", res.Path)
+	}
+
+	// Directories first (alphabetical), then files (alphabetical).
+	wantNames := []string{"subdir", "zdir", "a.txt", "b.txt", "test.txt"}
+	gotNames := make([]string, 0, len(res.Entries))
+	for _, e := range res.Entries {
+		gotNames = append(gotNames, e.Name)
+	}
+	if strings.Join(gotNames, ",") != strings.Join(wantNames, ",") {
+		t.Fatalf("expected entry order %v, got %v", wantNames, gotNames)
+	}
+
+	for _, e := range res.Entries {
+		switch e.Name {
+		case "subdir", "zdir":
+			if !e.IsDir {
+				t.Errorf("expected %q to be a directory", e.Name)
+			}
+		default:
+			if e.IsDir {
+				t.Errorf("expected %q to be a file", e.Name)
+			}
+		}
+		if e.Path != e.Name {
+			t.Errorf("expected relative path %q, got %q", e.Name, e.Path)
+		}
+		if e.ModTime <= 0 {
+			t.Errorf("expected positive mod_time for %q, got %d", e.Name, e.ModTime)
+		}
+	}
+
+	for _, e := range res.Entries {
+		if e.Name == "test.txt" && e.Size != int64(len("hello workspace\n")) {
+			t.Errorf("expected test.txt size %d, got %d", len("hello workspace\n"), e.Size)
+		}
+	}
+}
+
+func TestServer_WorkspaceTreeSubdir(t *testing.T) {
+	_, ts, _ := setupWorkspaceServer(t)
+
+	resp, err := ts.Client().Get(ts.URL + "/v1/workspace/tree?path=" + url.QueryEscape("subdir"))
+	if err != nil {
+		t.Fatalf("GET /v1/workspace/tree?path=subdir failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var res meshhttp.WorkspaceTreeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("failed to decode tree response: %v", err)
+	}
+
+	if res.Path != "subdir" {
+		t.Errorf("expected path %q, got %q", "subdir", res.Path)
+	}
+
+	wantNames := []string{"deep", "nested.txt"}
+	gotNames := make([]string, 0, len(res.Entries))
+	for _, e := range res.Entries {
+		gotNames = append(gotNames, e.Name)
+	}
+	if strings.Join(gotNames, ",") != strings.Join(wantNames, ",") {
+		t.Fatalf("expected entry order %v, got %v", wantNames, gotNames)
+	}
+
+	wantPaths := []string{"subdir/deep", "subdir/nested.txt"}
+	for i, e := range res.Entries {
+		if e.Path != wantPaths[i] {
+			t.Errorf("entry %d: expected path %q, got %q", i, wantPaths[i], e.Path)
+		}
+	}
+	if !res.Entries[0].IsDir {
+		t.Errorf("expected %q to be a directory", res.Entries[0].Name)
+	}
+	if res.Entries[1].IsDir {
+		t.Errorf("expected %q to be a file", res.Entries[1].Name)
+	}
+}
+
+func TestServer_WorkspaceTreeMissingPath(t *testing.T) {
+	_, ts, _ := setupWorkspaceServer(t)
+
+	resp, err := ts.Client().Get(ts.URL + "/v1/workspace/tree?path=" + url.QueryEscape("does-not-exist"))
+	if err != nil {
+		t.Fatalf("GET /v1/workspace/tree failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestServer_WorkspaceTreeTraversalForbidden(t *testing.T) {
+	_, ts, _ := setupWorkspaceServer(t)
+
+	for _, attempt := range []string{"../../etc", "..", "../"} {
+		resp, err := ts.Client().Get(ts.URL + "/v1/workspace/tree?path=" + url.QueryEscape(attempt))
+		if err != nil {
+			t.Fatalf("GET tree?path=%s failed: %v", attempt, err)
+		}
+
+		var body map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("path %q: expected status 403, got %d", attempt, resp.StatusCode)
+		}
+		if body["error"] != "access denied: path outside workspace root" {
+			t.Errorf("path %q: unexpected error message %q", attempt, body["error"])
+		}
+	}
+}
+
+func TestServer_WorkspaceFileContent(t *testing.T) {
+	_, ts, _ := setupWorkspaceServer(t)
+
+	resp, err := ts.Client().Get(ts.URL + "/v1/workspace/file?path=" + url.QueryEscape("test.txt"))
+	if err != nil {
+		t.Fatalf("GET /v1/workspace/file failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var res meshhttp.WorkspaceFileResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("failed to decode file response: %v", err)
+	}
+
+	if res.Path != "test.txt" {
+		t.Errorf("expected path %q, got %q", "test.txt", res.Path)
+	}
+	if res.Content != "hello workspace\n" {
+		t.Errorf("expected content %q, got %q", "hello workspace\n", res.Content)
+	}
+	if res.Size != int64(len("hello workspace\n")) {
+		t.Errorf("expected size %d, got %d", len("hello workspace\n"), res.Size)
+	}
+	if res.ModTime <= 0 {
+		t.Errorf("expected positive mod_time, got %d", res.ModTime)
+	}
+}
+
+func TestServer_WorkspaceFileTraversalForbidden(t *testing.T) {
+	_, ts, _ := setupWorkspaceServer(t)
+
+	for _, attempt := range []string{"../secret.txt", "../../etc/passwd"} {
+		resp, err := ts.Client().Get(ts.URL + "/v1/workspace/file?path=" + url.QueryEscape(attempt))
+		if err != nil {
+			t.Fatalf("GET file?path=%s failed: %v", attempt, err)
+		}
+
+		var body map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("path %q: expected status 403, got %d", attempt, resp.StatusCode)
+		}
+		if body["error"] != "access denied: path outside workspace root" {
+			t.Errorf("path %q: unexpected error message %q", attempt, body["error"])
+		}
+	}
+}
+
+func TestServer_WorkspaceFileInvalidRequests(t *testing.T) {
+	_, ts, _ := setupWorkspaceServer(t)
+
+	t.Run("missing path returns 400", func(t *testing.T) {
+		resp, err := ts.Client().Get(ts.URL + "/v1/workspace/file")
+		if err != nil {
+			t.Fatalf("GET /v1/workspace/file failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var body map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected status 400, got %d", resp.StatusCode)
+		}
+		if body["error"] != "path query parameter is required" {
+			t.Errorf("unexpected error message %q", body["error"])
+		}
+	})
+
+	t.Run("directory path returns 400", func(t *testing.T) {
+		resp, err := ts.Client().Get(ts.URL + "/v1/workspace/file?path=" + url.QueryEscape("subdir"))
+		if err != nil {
+			t.Fatalf("GET /v1/workspace/file?path=subdir failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var body map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected status 400, got %d", resp.StatusCode)
+		}
+		if body["error"] != "cannot read directory as file" {
+			t.Errorf("unexpected error message %q", body["error"])
+		}
+	})
+
+	t.Run("missing file returns 404", func(t *testing.T) {
+		resp, err := ts.Client().Get(ts.URL + "/v1/workspace/file?path=" + url.QueryEscape("missing.txt"))
+		if err != nil {
+			t.Fatalf("GET /v1/workspace/file?path=missing.txt failed: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected status 404, got %d", resp.StatusCode)
+		}
+	})
+}
+
+func TestServer_WorkspaceFileSizeLimit(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "workspace")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("failed to create workspace root: %v", err)
+	}
+
+	oversized := make([]byte, 5*1024*1024+1)
+	if err := os.WriteFile(filepath.Join(root, "big.bin"), oversized, 0o600); err != nil {
+		t.Fatalf("failed to write oversized file: %v", err)
+	}
+
+	_, ts := setupTestServer(t, func(cfg *meshhttp.ServerConfig) {
+		cfg.WorkspaceRoot = root
+	})
+
+	resp, err := ts.Client().Get(ts.URL + "/v1/workspace/file?path=" + url.QueryEscape("big.bin"))
+	if err != nil {
+		t.Fatalf("GET /v1/workspace/file failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var body map[string]string
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status 413, got %d", resp.StatusCode)
+	}
+	if body["error"] != "file exceeds 5MB maximum size" {
+		t.Errorf("unexpected error message %q", body["error"])
 	}
 }

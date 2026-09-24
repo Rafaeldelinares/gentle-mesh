@@ -34,6 +34,7 @@ type ServerConfig struct {
 	ClusterName          string
 	TerritoryManager     *federation.TerritoryManager
 	TerritoryMode        protocol.TerritoryMode
+	WorkspaceRoot        string
 }
 
 // Server provides the HTTP REST and SSE coordinator daemon for gentle-mesh.
@@ -46,6 +47,7 @@ type Server struct {
 	territoryManager *federation.TerritoryManager
 	territoryMode    protocol.TerritoryMode
 	scheduler        *TerritoryScheduler
+	workspaceRoot    string
 	startTime        time.Time
 }
 
@@ -98,6 +100,13 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.PeerID == "" {
 		cfg.PeerID = cfg.ClusterName
 	}
+	if cfg.WorkspaceRoot == "" {
+		cfg.WorkspaceRoot = "."
+	}
+	workspaceRoot, err := filepath.Abs(cfg.WorkspaceRoot)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve workspace root: %w", err)
+	}
 	if cfg.TerritoryManager == nil {
 		cfg.TerritoryManager = federation.NewTerritoryManager(federation.ManagerConfig{
 			PeerID:        cfg.PeerID,
@@ -135,6 +144,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		territoryManager: cfg.TerritoryManager,
 		territoryMode:    mode,
 		scheduler:        scheduler,
+		workspaceRoot:    workspaceRoot,
 		startTime:        time.Now(),
 	}
 
@@ -176,6 +186,11 @@ func (s *Server) Scheduler() *TerritoryScheduler {
 // TerritoryMode returns the normalized territory conflict policy in effect.
 func (s *Server) TerritoryMode() protocol.TerritoryMode {
 	return s.territoryMode
+}
+
+// WorkspaceRoot returns the absolute base directory exposed for remote workspace exploration.
+func (s *Server) WorkspaceRoot() string {
+	return s.workspaceRoot
 }
 
 // Config returns a copy of the server configuration.

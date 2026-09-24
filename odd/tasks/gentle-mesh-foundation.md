@@ -40,4 +40,4 @@ Implementar la primera versión ejecutable y testeada de Gentle Mesh en Go, vali
 - [x] Task 31: Exponer `--territory-mode` en el CLI (`cmd/gentle-mesh`), conectar defaults en `ServerConfig` y documentar el semáforo inteligente en `README.md` y `RFC 001`.
 - [x] Task 32: Adaptar protocolo y payloads para compatibilidad con Open Pi Viewer (`session_id`, alias `prompt`, default `agent`, y campo `text` en `CompletionPayload`).
 - [x] Task 33: Implementar `CORSMiddleware` en `pkg/server/http` con soporte para Tauri (`tauri://localhost`, `http://tauri.localhost`), localhosts (`http://localhost:*`), Tailscale (`100.*.*.*`) y preflight `OPTIONS` sin auth.
-- [ ] Task 34: Implementar exploración remota de archivos (`GET /v1/workspace/tree` y `GET /v1/workspace/file`) en `pkg/server/http` con contención estricta anti-traversal y tests `-race`.
+- [x] Task 34: Implementar exploración remota de archivos (`GET /v1/workspace/tree` y `GET /v1/workspace/file`) en `pkg/server/http` con contención estricta anti-traversal y tests `-race`.

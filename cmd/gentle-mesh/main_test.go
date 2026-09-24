@@ -1206,3 +1206,93 @@ func TestPrintEventUnit(t *testing.T) {
 		})
 	}
 }
+
+func TestServer_WorkspaceFlag(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to allocate free port: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	workspaceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspaceDir, "flag-probe.txt"), []byte("probe"), 0o600); err != nil {
+		t.Fatalf("failed to write workspace probe file: %v", err)
+	}
+
+	tasksDir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runCLI(ctx, []string{
+			"server",
+			"-addr", addr,
+			"-tasks-dir", tasksDir,
+			"-db-path", "none",
+			"-workspace", workspaceDir,
+		}, &stdout, &stderr)
+	}()
+
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	healthzURL := fmt.Sprintf("http://%s/healthz", addr)
+	started := false
+	for i := 0; i < 40; i++ {
+		resp, err := client.Get(healthzURL)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				started = true
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !started {
+		cancel()
+		t.Fatalf("coordinator did not start on %s. Stderr: %s", addr, stderr.String())
+	}
+
+	resp, err := client.Get(fmt.Sprintf("http://%s/v1/workspace/tree", addr))
+	if err != nil {
+		t.Fatalf("GET /v1/workspace/tree failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var tree meshhttp.WorkspaceTreeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tree); err != nil {
+		t.Fatalf("failed to decode tree response: %v", err)
+	}
+	if tree.Root != workspaceDir {
+		t.Errorf("expected -workspace root %q, got %q", workspaceDir, tree.Root)
+	}
+
+	found := false
+	for _, e := range tree.Entries {
+		if e.Name == "flag-probe.txt" {
+			found = true
+			if e.Path != "flag-probe.txt" {
+				t.Errorf("expected relative path %q, got %q", "flag-probe.txt", e.Path)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected flag-probe.txt in workspace tree entries, got: %+v", tree.Entries)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("runCLI server failed on shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("coordinator did not shut down within timeout")
+	}
+}

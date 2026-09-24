@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	stdhttp "net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +35,8 @@ func (s *Server) registerRoutes(mux *stdhttp.ServeMux) {
 	mux.HandleFunc("GET /v1/tasks/{id}/events", s.handleTaskEvents)
 	mux.HandleFunc("POST /v1/tasks/{id}/reply", s.handleTaskReply)
 	mux.HandleFunc("POST /v1/tasks/{id}/cancel", s.handleTaskCancel)
+	mux.HandleFunc("GET /v1/workspace/tree", s.handleWorkspaceTree)
+	mux.HandleFunc("GET /v1/workspace/file", s.handleWorkspaceFile)
 }
 
 func writeJSON(w stdhttp.ResponseWriter, status int, data any) {
@@ -450,5 +455,160 @@ func (s *Server) handleTaskCancel(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 	writeJSON(w, stdhttp.StatusOK, map[string]string{
 		"task_id": id,
 		"status":  string(protocol.TaskStatusCanceled),
+	})
+}
+
+// workspaceMaxFileSize bounds the payload returned by the workspace file endpoint.
+const workspaceMaxFileSize = 5 * 1024 * 1024
+
+// WorkspaceFileEntry describes a single directory entry relative to the workspace root.
+type WorkspaceFileEntry struct {
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	IsDir   bool   `json:"is_dir"`
+	Size    int64  `json:"size"`
+	ModTime int64  `json:"mod_time"`
+}
+
+// WorkspaceTreeResponse is the payload returned by GET /v1/workspace/tree.
+type WorkspaceTreeResponse struct {
+	Root    string               `json:"root"`
+	Path    string               `json:"path"`
+	Entries []WorkspaceFileEntry `json:"entries"`
+}
+
+// WorkspaceFileResponse is the payload returned by GET /v1/workspace/file.
+type WorkspaceFileResponse struct {
+	Path    string `json:"path"`
+	Size    int64  `json:"size"`
+	ModTime int64  `json:"mod_time"`
+	Content string `json:"content"`
+}
+
+// resolveWorkspacePath resolves a client-supplied path inside the workspace root.
+// It returns ok=false when the path escapes the root so callers can answer 403.
+// The returned rel is the cleaned path relative to the workspace root.
+func (s *Server) resolveWorkspacePath(subPath string) (fullPath, rel string, ok bool) {
+	cleaned := filepath.Clean(subPath)
+	if cleaned == "." {
+		return s.workspaceRoot, ".", true
+	}
+	// Reject explicit traversal before normalization so requests such as
+	// "../../etc" can never be silently folded back into the workspace root.
+	if filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return "", "", false
+	}
+
+	fullPath = filepath.Join(s.workspaceRoot, filepath.Clean("/"+subPath))
+	rel, err := filepath.Rel(s.workspaceRoot, fullPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", "", false
+	}
+	return fullPath, rel, true
+}
+
+func (s *Server) handleWorkspaceTree(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	fullPath, relDir, ok := s.resolveWorkspacePath(r.URL.Query().Get("path"))
+	if !ok {
+		writeJSON(w, stdhttp.StatusForbidden, map[string]string{"error": "access denied: path outside workspace root"})
+		return
+	}
+
+	fi, err := os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, stdhttp.StatusNotFound, map[string]string{"error": "path not found"})
+			return
+		}
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if !fi.IsDir() {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "path is not a directory"})
+		return
+	}
+
+	dirEntries, err := os.ReadDir(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, stdhttp.StatusNotFound, map[string]string{"error": "path not found"})
+			return
+		}
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	entries := make([]WorkspaceFileEntry, 0, len(dirEntries))
+	for _, de := range dirEntries {
+		info, err := de.Info()
+		if err != nil {
+			continue
+		}
+		entries = append(entries, WorkspaceFileEntry{
+			Name:    de.Name(),
+			Path:    filepath.Join(relDir, de.Name()),
+			IsDir:   de.IsDir(),
+			Size:    info.Size(),
+			ModTime: info.ModTime().Unix(),
+		})
+	}
+
+	// Directories first (alphabetical), then files (alphabetical).
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].IsDir != entries[j].IsDir {
+			return entries[i].IsDir
+		}
+		return entries[i].Name < entries[j].Name
+	})
+
+	writeJSON(w, stdhttp.StatusOK, WorkspaceTreeResponse{
+		Root:    s.workspaceRoot,
+		Path:    relDir,
+		Entries: entries,
+	})
+}
+
+func (s *Server) handleWorkspaceFile(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	subPath := r.URL.Query().Get("path")
+	if subPath == "" {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "path query parameter is required"})
+		return
+	}
+
+	fullPath, relPath, ok := s.resolveWorkspacePath(subPath)
+	if !ok {
+		writeJSON(w, stdhttp.StatusForbidden, map[string]string{"error": "access denied: path outside workspace root"})
+		return
+	}
+
+	fi, err := os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, stdhttp.StatusNotFound, map[string]string{"error": "file not found"})
+			return
+		}
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if fi.IsDir() {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "cannot read directory as file"})
+		return
+	}
+	if fi.Size() > workspaceMaxFileSize {
+		writeJSON(w, stdhttp.StatusRequestEntityTooLarge, map[string]string{"error": "file exceeds 5MB maximum size"})
+		return
+	}
+
+	content, err := os.ReadFile(fullPath)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, stdhttp.StatusOK, WorkspaceFileResponse{
+		Path:    relPath,
+		Size:    fi.Size(),
+		ModTime: fi.ModTime().Unix(),
+		Content: string(content),
 	})
 }
