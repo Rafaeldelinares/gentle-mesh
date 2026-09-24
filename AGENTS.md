@@ -22,7 +22,8 @@
 
 ## 2. Pila Tecnológica y Estructura
 
-* **Lenguaje:** Go (Golang) con biblioteca estándar (`net/http`, `os/exec`, `context`).
+* **Lenguaje:** Go (Golang) con biblioteca estándar (`net/http`, `os/exec`, `context`, `database/sql`).
+* **Persistencia Dual:** JSONL append-only para streaming de eventos SSE y repetición con `Last-Event-ID` + SQLite embebido en Go puro (`modernc.org/sqlite`, `CGO_ENABLED=0`) para persistencia ACID de estado y crash recovery / rehidratación.
 * **Protocolo:** HTTP REST + Server-Sent Events (SSE) para streaming unidireccional de eventos y tokens.
 * **Serialización:** JSON determinista.
 * **Testing:** Go testing nativo (`go test ./...`).
@@ -32,9 +33,16 @@ gentle-mesh/
 ├── cmd/
 │   └── gentle-mesh/          # Punto de entrada principal (CLI: server / client / run)
 ├── pkg/
+│   ├── client/               # Cliente HTTP/SSE y adaptador para Gentle AI
 │   ├── protocol/             # Tipos, eventos SSE y contratos de la API
-│   ├── server/               # Demonio HTTP, gestión de subprocesos Pi y streaming
-│   └── client/               # Cliente HTTP/SSE y adaptador para Gentle AI
+│   └── server/               # Demonio HTTP, gestión de subprocesos Pi y streaming
+│       ├── federation/       # Peering M2M y conciencia situacional territorial compartida
+│       ├── http/             # Servidor HTTP REST y endpoints SSE
+│       ├── registry/         # Registro de nodos de la malla y keepalive (heartbeats)
+│       ├── runner/           # Ejecución de subprocesos Pi headless
+│       ├── store/            # Almacén de persistencia (SQLite pure-Go y memoria)
+│       ├── task/             # Ciclo de vida de tareas, pub/sub SSE y loggers JSONL
+│       └── worker/           # Pool de workers y gestión de cola de ejecución
 ├── docs/
 │   └── rfcs/                 # Documentos de especificación técnica y propuestas
 └── scripts/                  # Scripts de compilación y despliegue cross-platform

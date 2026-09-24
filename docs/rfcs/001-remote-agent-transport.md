@@ -376,20 +376,41 @@ No active agents currently running in the mesh radar.
 
 ---
 
-## 7. Resiliencia, Persistencia y Ciclo de Vida de Tareas
+## 7. Manejo de Errores, Desconexiones y Tolerancia a Fallos (Persistencia y Ciclo de Vida)
 
-Para garantizar desconexiones seguras sin pérdida de progreso ni consumo desmedido de recursos:
+Para garantizar desconexiones seguras, tolerancia a fallos, resiliencia ante caídas inesperadas del demonio y un ciclo de vida predecible sin pérdida de progreso ni consumo desmedido de recursos:
 
-1. **Persistencia Append-Only (JSONL en Disco):**
-   * Cada tarea mantiene un log continuo en `/var/log/gentle-mesh/tasks/{task_id}.jsonl`.
-   * Permite retransmisión desde cualquier punto histórico sin saturar la RAM del servidor.
-2. **Reconexión Transparente (`Last-Event-ID`):**
-   * Todo evento SSE incluye un ID monótono (`id: 101`). Si el cliente se desconecta, envía el header HTTP estándar `Last-Event-ID` al reconectar y el servidor reproduce los eventos faltantes antes de continuar en vivo.
-3. **Desacople de Consumo (Non-blocking Pub/Sub):**
-   * Si la conexión del cliente es lenta o inestable, la goroutine de streaming no bloquea la ejecución del runner de Pi en el servidor.
-4. **Limpieza en Dos Etapas (Configurable):**
-   * *Etapa 1 (Inmediata):* El Git Worktree efímero se destruye inmediatamente tras la finalización o cancelación de la tarea para liberar espacio en disco.
-   * *Etapa 2 (TTL diferido):* La metadata y el archivo `.jsonl` se conservan durante un periodo configurable (`GENTLE_MESH_TASK_TTL`, por defecto 24 horas) para permitir inspección y recuperación diferida, tras lo cual se purgan automáticamente.
+### 7.1. Modelo de Persistencia Dual: JSONL + SQLite en Go Puro
+
+Gentle Mesh implementa una arquitectura de persistencia dual desacoplada que separa el flujo masivo de eventos en streaming del almacenamiento transaccional del estado de las tareas:
+
+1. **Log Append-Only de Eventos (JSONL en Disco):**
+   * **Streaming de Alto Rendimiento:** Cada tarea mantiene un log continuo en `<tasks-dir>/{task_id}.jsonl`. Las escrituras secuenciales en formato JSON Lines evitan la contención de bloqueos durante ráfagas continuas de pensamientos (`thought`), llamadas a herramientas (`tool_call`) y resultados extensos (`tool_result`).
+   * **Retransmisión Determinista con `Last-Event-ID`:** Todo evento SSE incluye un identificador monótono incremental (`id: 101`). Si el cliente sufre una desconexión de red o reinicia su sesión, envía el header HTTP estándar `Last-Event-ID` al reconectar. El servidor lee los eventos a partir del offset solicitado mediante `ReadEvents(fromID)` y reproduce los eventos históricos faltantes de forma determinista antes de empalmar con el stream en vivo.
+   * **Eficiencia de Memoria:** El histórico de streaming se lee directamente del archivo JSONL en disco bajo demanda sin saturar la RAM del servidor.
+
+2. **Persistencia ACID de Estado y Crash Recovery (SQLite en Go Puro):**
+   * **Cero Dependencias CGO (`CGO_ENABLED=0`):** Se utiliza el controlador embebido de Go puro `modernc.org/sqlite` registrado a través de `database/sql`. Esto preserva la garantía de compilación estática y portabilidad total para servidores x86_64 y nodos ARM64 sin requerir toolchains C ni dependencias de enlace dinámico en el sistema operativo anfitrión.
+   * **Alta Concurrencia con Modo WAL (`PRAGMA journal_mode=WAL;`):** La base de datos opera con Write-Ahead Logging, permitiendo que las lecturas concurrentes (como consultas de estado de tareas, manifiesto territorial o inspección de radar) y las escrituras transaccionales de actualización de estado coexistan sin bloquearse mutuamente.
+   * **Tolerancia a Contención (`PRAGMA busy_timeout=5000;`):** Se configura un timeout de 5000 ms ante contención de bloqueos a nivel de archivo antes de fallar una transacción, asegurando operaciones atómicas robustas entre múltiples goroutines concurrentes.
+   * **Esquema Relacional Indexado:** Almacena la entidad maestra de cada tarea (`tasks`), registrando `task_id`, `branch`, `repository`, `domain`, `blast_radius`, `phase`, `current_action`, `status`, `worker_id`, `tags`, `edit_surfaces`, marcas de tiempo Unix (`created_at`, `started_at`, `finished_at`), `error_message` y `result_summary`. Índices dedicados (`idx_tasks_status`, `idx_tasks_created_at`, `idx_tasks_branch`) optimizan las consultas operacionales y el control de exclusión mutua territorial.
+   * **Rehidratación y Recuperación ante Caídas (Crash Recovery Rehydration):** Si el demonio del servidor se reinicia o cae inesperadamente (panic, fallo de energía o reinicio del host), al arrancar nuevamente:
+     * El `TaskManager` ejecuta `store.ListTasks()` e invoca internamente `rehydrateTask()` para reconstruir el estado completo de cada `ManagedTask` en memoria.
+     * Si la tarea cuenta con su log `.jsonl` en disco, examina el último evento persistido y sincroniza el secuenciador atómico de eventos (`eventSeq.Store(lastEventID)`), asegurando que cualquier evento subsecuente mantenga continuidad e ids monótonos sin solapamientos ni duplicación.
+     * Se restauran los estados terminales (`completed`, `failed`), resúmenes de finalización (`CompletionPayload`) y mensajes de error (`ErrorPayload`), permitiendo que clientes desconectados reenganchen su consulta o stream sin inconsistencias.
+
+3. **Configuración y Flag `-db-path`:**
+   * El demonio `gentle-mesh server` expone el flag CLI `-db-path` para configurar el almacenamiento SQLite:
+     * **Por defecto:** Si no se especifica, el archivo de base de datos se inicializa automáticamente en `<tasks-dir>/gentle-mesh.db` (ej. `/tmp/gentle-mesh/tasks/gentle-mesh.db`).
+     * **Ruta personalizada:** `-db-path /var/lib/gentle-mesh/gentle-mesh.db` para persistencia en un volumen de datos durable.
+     * **Desactivación explícita (`none`):** `-db-path none` deshabilita el almacén SQLite, ejecutando el gestor de tareas en modo puramente en memoria o sin persistencia relacional (ideal para suites de pruebas unitarias, benchmarks efímeros o ejecuciones sin estado persistente).
+
+### 7.2. Desacople de Consumo y Streaming Reactivo
+* **Non-blocking Pub/Sub:** Si la conexión del cliente es lenta o inestable, el broadcast SSE desacopla el despacho mediante canales con búfer. La goroutine de streaming jamás bloquea ni ralentiza la ejecución del runner de Pi en el servidor.
+
+### 7.3. Ciclo de Vida y Limpieza en Dos Etapas
+1. **Etapa 1 (Inmediata tras finalización):** El Git Worktree efímero en disco se destruye inmediatamente tras la finalización exitosa, cancelación o fallo de la tarea para liberar espacio en disco.
+2. **Etapa 2 (TTL diferido configurable):** La metadata y el archivo `.jsonl` se conservan durante un período configurable (`-task-ttl` o `GENTLE_MESH_TASK_TTL`, por defecto 24 horas) para permitir inspección post-mortem y recuperación diferida, tras lo cual una rutina de limpieza en segundo plano purga automáticamente los registros expirados.
 
 ---
 

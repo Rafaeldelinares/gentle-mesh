@@ -41,9 +41,11 @@ Hoy en día, el uso de agentes de IA es aislado y solitario: un desarrollador co
 
 ## 2. Pila Tecnológica y Arquitectura
 
-* **Lenguaje:** Go 1.22+ estándar puro (`net/http`, `encoding/json`, `sync`, `context`). Cero frameworks externos pesados.
+* **Lenguaje:** Go 1.22+ estándar (`net/http`, `encoding/json`, `sync`, `context`, `database/sql`). Cero frameworks web externos ni librerías de C.
 * **Transporte:** HTTP REST + Server-Sent Events (SSE) para streaming continuo de pensamientos (`thought`), llamadas a herramientas (`tool_call`) y resultados.
-* **Resiliencia y Persistencia:** Append-only logs en formato **JSONL** (`/var/log/gentle-mesh/tasks/{id}.jsonl`). Permite reconexión histórica instantánea vía el header estándar `Last-Event-ID` con consumo de RAM constante $O(1)$.
+* **Persistencia Dual y Resiliencia ante Caídas (Crash Recovery):**
+  * **Streaming de Eventos:** Append-only logs en formato **JSONL** (`<tasks-dir>/{id}.jsonl`). Permite reconexión histórica instantánea vía el header estándar `Last-Event-ID` con consumo de RAM constante $O(1)$.
+  * **Estado Maestro y Rehidratación:** Base de datos embebida **SQLite en Go puro** (`modernc.org/sqlite`, `CGO_ENABLED=0`) con modo **WAL** (*Write-Ahead Logging*). Si el servidor se apaga o reinicia, rehidrata automáticamente el catálogo de tareas sin pérdida de estado.
 * **Supervisión Autónoma:** Detección de inactividad, loop detection (bloqueo tras 3 fallas idénticas de herramientas) y auto-commit de seguridad (WIP) sin popups interactivos.
 
 ```text
@@ -55,14 +57,33 @@ gentle-mesh/
 │   ├── server/
 │   │   ├── http/             # Servidor REST, middleware Bearer y streaming SSE
 │   │   ├── registry/         # Catálogo de nodos, branch locking e idempotencia
-│   │   ├── task/             # Gestor de tareas, state machine y logger JSONL
-│   │   └── runner/           # Abstracción Runner y SimulatedRunner realista
+│   │   ├── store/            # TaskStore: MemoryStore y SQLiteStore embebido (WAL mode)
+│   │   ├── task/             # Gestor de tareas, state machine, crash recovery y logger JSONL
+│   │   ├── runner/           # Abstracción Runner, MeshRunner inteligente y SimulatedRunner
+│   │   ├── federation/       # Peering M2M y TerritoryManager para colisiones compartidas
+│   │   └── worker/           # Servidor worker autónomo con despacho remoto HTTP
 ├── docs/
 │   ├── architecture/         # Diagramas interactivos y Hub de verificación (Archify)
 │   ├── rfcs/                 # RFC 001: Especificación técnica canónica
 │   └── EVALUATION_GUIDE_FOR_LLMS.md # Guía para revisión externa (Claude / GPT)
 └── docker-compose.test.yml   # Topología multi-nodo de prueba (1 coordinator + 5 workers)
 ```
+
+### 2.1 Persistencia Dual y Recuperación ante Caídas (Crash Recovery)
+
+Para garantizar que Gentle Mesh funcione como un demonio de infraestructura confiable de grado de producción sin requerir servidores de base de datos externos (PostgreSQL, MySQL o Redis):
+
+1. **Separación de Responsabilidades en Almacenamiento:**
+   * **JSONL para el flujo de eventos:** Los eventos de streaming se escriben directamente a archivos append-only con `fsync` selectivo en eventos críticos, garantizando velocidad de escritura y lectura lineal para clientes SSE.
+   * **SQLite para el estado maestro:** Cada transición de ciclo de vida (`queued` $\to$ `running` $\to$ `completed` / `failed` / `canceled`) se sincroniza en SQLite con índices optimizados en `status`, `created_at` y `branch`.
+2. **Rehidratación Automática y Crash Resilience:**
+   * Si el proceso de `gentle-mesh` se detiene o se reinicia el sistema operativo, al arrancar nuevamente **reconstruye de forma transparente todas las tareas históricas** en memoria, reanudando la capacidad de consulta (`GET /v1/tasks/{id}`) y el filtrado sin intervención humana.
+3. **Go Puro sin CGO (`CGO_ENABLED=0`):**
+   * Emplea `modernc.org/sqlite`, una traducción directa del motor SQLite a Go puro. Mantiene intacta la promesa de **binario estático único sin dependencias del sistema** (~16 MB) ejecutable en x86_64, ARM64 o dispositivos embebidos.
+4. **Modo WAL y Alta Concurrencia:**
+   * Configurado con `PRAGMA journal_mode=WAL` y `PRAGMA busy_timeout=5000` para permitir lecturas masivas concurrentes sin bloquear las escrituras de los agentes.
+5. **Configuración Flexible vía CLI:**
+   * Parámetro `-db-path`: Define la ruta del archivo de base de datos (por defecto `<tasks-dir>/gentle-mesh.db`). Para entornos efímeros o pruebas puramente en memoria, basta con indicar `-db-path=none`.
 
 ---
 
