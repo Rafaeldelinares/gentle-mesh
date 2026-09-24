@@ -376,6 +376,107 @@ No active agents currently running in the mesh radar.
 
 ---
 
+### 6.9. Planificación Territorial Transparente: Semáforo Inteligente y Modos de Territorio (TerritoryMode)
+
+La detección de colisiones descrita en 6.4 responde con precisión quirúrgica *si* dos misiones chocan, pero deja abierto el problema de *qué hacer* con la misión rechazada. Un control de admisión que sólo sabe devolver `409 Conflict` delega el costo de la exclusión mutua al humano o al orquestador cliente: alguien debe observar el radar, esperar la liberación del territorio y reintentar la tarea. Ese ciclo `rechazo -> espera -> reintento` es frágil (reintentos en bucle, retroceso mal calibrado) e incompatible con el objetivo de ejecución autónoma y desatendida del sistema. La motivación arquitectónica del semáforo inteligente es, entonces, doble:
+
+1. **Despacho autónomo sin fricción (zero-friction scheduling):** Ninguna colisión territorial debe requerir intervención humana ni lógica de reintento en el cliente. El coordinador decide, retiene y despacha por sí mismo.
+2. **Exclusión mutua garantizada:** Aun en modo transparente, dos territorios incompatibles jamás deben ejecutarse en paralelo. La fluidez nunca puede comprarse a costa de la consistencia del repositorio.
+
+El **Semáforo Inteligente (`TerritoryScheduler`)**, implementado en `pkg/server/http/scheduler.go`, materializa esta política. Es el único dueño del despacho de tareas, del ciclo de vida de la cerradura de rama exclusiva, del tracking de runners, de la recuperación de pánicos y del drenaje automático de la cola.
+
+#### Transiciones Formales de Estado
+
+Al admitirse, toda tarea nace en `queued` (ver 7.1). A partir de allí el semáforo gobierna la transición hacia la ejecución:
+
+```text
+                  CreateTask (HTTP POST /v1/tasks)
+                              │
+                              ▼
+                        ┌───────────┐
+                        │  queued   │ ◀── cola FIFO atómica (modo queue)
+                        └─────┬─────┘
+                              │ Schedule() / Drain() sin conflicto territorial
+                              ▼
+                        ┌───────────┐
+                        │ preparing │ ── (estado admitido como territorio activo)
+                        └─────┬─────┘
+                              │ inicio del runner
+                              ▼
+                        ┌───────────┐
+                        │  running  │
+                        └─────┬─────┘
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+        completed         failed          canceled
+```
+
+* **`queued`:** la tarea existe, su log JSONL está abierto y su stream SSE es consumible, pero **no reclama territorio**. Mientras permanezca en `queued` no participa de la detección de colisiones.
+* **`preparing` / `running`:** **únicos estados que reclaman territorio**. `TransitionTo(TaskStatusRunning)` es el punto exacto en que la tarea pasa a integrar el conjunto de territorios activos.
+* **`completed` / `failed` / `canceled`:** estados terminales inmutables. La transición a un estado terminal libera la cerradura de rama y dispara el drenaje de la cola.
+
+La máquina de estados (`isValidTransition`) admite desde `queued` tanto `preparing`/`running` como los terminales por cancelación o fallo; desde `running` sólo se admite la finalización. Ninguna transición sale de un estado terminal.
+
+#### Prevención de Deadlocks y Autocolisiones: `RunningTerritories()` y `FindRunningConflict()`
+
+Dos mecanismos cooperan para que el semáforo nunca se bloquee a sí mismo:
+
+1. **`TaskManager.RunningTerritories()`** proyecta snapshots `ActiveTerritory` **exclusivamente** para tareas en `preparing` o `running`, excluyendo de forma explícita a las `queued` y a las terminales. Es la fuente de verdad de la conciencia situacional local.
+2. **`TerritoryManager.FindRunningConflict(target)`** evalúa la nueva tarea contra esa fuente (vía `RunningSource`) aplicando las reglas deterministas de 6.4 (`branch_locked`, `surface_overlap`, `duplicate_task`).
+
+Esta separación es la que evita dos fallas clásicas:
+
+* **Deadlock por cola auto-bloqueante:** si las tareas encoladas reclamaran territorio entre sí, dos misiones en espera con superficies superpuestas se bloquearían mutuamente y la cola jamás drenaría. Al excluir `queued` de `RunningTerritories()`, las tareas en espera no colisionan entre sí; sólo se comparan contra lo que realmente corre.
+* **Autocolisión:** una tarea no puede detectarse a sí misma como conflicto porque sólo ingresa a `RunningTerritories()` después de transicionar a `preparing`/`running`, y `Schedule()`/`Drain()` evalúan el conflicto *antes* de dicha transición. Adicionalmente, el semáforo verifica la pertenencia al conjunto `running` antes de despachar, y la cerradura de rama se reclama de forma atómica bajo exclusión mutua.
+
+La liberación y el drenaje ocurren bajo el mismo lock en `complete()`: se libera la cerradura de rama, se elimina la tarea del conjunto `running` y se reexamina la cola de forma atómica. Así, una tarea que llega justo en ese instante no puede perder su *wake-up* entre observar un conflicto y encolarse.
+
+#### Modos de Territorio (`TerritoryMode`)
+
+El comportamiento del semáforo es conmutable sin alterar contratos de red:
+
+| Modo | Comportamiento ante conflicto | Uso típico |
+| --- | --- | --- |
+| `queue` (**por defecto**) | Encola en FIFO transparentemente y responde `201 Created` con `status: "queued"`. | Operación normal colaborativa multi-agente. |
+| `warn` | Despacha de inmediato y emite una advertencia no fatal (`event: thought`) en el stream. | Diagnóstico o cuando la métrica pesa más que la exclusión. |
+| `strict` | Rechaza con `409 Conflict` y payload de conflicto estructurado. | Pipelines de CI que exigen exclusión dura y determinista. |
+| `disabled` | Omite por completo la detección territorial y despacha siempre. | Benchmarks, pruebas de carga o entornos sin Git compartido. |
+
+En todos los modos, siempre que existan repositorio y rama, el semáforo sigue reclamando la **cerradura de rama exclusiva** (`repo:branch`) al despachar y la libera al finalizar; `disabled` sólo desactiva la comprobación *preventiva* de territorios, no la exclusión mutua de rama.
+
+#### Contratos de la API y de la CLI
+
+**Flag CLI (`cmd/gentle-mesh`, subcomando `server`):**
+```bash
+gentle-mesh server -addr :8080 -territory-mode=queue
+```
+`-territory-mode` acepta `queue`, `warn`, `strict` o `disabled` (por defecto `queue`). Un valor desconocido aborta el arranque con `invalid -territory-mode "<v>": must be one of queue, warn, strict, disabled`, evitando que una política inválida degrade silenciosamente la admisión.
+
+**Respuesta en modo `queue` (conflicto -> retención transparente):** `HTTP 201 Created`
+```json
+{
+  "task_id": "task-1725004000-a1b2c3d4",
+  "status": "queued",
+  "events_url": "/v1/tasks/task-1725004000-a1b2c3d4/events",
+  "created_at": 1725004000
+}
+```
+El cliente obtiene `task_id` y `events_url` como en cualquier admisión; la única diferencia es `status: "queued"`. Gracias a la retransmisión determinista (`Last-Event-ID`, ver 7.1) puede engancharse al stream aun antes de que la tarea transicione a `running`.
+
+**Respuesta en modo `strict` (conflicto -> rechazo):** `HTTP 409 Conflict`
+```json
+{
+  "error": "edit surfaces overlap on [pkg/protocol/federation.go] with existing task \"task_9872\"",
+  "conflict": { "...": "TerritoryConflict de 6.4" },
+  "task_id": "task_9872"
+}
+```
+
+**Cancelación:** una tarea encolada puede cancelarse vía `POST /v1/tasks/{id}/cancel`; el semáforo la retira de la cola de forma atómica y transiciona la tarea a `canceled`. Una finalización o cancelación de la tarea en curso dispara `Drain()` y el despacho automático de la siguiente tarea compatible.
+
+---
+
 ## 7. Manejo de Errores, Desconexiones y Tolerancia a Fallos (Persistencia y Ciclo de Vida)
 
 Para garantizar desconexiones seguras, tolerancia a fallos, resiliencia ante caídas inesperadas del demonio y un ciclo de vida predecible sin pérdida de progreso ni consumo desmedido de recursos:

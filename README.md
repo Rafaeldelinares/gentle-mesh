@@ -85,6 +85,26 @@ Para garantizar que Gentle Mesh funcione como un demonio de infraestructura conf
 5. **Configuración Flexible vía CLI:**
    * Parámetro `-db-path`: Define la ruta del archivo de base de datos (por defecto `<tasks-dir>/gentle-mesh.db`). Para entornos efímeros o pruebas puramente en memoria, basta con indicar `-db-path=none`.
 
+### 2.2 Planificación Territorial Transparente y Semáforo Inteligente (TerritoryMode)
+
+Un control de admisión territorial que sólo sabe rechazar rompe la fluidez del trabajo colaborativo. Cuando varias sesiones, orquestadores o miembros de un equipo despachan misiones concurrentes sobre el mismo repositorio, el rechazo abrupto (`HTTP 409 Conflict`) obliga a intervención humana o a reintentos en bucle desde el cliente: alguien tiene que mirar el radar, esperar a que la rama se libere y volver a lanzar la tarea a mano. Ese ida y vuelta destruye exactamente la autonomía que la malla promete.
+
+Para resolverlo, el coordinador incorpora un **Semáforo Inteligente de Territorio (`TerritoryScheduler`)**: en lugar de rebotar la tarea, la **retiene y la despacha sola** cuando el territorio se libera.
+
+1. **Semáforo transparente (`TerritoryModeQueue`, modo por defecto):**
+   * Cuando una tarea nueva colisiona territorialmente con otra en ejecución (misma rama bloqueada o superficies de edición superpuestas), el coordinador **no falla**: responde `HTTP 201 Created` con `status: "queued"` y la coloca en una **cola FIFO atómica**.
+   * El cliente recibe su `task_id` y su `events_url` de inmediato, y puede engancharse al stream SSE aunque la tarea aún no haya arrancado.
+2. **Despacho automático secuencial:**
+   * Tan pronto como la tarea en curso finaliza (o se cancela) y libera su cerradura de rama, el planificador invoca `TerritoryScheduler.Drain()`, que reexamina la cola y **despacha sin intervención humana** la siguiente tarea cuyo territorio ya no colisiona.
+   * El respeto del orden FIFO y el despacho secuencial garantizan que dos agentes jamás comiteen concurrentemente sobre el mismo ref de Git.
+3. **Los 4 modos soportados (`-territory-mode`):**
+   * `queue` (**por defecto**): encola transparentemente ante conflictos de territorio y despacha de forma secuencial en orden FIFO.
+   * `warn`: despacha la tarea de inmediato pese al conflicto, pero emite una **advertencia no fatal** en el stream de eventos (un evento `thought`) para dejar constancia del solapamiento.
+   * `strict`: rechaza de inmediato con `HTTP 409 Conflict` (modo estricto tradicional, útil para pipelines de CI que exigen exclusión dura).
+   * `disabled`: desactiva por completo la comprobación de conflictos territoriales y despacha siempre.
+4. **Configuración vía CLI:**
+   * El subcomando `server` expone el flag `-territory-mode=queue|warn|strict|disabled`. Un valor desconocido aborta el arranque con un error explícito, evitando degradaciones silenciosas de política.
+
 ---
 
 ## 3. Demostración Rápida en Local (Entorno Seguro)
@@ -97,6 +117,14 @@ Para garantizar que Gentle Mesh funcione como un demonio de infraestructura conf
 go test -v -race ./...
 ```
 *(Todos los paquetes cuentan con cobertura unitaria y 0 race conditions).*
+
+### Levantar el coordinador en local
+```bash
+go run ./cmd/gentle-mesh server \
+  -addr :8080 \
+  -territory-mode queue
+```
+El flag `-territory-mode` acepta `queue` (por defecto), `warn`, `strict` o `disabled`; consultá el semáforo inteligente en la sección 2.2.
 
 ### Levantar el clúster de prueba de 6 nodos en Docker
 El repositorio incluye una topología lista para probar en una red bridge aislada (`gentle-mesh-net`):
