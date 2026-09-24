@@ -42,3 +42,6 @@ Implementar la primera versión ejecutable y testeada de Gentle Mesh en Go, vali
 - [x] Task 33: Implementar `CORSMiddleware` en `pkg/server/http` con soporte para Tauri (`tauri://localhost`, `http://tauri.localhost`), localhosts (`http://localhost:*`), Tailscale (`100.*.*.*`) y preflight `OPTIONS` sin auth.
 - [x] Task 34: Implementar exploración remota de archivos (`GET /v1/workspace/tree` y `GET /v1/workspace/file`) en `pkg/server/http` con contención estricta anti-traversal y tests `-race`.
 - [x] Task 35: Conector nativo HTTP/SSE para Open Pi Viewer (src/infra/mesh.ts, src/infra/bridge.ts, SettingsView, i18n y tests en open-pi-viewer), desacoplando el visor de Node.js local y conectándolo directamente a Gentle Mesh.
+- [x] Task 36: Validación en vivo de Open Pi Viewer contra cluster Docker de 6 nodos, corrección de unwrapping de payload en `src/infra/mesh.ts` y test de integración automatizado en `tests/integration/live-docker-mesh.test.ts` (773 tests pasando, arquitectura limpia).
+- [ ] Task 37: Despliegue en vivo en La Fábrica (`100.107.67.35`) vía Tailscale y verificación con Open Pi Viewer en modo Gentle Mesh (Fase 1).
+- [ ] Task 38: Implementación de `gentle-mesh rpc` (Milagro 1) como puente CLI stdio (stdin/stdout JSON-RPC de Pi) a HTTP/SSE remoto para compatibilidad drop-in con Open Pi Viewer oficial sin modificar (Fase 2).
