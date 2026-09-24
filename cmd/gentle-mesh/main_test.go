@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1379,4 +1380,199 @@ func TestServer_WorkspaceFlag(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("coordinator did not shut down within timeout")
 	}
+}
+
+// installFakePi writes an executable `pi` stub into a fresh temp dir and
+// prepends that dir to PATH, so `server -runner pi` spawns the stub instead of
+// a real model call.
+func installFakePi(t *testing.T, scriptBody string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake pi harness requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "pi"), []byte("#!/bin/sh\n"+scriptBody), 0o755); err != nil {
+		t.Fatalf("failed to write fake pi binary: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// piStreamScript renders a fake pi body that replays a canned JSON event stream.
+func piStreamScript(stream string) string {
+	return "cat <<'PI_EOF'\n" + stream + "PI_EOF\n"
+}
+
+// startCoordinator boots `server` with the given extra args on a free port and
+// returns the address plus a graceful shutdown function.
+func startCoordinator(t *testing.T, args []string) (string, func() error) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to allocate free port: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var stdout, stderr bytes.Buffer
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runCLI(ctx, append([]string{"server", "-addr", addr}, args...), &stdout, &stderr)
+	}()
+
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	started := false
+	for i := 0; i < 60; i++ {
+		resp, err := client.Get(fmt.Sprintf("http://%s/healthz", addr))
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				started = true
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !started {
+		cancel()
+		t.Fatalf("coordinator server did not start on %s. Stderr: %s", addr, stderr.String())
+	}
+
+	stop := func() error {
+		cancel()
+		select {
+		case err := <-errCh:
+			return err
+		case <-time.After(5 * time.Second):
+			t.Fatal("coordinator did not shut down within timeout")
+			return nil
+		}
+	}
+	return addr, stop
+}
+
+// dispatchTaskOn creates a task on a running coordinator and polls until it
+// reaches a terminal state.
+func dispatchTaskOn(t *testing.T, addr string, req protocol.TaskRequest) protocol.TaskState {
+	t.Helper()
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("failed to marshal task request: %v", err)
+	}
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Post(fmt.Sprintf("http://%s/v1/tasks", addr), "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 creating task, got %d", resp.StatusCode)
+	}
+
+	var taskResp protocol.TaskResponse
+	if err := json.NewDecoder(resp.Body).Decode(&taskResp); err != nil {
+		t.Fatalf("failed to decode task response: %v", err)
+	}
+
+	var state protocol.TaskState
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		getResp, err := client.Get(fmt.Sprintf("http://%s/v1/tasks/%s", addr, taskResp.TaskID))
+		if err == nil {
+			err = json.NewDecoder(getResp.Body).Decode(&state)
+			getResp.Body.Close()
+			if err == nil {
+				if state.Status == protocol.TaskStatusCompleted || state.Status == protocol.TaskStatusFailed || state.Status == protocol.TaskStatusCanceled {
+					return state
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task %s did not reach a terminal state in time; last state: %+v", taskResp.TaskID, state)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestServer_RunnerFlag(t *testing.T) {
+	t.Run("rejects an unknown runner value", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		err := runCLI(context.Background(), []string{
+			"server",
+			"-runner", "telepathy",
+			"-tasks-dir", t.TempDir(),
+		}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("expected an error for an unknown -runner value, got nil")
+		}
+		if !strings.Contains(err.Error(), "runner") {
+			t.Errorf("expected the error to mention the runner flag, got: %v", err)
+		}
+	})
+
+	t.Run("simulated runner starts and shuts down", func(t *testing.T) {
+		_, stop := startCoordinator(t, []string{
+			"-tasks-dir", t.TempDir(),
+			"--db-path", "none",
+			"-runner", "simulated",
+		})
+		if err := stop(); err != nil {
+			t.Fatalf("simulated runner coordinator failed on shutdown: %v", err)
+		}
+	})
+
+	t.Run("pi runner executes tasks through the local pi binary", func(t *testing.T) {
+		installFakePi(t, piStreamScript(`{"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"mesh says "}}
+{"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"hello"}}
+{"type":"agent_settled"}
+`))
+
+		addr, stop := startCoordinator(t, []string{
+			"-tasks-dir", t.TempDir(),
+			"--db-path", "none",
+			"-runner", "pi",
+		})
+		defer func() {
+			if err := stop(); err != nil {
+				t.Fatalf("pi runner coordinator failed on shutdown: %v", err)
+			}
+		}()
+
+		state := dispatchTaskOn(t, addr, protocol.TaskRequest{Agent: "worker", Task: "say hello"})
+		if state.Status != protocol.TaskStatusCompleted {
+			t.Fatalf("expected completed task, got %s (error: %+v)", state.Status, state.Error)
+		}
+		if state.Completion == nil || state.Completion.Result != "mesh says hello" {
+			t.Fatalf("expected completion from the fake pi stream, got %+v", state.Completion)
+		}
+	})
+
+	t.Run("pi runner marks the task failed when pi exits non-zero", func(t *testing.T) {
+		installFakePi(t, "echo 'provider unreachable' >&2\nexit 7\n")
+
+		addr, stop := startCoordinator(t, []string{
+			"-tasks-dir", t.TempDir(),
+			"--db-path", "none",
+			"-runner", "pi",
+		})
+		defer func() {
+			if err := stop(); err != nil {
+				t.Fatalf("pi runner coordinator failed on shutdown: %v", err)
+			}
+		}()
+
+		state := dispatchTaskOn(t, addr, protocol.TaskRequest{Agent: "worker", Task: "fail loudly"})
+		if state.Status != protocol.TaskStatusFailed {
+			t.Fatalf("expected failed task, got %s", state.Status)
+		}
+		if state.Error == nil || state.Error.Code != "PI_EXIT_ERROR" || !state.Error.Fatal {
+			t.Fatalf("expected a fatal PI_EXIT_ERROR, got %+v", state.Error)
+		}
+		if !strings.Contains(state.Error.Message, "provider unreachable") {
+			t.Errorf("expected stderr detail in the error message, got: %q", state.Error.Message)
+		}
+	})
 }

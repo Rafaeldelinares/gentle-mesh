@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -22,6 +23,7 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/client"
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
+	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/worker"
 )
 
@@ -102,6 +104,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	taskTTL := fs.Duration("task-ttl", 24*time.Hour, "Task TTL before pruning")
 	territoryMode := fs.String("territory-mode", string(protocol.TerritoryModeQueue), "Territory conflict scheduling mode (queue, warn, strict, disabled)")
 	workspace := fs.String("workspace", ".", "Base directory for remote workspace file exploration")
+	runnerName := fs.String("runner", "mesh", "Task execution runner: mesh (registry routing with local simulation), simulated (local only), or pi (spawn the local Pi CLI)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -110,6 +113,11 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	mode := protocol.TerritoryMode(*territoryMode)
 	if !mode.Valid() {
 		return fmt.Errorf("invalid -territory-mode %q: must be one of queue, warn, strict, disabled", *territoryMode)
+	}
+
+	selectedRunner, err := buildRunner(*runnerName, *workspace)
+	if err != nil {
+		return err
 	}
 
 	srv, err := meshhttp.NewServer(meshhttp.ServerConfig{
@@ -121,12 +129,13 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		BearerToken:      *token,
 		TerritoryMode:    mode,
 		WorkspaceRoot:    *workspace,
+		Runner:           selectedRunner,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create coordinator server: %w", err)
 	}
 
-	fmt.Fprintf(stdout, "Gentle Mesh coordinator starting on %s (tasks dir: %s, territory mode: %s)\n", *addr, *tasksDir, mode)
+	fmt.Fprintf(stdout, "Gentle Mesh coordinator starting on %s (tasks dir: %s, territory mode: %s, runner: %s)\n", *addr, *tasksDir, mode, *runnerName)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -151,6 +160,26 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		}
 		fmt.Fprintln(stdout, "Coordinator stopped gracefully.")
 		return nil
+	}
+}
+
+// buildRunner resolves the -runner flag into a task execution runner. A nil
+// runner leaves selection to the server default, which routes to mesh nodes and
+// falls back to local simulation.
+func buildRunner(name, workspace string) (runner.Runner, error) {
+	switch name {
+	case "mesh":
+		return nil, nil
+	case "simulated":
+		return runner.NewSimulatedRunner(runner.SimulatedOptions{}), nil
+	case "pi":
+		workspaceRoot, err := filepath.Abs(workspace)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve workspace root for the pi runner: %w", err)
+		}
+		return runner.NewPiRunner(runner.PiRunnerOptions{WorkspaceRoot: workspaceRoot}), nil
+	default:
+		return nil, fmt.Errorf("invalid -runner %q: must be one of mesh, simulated, pi", name)
 	}
 }
 

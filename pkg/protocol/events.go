@@ -17,6 +17,7 @@ type EventType string
 const (
 	EventStatus     EventType = "status"
 	EventThought    EventType = "thought"
+	EventToken      EventType = "token"
 	EventToolCall   EventType = "tool_call"
 	EventToolResult EventType = "tool_result"
 	EventQuery      EventType = "query"
@@ -43,6 +44,13 @@ type StatusPayload struct {
 
 // ThoughtPayload carries internal agent reasoning or chain-of-thought tokens.
 type ThoughtPayload struct {
+	Text string `json:"text"`
+}
+
+// TokenPayload carries a streamed fragment of the subagent's final answer text.
+// Tokens are incremental: a consumer must concatenate them in arrival order to
+// reconstruct the completion message.
+type TokenPayload struct {
 	Text string `json:"text"`
 }
 

@@ -236,6 +236,24 @@ func (t *ManagedTask) TransitionTo(status protocol.TaskStatus) error {
 	return nil
 }
 
+// setCurrentActionLocked records the first line of streamed agent text as the
+// task's current action, capped at 100 runes so status payloads stay small.
+// Empty text leaves the previous action untouched. The caller must hold t.mu.
+func (t *ManagedTask) setCurrentActionLocked(text string) {
+	action := text
+	if idx := strings.Index(action, "\n"); idx != -1 {
+		action = action[:idx]
+	}
+	action = strings.TrimSpace(action)
+	runes := []rune(action)
+	if len(runes) > 100 {
+		action = string(runes[:100])
+	}
+	if action != "" {
+		t.CurrentAction = action
+	}
+}
+
 // EmitEvent creates a new sequential event, logs it to the append-only JSONL log,
 // broadcasts it non-blockingly to all subscribers, and updates internal status if applicable.
 func (t *ManagedTask) EmitEvent(eventType protocol.EventType, payload any) (protocol.Event, error) {
@@ -308,18 +326,12 @@ func (t *ManagedTask) EmitEvent(eventType protocol.EventType, payload any) (prot
 	case protocol.EventThought:
 		var th protocol.ThoughtPayload
 		if err := evt.UnmarshalPayload(&th); err == nil && th.Text != "" {
-			action := th.Text
-			if idx := strings.Index(action, "\n"); idx != -1 {
-				action = action[:idx]
-			}
-			action = strings.TrimSpace(action)
-			runes := []rune(action)
-			if len(runes) > 100 {
-				action = string(runes[:100])
-			}
-			if action != "" {
-				t.CurrentAction = action
-			}
+			t.setCurrentActionLocked(th.Text)
+		}
+	case protocol.EventToken:
+		var tk protocol.TokenPayload
+		if err := evt.UnmarshalPayload(&tk); err == nil && tk.Text != "" {
+			t.setCurrentActionLocked(tk.Text)
 		}
 	case protocol.EventCompletion:
 		var cp protocol.CompletionPayload
