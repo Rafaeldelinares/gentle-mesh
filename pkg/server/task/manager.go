@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
 )
 
 var (
@@ -25,6 +26,7 @@ var (
 type TaskManager struct {
 	tasksDir    string
 	taskTTL     time.Duration
+	store       store.TaskStore
 	mu          sync.RWMutex
 	tasks       map[string]*ManagedTask
 	closed      bool
@@ -33,8 +35,25 @@ type TaskManager struct {
 	runnerWg    sync.WaitGroup
 }
 
+// TaskManagerOption configures a TaskManager.
+type TaskManagerOption func(*TaskManager)
+
+// WithStore sets the underlying TaskStore for the TaskManager.
+func WithStore(s store.TaskStore) TaskManagerOption {
+	return func(m *TaskManager) {
+		m.store = s
+	}
+}
+
+// Store returns the configured TaskStore, or nil if none was configured.
+func (m *TaskManager) Store() store.TaskStore {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.store
+}
+
 // NewTaskManager creates a new TaskManager storing JSONL logs in tasksDir.
-func NewTaskManager(tasksDir string, taskTTL time.Duration) (*TaskManager, error) {
+func NewTaskManager(tasksDir string, taskTTL time.Duration, opts ...TaskManagerOption) (*TaskManager, error) {
 	if err := os.MkdirAll(tasksDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create tasks directory: %w", err)
 	}
@@ -44,6 +63,25 @@ func NewTaskManager(tasksDir string, taskTTL time.Duration) (*TaskManager, error
 		taskTTL:     taskTTL,
 		tasks:       make(map[string]*ManagedTask),
 		stopCleanup: make(chan struct{}),
+	}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt(m)
+		}
+	}
+
+	if m.store != nil {
+		records, err := m.store.ListTasks(context.Background(), store.TaskFilter{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to rehydrate tasks from store: %w", err)
+		}
+		for _, rec := range records {
+			if rec == nil || rec.TaskID == "" {
+				continue
+			}
+			m.tasks[rec.TaskID] = m.rehydrateTask(rec)
+		}
 	}
 
 	if taskTTL > 0 {
@@ -105,6 +143,40 @@ func (m *TaskManager) CreateTask(req protocol.TaskRequest) (*ManagedTask, error)
 	}
 
 	task := NewManagedTask(taskID, req, ctx, cancel, logger)
+
+	if m.store != nil {
+		task.SetOnUpdate(m.syncTaskToStore)
+		blastRadius := task.BlastRadius
+		if blastRadius == "" {
+			blastRadius = protocol.BlastRadiusIsolated
+		}
+		record := &store.TaskRecord{
+			TaskID:        taskID,
+			Branch:        req.GitBranch,
+			Repository:    req.GitRepo,
+			Domain:        req.Domain,
+			BlastRadius:   blastRadius,
+			Phase:         task.Phase,
+			CurrentAction: "Task queued",
+			Status:        protocol.TaskStatusQueued,
+			WorkerID:      task.NodeID,
+			Tags:          append([]string(nil), req.Tags...),
+			EditSurfaces:  append([]string(nil), req.EditSurfaces...),
+			CreatedAt:     task.CreatedAt,
+			StartedAt:     0,
+			FinishedAt:    0,
+			ErrorMessage:  "",
+			ResultSummary: "",
+		}
+		saveCtx, saveCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := m.store.SaveTask(saveCtx, record)
+		saveCancel()
+		if err != nil {
+			cancel()
+			_ = logger.Close()
+			return nil, fmt.Errorf("failed to save task record to store: %w", err)
+		}
+	}
 
 	// Emit initial status: queued
 	if _, err := task.EmitEvent(protocol.EventStatus, protocol.StatusPayload{
@@ -190,9 +262,8 @@ func (m *TaskManager) CancelTask(taskID string, reason string) error {
 	}
 
 	task.mu.Lock()
-	defer task.mu.Unlock()
-
 	if task.isTerminalLocked() {
+		task.mu.Unlock()
 		return ErrTaskAlreadyFinished
 	}
 
@@ -210,6 +281,7 @@ func (m *TaskManager) CancelTask(taskID string, reason string) error {
 		Message: reason,
 	})
 	if err != nil {
+		task.mu.Unlock()
 		return err
 	}
 
@@ -228,7 +300,9 @@ func (m *TaskManager) CancelTask(taskID string, reason string) error {
 		close(sub)
 	}
 	task.subscribers = make(map[chan protocol.Event]struct{})
+	task.mu.Unlock()
 
+	task.notifyUpdate()
 	return nil
 }
 
@@ -344,9 +418,149 @@ func (m *TaskManager) Close() error {
 	if m.stopCleanup != nil {
 		close(m.stopCleanup)
 	}
+
+	if m.store != nil {
+		if err := m.store.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	m.mu.Unlock()
 
 	m.cleanupWg.Wait()
 
 	return firstErr
+}
+
+func (m *TaskManager) rehydrateTask(rec *store.TaskRecord) *ManagedTask {
+	blastRadius := rec.BlastRadius
+	if blastRadius == "" {
+		blastRadius = protocol.BlastRadiusIsolated
+	}
+	req := protocol.TaskRequest{
+		GitBranch:    rec.Branch,
+		GitRepo:      rec.Repository,
+		Domain:       rec.Domain,
+		BlastRadius:  blastRadius,
+		EditSurfaces: append([]string(nil), rec.EditSurfaces...),
+		Tags:         append([]string(nil), rec.Tags...),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	logPath := filepath.Join(m.tasksDir, rec.TaskID+".jsonl")
+	var logger *JSONLLogger
+	if _, err := os.Stat(logPath); err == nil {
+		logger, _ = NewJSONLLogger(logPath)
+	}
+
+	lastActivity := rec.FinishedAt
+	if lastActivity == 0 {
+		lastActivity = rec.StartedAt
+	}
+	if lastActivity == 0 {
+		lastActivity = rec.CreatedAt
+	}
+
+	task := &ManagedTask{
+		TaskID:         rec.TaskID,
+		Request:        req,
+		Status:         rec.Status,
+		CreatedAt:      rec.CreatedAt,
+		StartedAt:      rec.StartedAt,
+		FinishedAt:     rec.FinishedAt,
+		Domain:         rec.Domain,
+		BlastRadius:    blastRadius,
+		Phase:          rec.Phase,
+		CurrentAction:  rec.CurrentAction,
+		LastActivityAt: lastActivity,
+		EditSurfaces:   append([]string(nil), rec.EditSurfaces...),
+		NodeID:         rec.WorkerID,
+		ctx:            ctx,
+		cancel:         cancel,
+		logger:         logger,
+		subscribers:    make(map[chan protocol.Event]struct{}),
+		pendingQueries: make(map[string]chan string),
+	}
+
+	if rec.FinishedAt > 0 {
+		task.finishedTime = time.Unix(rec.FinishedAt, 0)
+	}
+
+	if rec.ResultSummary != "" || rec.Status == protocol.TaskStatusCompleted {
+		task.Completion = &protocol.CompletionPayload{
+			Result: rec.ResultSummary,
+		}
+	}
+
+	if rec.ErrorMessage != "" || rec.Status == protocol.TaskStatusFailed {
+		task.Error = &protocol.ErrorPayload{
+			Message: rec.ErrorMessage,
+		}
+	}
+
+	if task.isTerminalLocked() {
+		cancel()
+	}
+
+	if logger != nil {
+		events, err := logger.ReadEvents(0)
+		if err == nil && len(events) > 0 {
+			task.eventSeq.Store(events[len(events)-1].ID)
+		}
+	}
+
+	task.SetOnUpdate(m.syncTaskToStore)
+	return task
+}
+
+func (m *TaskManager) syncTaskToStore(t *ManagedTask) {
+	if t == nil {
+		return
+	}
+	m.mu.RLock()
+	st := m.store
+	closed := m.closed
+	m.mu.RUnlock()
+	if st == nil || closed {
+		return
+	}
+
+	t.mu.RLock()
+	var errMsg string
+	if t.Error != nil {
+		errMsg = t.Error.Message
+	}
+	var summary string
+	if t.Completion != nil {
+		summary = t.Completion.Result
+	}
+
+	record := &store.TaskRecord{
+		TaskID:        t.TaskID,
+		Branch:        t.Request.GitBranch,
+		Repository:    t.Request.GitRepo,
+		Domain:        t.Domain,
+		BlastRadius:   t.BlastRadius,
+		Phase:         t.Phase,
+		CurrentAction: t.CurrentAction,
+		Status:        t.Status,
+		WorkerID:      t.NodeID,
+		Tags:          append([]string(nil), t.Request.Tags...),
+		EditSurfaces:  append([]string(nil), t.EditSurfaces...),
+		CreatedAt:     t.CreatedAt,
+		StartedAt:     t.StartedAt,
+		FinishedAt:    t.FinishedAt,
+		ErrorMessage:  errMsg,
+		ResultSummary: summary,
+	}
+	taskID := t.TaskID
+	status := t.Status
+	finishedAt := t.FinishedAt
+	t.mu.RUnlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_ = st.UpdateStatus(ctx, taskID, status, finishedAt, errMsg, summary)
+	_ = st.SaveTask(ctx, record)
 }

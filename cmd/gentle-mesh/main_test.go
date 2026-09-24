@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -185,6 +187,124 @@ func TestServer_StartupAndGracefulShutdown(t *testing.T) {
 	if !strings.Contains(stdout.String(), "Coordinator stopped gracefully") {
 		t.Errorf("expected shutdown log in stdout, got: %s", stdout.String())
 	}
+}
+
+func TestServer_DBPathFlag(t *testing.T) {
+	t.Run("server accepts --db-path flag with custom path", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to allocate free port: %v", err)
+		}
+		addr := ln.Addr().String()
+		_ = ln.Close()
+
+		tasksDir := t.TempDir()
+		customDB := filepath.Join(t.TempDir(), "custom-main.db")
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var stdout, stderr bytes.Buffer
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- runCLI(ctx, []string{
+				"server",
+				"-addr", addr,
+				"-tasks-dir", tasksDir,
+				"--db-path", customDB,
+			}, &stdout, &stderr)
+		}()
+
+		healthzURL := fmt.Sprintf("http://%s/healthz", addr)
+		client := &http.Client{Timeout: 500 * time.Millisecond}
+		started := false
+		for i := 0; i < 40; i++ {
+			resp, err := client.Get(healthzURL)
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					started = true
+					break
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		if !started {
+			t.Fatalf("coordinator server did not start within deadline on %s. Stderr: %s", addr, stderr.String())
+		}
+
+		if _, err := os.Stat(customDB); err != nil {
+			t.Errorf("expected custom db file to exist at %s: %v", customDB, err)
+		}
+
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("runCLI server failed on shutdown: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("coordinator server did not shut down within timeout")
+		}
+	})
+
+	t.Run("server accepts --db-path none to disable persistence", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to allocate free port: %v", err)
+		}
+		addr := ln.Addr().String()
+		_ = ln.Close()
+
+		tasksDir := t.TempDir()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var stdout, stderr bytes.Buffer
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- runCLI(ctx, []string{
+				"server",
+				"-addr", addr,
+				"-tasks-dir", tasksDir,
+				"--db-path", "none",
+			}, &stdout, &stderr)
+		}()
+
+		healthzURL := fmt.Sprintf("http://%s/healthz", addr)
+		client := &http.Client{Timeout: 500 * time.Millisecond}
+		started := false
+		for i := 0; i < 40; i++ {
+			resp, err := client.Get(healthzURL)
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					started = true
+					break
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		if !started {
+			t.Fatalf("coordinator server did not start within deadline on %s. Stderr: %s", addr, stderr.String())
+		}
+
+		defaultDB := filepath.Join(tasksDir, "gentle-mesh.db")
+		if _, err := os.Stat(defaultDB); !os.IsNotExist(err) {
+			t.Errorf("expected db file not to exist with --db-path none, got err: %v", err)
+		}
+
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("runCLI server failed on shutdown: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("coordinator server did not shut down within timeout")
+		}
+	})
 }
 
 func TestWorker_JoinAndHeartbeatCycle(t *testing.T) {

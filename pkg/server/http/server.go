@@ -12,6 +12,7 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/federation"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
+	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/task"
 )
 
@@ -19,6 +20,8 @@ import (
 type ServerConfig struct {
 	Addr                 string
 	TasksDir             string
+	DBPath               string
+	Store                store.TaskStore
 	HeartbeatTimeout     time.Duration
 	TaskTTL              time.Duration
 	BearerToken          string
@@ -60,8 +63,27 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		if cfg.TasksDir == "" {
 			cfg.TasksDir = filepath.Join(os.TempDir(), fmt.Sprintf("gentle-mesh-tasks-%d", time.Now().UnixNano()))
 		}
-		tm, err := task.NewTaskManager(cfg.TasksDir, cfg.TaskTTL)
+		var opts []task.TaskManagerOption
+		var s store.TaskStore
+		if cfg.Store != nil {
+			opts = append(opts, task.WithStore(cfg.Store))
+		} else if cfg.DBPath != "none" {
+			dbPath := cfg.DBPath
+			if dbPath == "" {
+				dbPath = filepath.Join(cfg.TasksDir, "gentle-mesh.db")
+			}
+			var err error
+			s, err = store.NewSQLiteStore(dbPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to initialize sqlite store: %w", err)
+			}
+			opts = append(opts, task.WithStore(s))
+		}
+		tm, err := task.NewTaskManager(cfg.TasksDir, cfg.TaskTTL, opts...)
 		if err != nil {
+			if s != nil {
+				_ = s.Close()
+			}
 			return nil, fmt.Errorf("failed to initialize task manager: %w", err)
 		}
 		cfg.TaskManager = tm

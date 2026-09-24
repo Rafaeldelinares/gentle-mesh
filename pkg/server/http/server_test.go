@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
+	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
 )
 
 func setupTestServer(t *testing.T, modifyCfg ...func(*meshhttp.ServerConfig)) (*meshhttp.Server, *httptest.Server) {
@@ -1633,4 +1636,113 @@ func TestServer_FederatedTerritoryConflict(t *testing.T) {
 	if !strings.Contains(conflictResp.Error, "overlap") {
 		t.Errorf("expected error message to mention overlap, got %q", conflictResp.Error)
 	}
+}
+
+func TestServer_SQLiteStoreInitialization(t *testing.T) {
+	t.Run("default DBPath initializes SQLite store file gentle-mesh.db in TasksDir", func(t *testing.T) {
+		tasksDir := t.TempDir()
+		srv, err := meshhttp.NewServer(meshhttp.ServerConfig{
+			TasksDir:         tasksDir,
+			HeartbeatTimeout: 5 * time.Second,
+			TaskTTL:          1 * time.Hour,
+		})
+		if err != nil {
+			t.Fatalf("failed to create server: %v", err)
+		}
+		defer func() {
+			_ = srv.Shutdown(context.Background())
+		}()
+
+		if srv.TaskManager().Store() == nil {
+			t.Fatal("expected TaskManager store to be non-nil with default DBPath")
+		}
+
+		dbFile := filepath.Join(tasksDir, "gentle-mesh.db")
+		if info, err := os.Stat(dbFile); err != nil {
+			t.Fatalf("expected SQLite db file to exist at %s: %v", dbFile, err)
+		} else if info.IsDir() {
+			t.Fatalf("expected SQLite db file at %s, but found directory", dbFile)
+		}
+	})
+
+	t.Run("DBPath none disables SQLite store", func(t *testing.T) {
+		tasksDir := t.TempDir()
+		srv, err := meshhttp.NewServer(meshhttp.ServerConfig{
+			TasksDir:         tasksDir,
+			DBPath:           "none",
+			HeartbeatTimeout: 5 * time.Second,
+			TaskTTL:          1 * time.Hour,
+		})
+		if err != nil {
+			t.Fatalf("failed to create server: %v", err)
+		}
+		defer func() {
+			_ = srv.Shutdown(context.Background())
+		}()
+
+		if srv.TaskManager().Store() != nil {
+			t.Errorf("expected TaskManager store to be nil with DBPath: 'none', got %v", srv.TaskManager().Store())
+		}
+
+		dbFile := filepath.Join(tasksDir, "gentle-mesh.db")
+		if _, err := os.Stat(dbFile); !os.IsNotExist(err) {
+			t.Errorf("expected SQLite db file to not exist when disabled, got err: %v", err)
+		}
+	})
+
+	t.Run("explicit Store in config is used", func(t *testing.T) {
+		tasksDir := t.TempDir()
+		customDB := filepath.Join(t.TempDir(), "custom.db")
+		customStore, err := store.NewSQLiteStore(customDB)
+		if err != nil {
+			t.Fatalf("failed to create custom store: %v", err)
+		}
+
+		srv, err := meshhttp.NewServer(meshhttp.ServerConfig{
+			TasksDir:         tasksDir,
+			Store:            customStore,
+			HeartbeatTimeout: 5 * time.Second,
+			TaskTTL:          1 * time.Hour,
+		})
+		if err != nil {
+			t.Fatalf("failed to create server: %v", err)
+		}
+		defer func() {
+			_ = srv.Shutdown(context.Background())
+		}()
+
+		if srv.TaskManager().Store() != customStore {
+			t.Errorf("expected TaskManager to use custom store")
+		}
+		defaultDBFile := filepath.Join(tasksDir, "gentle-mesh.db")
+		if _, err := os.Stat(defaultDBFile); !os.IsNotExist(err) {
+			t.Errorf("expected default db file not to exist when explicit Store is provided")
+		}
+	})
+
+	t.Run("custom DBPath initializes at specified path", func(t *testing.T) {
+		tasksDir := t.TempDir()
+		customDBDir := t.TempDir()
+		customDBPath := filepath.Join(customDBDir, "custom-tasks.db")
+		srv, err := meshhttp.NewServer(meshhttp.ServerConfig{
+			TasksDir:         tasksDir,
+			DBPath:           customDBPath,
+			HeartbeatTimeout: 5 * time.Second,
+			TaskTTL:          1 * time.Hour,
+		})
+		if err != nil {
+			t.Fatalf("failed to create server: %v", err)
+		}
+		defer func() {
+			_ = srv.Shutdown(context.Background())
+		}()
+
+		if srv.TaskManager().Store() == nil {
+			t.Fatal("expected TaskManager store to be non-nil with custom DBPath")
+		}
+
+		if _, err := os.Stat(customDBPath); err != nil {
+			t.Fatalf("expected custom SQLite db file at %s: %v", customDBPath, err)
+		}
+	})
 }

@@ -51,6 +51,7 @@ type ManagedTask struct {
 	subscribers    map[chan protocol.Event]struct{}
 	pendingQueries map[string]chan string
 	finishedTime   time.Time
+	onUpdate       func(t *ManagedTask)
 }
 
 // NewManagedTask constructs a new ManagedTask instance.
@@ -81,6 +82,59 @@ func NewManagedTask(
 		subscribers:    make(map[chan protocol.Event]struct{}),
 		pendingQueries: make(map[string]chan string),
 	}
+}
+
+// SetOnUpdate sets a callback invoked whenever the task state is updated.
+func (t *ManagedTask) SetOnUpdate(fn func(t *ManagedTask)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.onUpdate = fn
+}
+
+func (t *ManagedTask) notifyUpdate() {
+	t.mu.RLock()
+	fn := t.onUpdate
+	t.mu.RUnlock()
+
+	if fn == nil {
+		return
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			// Gracefully absorb any panics from external callbacks
+		}
+	}()
+
+	fn(t)
+}
+
+// SetStatus updates the task status, validating the transition if applicable and invoking onUpdate.
+func (t *ManagedTask) SetStatus(status protocol.TaskStatus) error {
+	t.mu.RLock()
+	current := t.Status
+	t.mu.RUnlock()
+
+	if current == status {
+		return nil
+	}
+	return t.TransitionTo(status)
+}
+
+// UpdateActivity updates the last activity timestamp and optional action description,
+// and invokes onUpdate callbacks.
+func (t *ManagedTask) UpdateActivity(action ...string) {
+	t.mu.Lock()
+	t.LastActivityAt = time.Now().Unix()
+	if len(action) == 1 && action[0] != "" {
+		t.CurrentAction = action[0]
+	} else if len(action) >= 2 {
+		t.Phase = protocol.AgentPhase(action[0])
+		t.CurrentAction = action[1]
+	}
+	t.mu.Unlock()
+
+	t.notifyUpdate()
 }
 
 // Context returns the task execution and cancellation context.
@@ -122,6 +176,13 @@ func isValidTransition(from, to protocol.TaskStatus) bool {
 // TransitionTo validates and performs a lifecycle state transition.
 // It emits protocol.EventTypeStatus on success and closes subscribers if the state is terminal.
 func (t *ManagedTask) TransitionTo(status protocol.TaskStatus) error {
+	var notify bool
+	defer func() {
+		if notify {
+			t.notifyUpdate()
+		}
+	}()
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -171,12 +232,20 @@ func (t *ManagedTask) TransitionTo(status protocol.TaskStatus) error {
 		t.subscribers = make(map[chan protocol.Event]struct{})
 	}
 
+	notify = true
 	return nil
 }
 
 // EmitEvent creates a new sequential event, logs it to the append-only JSONL log,
 // broadcasts it non-blockingly to all subscribers, and updates internal status if applicable.
 func (t *ManagedTask) EmitEvent(eventType protocol.EventType, payload any) (protocol.Event, error) {
+	var notify bool
+	defer func() {
+		if notify {
+			t.notifyUpdate()
+		}
+	}()
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -209,6 +278,7 @@ func (t *ManagedTask) EmitEvent(eventType protocol.EventType, payload any) (prot
 					t.finishedTime = now
 					t.cancel()
 				}
+				notify = true
 			}
 		}
 	case protocol.EventToolCall:
@@ -267,6 +337,7 @@ func (t *ManagedTask) EmitEvent(eventType protocol.EventType, payload any) (prot
 			t.finishedTime = now
 		}
 		t.cancel()
+		notify = true
 	case protocol.EventError:
 		var ep protocol.ErrorPayload
 		if err := evt.UnmarshalPayload(&ep); err == nil {
@@ -278,6 +349,7 @@ func (t *ManagedTask) EmitEvent(eventType protocol.EventType, payload any) (prot
 			t.finishedTime = now
 		}
 		t.cancel()
+		notify = true
 	}
 
 	if t.logger != nil {
@@ -367,8 +439,6 @@ func (t *ManagedTask) WaitForQuery(ctx context.Context, queryID string) (string,
 // and current micro-action.
 func (t *ManagedTask) SetScope(domain string, blastRadius protocol.BlastRadius, phase protocol.AgentPhase, action string) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	t.Domain = domain
 	if blastRadius != "" {
 		t.BlastRadius = blastRadius
@@ -380,6 +450,9 @@ func (t *ManagedTask) SetScope(domain string, blastRadius protocol.BlastRadius, 
 	}
 	t.CurrentAction = action
 	t.LastActivityAt = time.Now().Unix()
+	t.mu.Unlock()
+
+	t.notifyUpdate()
 }
 
 // SetEditSurfaces sets the slice of files or directories touched by the task.

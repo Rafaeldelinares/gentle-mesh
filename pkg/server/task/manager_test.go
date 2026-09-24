@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
 )
 
 func TestTaskStateMachine_ValidTransitions(t *testing.T) {
@@ -841,5 +842,373 @@ func TestTaskManager_TrackRunnerGracefulShutdown(t *testing.T) {
 		// Succeeded: runner completed
 	default:
 		t.Fatal("expected runner to be completed when Close() finishes")
+	}
+}
+
+func TestTaskManager_WithStore_SaveAndUpdate(t *testing.T) {
+	tmpDir := t.TempDir()
+	tasksDir := filepath.Join(tmpDir, "tasks")
+	dbPath := filepath.Join(tmpDir, "tasks.db")
+
+	s, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create sqlite store: %v", err)
+	}
+
+	mgr, err := NewTaskManager(tasksDir, 0, WithStore(s))
+	if err != nil {
+		t.Fatalf("failed to create manager with store: %v", err)
+	}
+	defer mgr.Close()
+
+	if mgr.Store() != s {
+		t.Fatalf("expected mgr.Store() to return configured store")
+	}
+
+	ctx := context.Background()
+
+	// 1. Task Creation -> queued in store
+	req1 := protocol.TaskRequest{
+		Agent:        "worker",
+		Task:         "run unit tests",
+		GitRepo:      "gentle-mesh",
+		GitBranch:    "feat/store",
+		Domain:       "testing",
+		EditSurfaces: []string{"pkg/server/task/task.go"},
+	}
+	task1, err := mgr.CreateTask(req1)
+	if err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	rec1, err := s.GetTask(ctx, task1.TaskID)
+	if err != nil {
+		t.Fatalf("GetTask failed on queued task: %v", err)
+	}
+	if rec1.Status != protocol.TaskStatusQueued {
+		t.Errorf("expected store status queued, got %s", rec1.Status)
+	}
+	if rec1.Domain != "testing" {
+		t.Errorf("expected domain 'testing', got %q", rec1.Domain)
+	}
+	if rec1.Branch != "feat/store" {
+		t.Errorf("expected branch 'feat/store', got %q", rec1.Branch)
+	}
+
+	// 2. Lifecycle Event: Transition to running
+	if err := task1.TransitionTo(protocol.TaskStatusRunning); err != nil {
+		t.Fatalf("TransitionTo running failed: %v", err)
+	}
+
+	rec1, err = s.GetTask(ctx, task1.TaskID)
+	if err != nil {
+		t.Fatalf("GetTask failed after running: %v", err)
+	}
+	if rec1.Status != protocol.TaskStatusRunning {
+		t.Errorf("expected store status running, got %s", rec1.Status)
+	}
+	if rec1.StartedAt == 0 {
+		t.Errorf("expected StartedAt to be populated in store")
+	}
+
+	// 3. Lifecycle Event: Complete with result
+	compPayload := protocol.CompletionPayload{
+		Result:       "all 42 tests passed",
+		FilesChanged: []string{"pkg/server/task/task.go", "pkg/server/task/manager.go"},
+	}
+	if _, err := task1.EmitEvent(protocol.EventCompletion, compPayload); err != nil {
+		t.Fatalf("EmitEvent completion failed: %v", err)
+	}
+
+	rec1, err = s.GetTask(ctx, task1.TaskID)
+	if err != nil {
+		t.Fatalf("GetTask failed after completion: %v", err)
+	}
+	if rec1.Status != protocol.TaskStatusCompleted {
+		t.Errorf("expected store status completed, got %s", rec1.Status)
+	}
+	if rec1.ResultSummary != "all 42 tests passed" {
+		t.Errorf("expected result summary 'all 42 tests passed', got %q", rec1.ResultSummary)
+	}
+	if rec1.FinishedAt == 0 {
+		t.Errorf("expected FinishedAt to be populated in store")
+	}
+
+	// 4. Lifecycle Event: Task 2 with error
+	req2 := protocol.TaskRequest{
+		Agent:     "worker",
+		Task:      "build project",
+		GitRepo:   "gentle-mesh",
+		GitBranch: "feat/store",
+		Domain:    "build",
+	}
+	task2, err := mgr.CreateTask(req2)
+	if err != nil {
+		t.Fatalf("CreateTask 2 failed: %v", err)
+	}
+
+	if err := task2.TransitionTo(protocol.TaskStatusRunning); err != nil {
+		t.Fatalf("TransitionTo running on task 2 failed: %v", err)
+	}
+
+	errPayload := protocol.ErrorPayload{
+		Code:    "build_failure",
+		Message: "syntax error in main.go",
+	}
+	if _, err := task2.EmitEvent(protocol.EventError, errPayload); err != nil {
+		t.Fatalf("EmitEvent error failed: %v", err)
+	}
+
+	rec2, err := s.GetTask(ctx, task2.TaskID)
+	if err != nil {
+		t.Fatalf("GetTask 2 failed after error: %v", err)
+	}
+	if rec2.Status != protocol.TaskStatusFailed {
+		t.Errorf("expected store status failed, got %s", rec2.Status)
+	}
+	if rec2.ErrorMessage != "syntax error in main.go" {
+		t.Errorf("expected error message 'syntax error in main.go', got %q", rec2.ErrorMessage)
+	}
+	if rec2.FinishedAt == 0 {
+		t.Errorf("expected FinishedAt to be populated in store for task 2")
+	}
+}
+
+func TestTaskManager_CrashRecovery_Rehydration(t *testing.T) {
+	// 1. Create TaskManager with a store.SQLiteStore in a temp dir.
+	tmpDir := t.TempDir()
+	tasksDir := filepath.Join(tmpDir, "tasks")
+	dbPath := filepath.Join(tmpDir, "mesh-recovery.db")
+
+	store1, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create sqlite store 1: %v", err)
+	}
+
+	mgr1, err := NewTaskManager(tasksDir, 0, WithStore(store1))
+	if err != nil {
+		t.Fatalf("failed to create mgr1: %v", err)
+	}
+
+	// 2. Create 2 tasks (run task 1 to completion with a result, run task 2 to failed with error).
+	task1, err := mgr1.CreateTask(protocol.TaskRequest{
+		Agent:        "worker",
+		Task:         "run security audit",
+		GitRepo:      "gentle-mesh",
+		GitBranch:    "main",
+		Domain:       "security",
+		EditSurfaces: []string{"pkg/auth/token.go"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask 1 failed: %v", err)
+	}
+	if err := task1.TransitionTo(protocol.TaskStatusRunning); err != nil {
+		t.Fatalf("task1 TransitionTo running failed: %v", err)
+	}
+	compPayload := protocol.CompletionPayload{
+		Result:       "audit clean: 0 vulnerabilities found",
+		FilesChanged: []string{"pkg/auth/token.go"},
+	}
+	if _, err := task1.EmitEvent(protocol.EventCompletion, compPayload); err != nil {
+		t.Fatalf("task1 EmitEvent completion failed: %v", err)
+	}
+
+	task2, err := mgr1.CreateTask(protocol.TaskRequest{
+		Agent:        "worker",
+		Task:         "execute integration suite",
+		GitRepo:      "gentle-mesh",
+		GitBranch:    "main",
+		Domain:       "integration",
+		EditSurfaces: []string{"pkg/runner/run.go"},
+	})
+	if err != nil {
+		t.Fatalf("CreateTask 2 failed: %v", err)
+	}
+	if err := task2.TransitionTo(protocol.TaskStatusRunning); err != nil {
+		t.Fatalf("task2 TransitionTo running failed: %v", err)
+	}
+	errPayload := protocol.ErrorPayload{
+		Code:    "integration_timeout",
+		Message: "service worker unreachable after 30s",
+	}
+	if _, err := task2.EmitEvent(protocol.EventError, errPayload); err != nil {
+		t.Fatalf("task2 EmitEvent error failed: %v", err)
+	}
+
+	// 3. Close the TaskManager (simulating server shutdown/crash).
+	if err := mgr1.Close(); err != nil {
+		t.Fatalf("mgr1.Close() failed: %v", err)
+	}
+
+	// 4. Create a BRAND NEW TaskManager with a NEW store.SQLiteStore pointing to the SAME sqlite file.
+	store2, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create sqlite store 2: %v", err)
+	}
+
+	mgr2, err := NewTaskManager(tasksDir, 0, WithStore(store2))
+	if err != nil {
+		t.Fatalf("failed to create mgr2 with rehydration: %v", err)
+	}
+	defer mgr2.Close()
+
+	// 5. Verify both tasks are recovered in mgr2.ListTasks(), can be retrieved via mgr2.GetTask(task1.TaskID),
+	// and maintain exact status, error, and completion data.
+	allTasks := mgr2.ListTasks()
+	if len(allTasks) != 2 {
+		t.Fatalf("expected 2 tasks in ListTasks(), got %d", len(allTasks))
+	}
+
+	// Verify task 1 recovery
+	recTask1, exists1 := mgr2.GetTask(task1.TaskID)
+	if !exists1 {
+		t.Fatalf("task 1 (%s) not found in mgr2", task1.TaskID)
+	}
+	if recTask1.CurrentStatus() != protocol.TaskStatusCompleted {
+		t.Errorf("task 1 expected status completed, got %s", recTask1.CurrentStatus())
+	}
+	snap1 := recTask1.Snapshot()
+	if snap1.Status != protocol.TaskStatusCompleted {
+		t.Errorf("snap1 status mismatch: expected completed, got %s", snap1.Status)
+	}
+	if snap1.Completion == nil {
+		t.Fatalf("snap1 expected non-nil Completion")
+	}
+	if snap1.Completion.Result != "audit clean: 0 vulnerabilities found" {
+		t.Errorf("snap1 completion result mismatch: %q", snap1.Completion.Result)
+	}
+	if snap1.FinishedAt == 0 {
+		t.Errorf("snap1 expected FinishedAt > 0")
+	}
+	if recTask1.Domain != "security" {
+		t.Errorf("task 1 domain mismatch: %q", recTask1.Domain)
+	}
+
+	// Verify task 2 recovery
+	recTask2, exists2 := mgr2.GetTask(task2.TaskID)
+	if !exists2 {
+		t.Fatalf("task 2 (%s) not found in mgr2", task2.TaskID)
+	}
+	if recTask2.CurrentStatus() != protocol.TaskStatusFailed {
+		t.Errorf("task 2 expected status failed, got %s", recTask2.CurrentStatus())
+	}
+	snap2 := recTask2.Snapshot()
+	if snap2.Status != protocol.TaskStatusFailed {
+		t.Errorf("snap2 status mismatch: expected failed, got %s", snap2.Status)
+	}
+	if snap2.Error == nil {
+		t.Fatalf("snap2 expected non-nil Error")
+	}
+	if snap2.Error.Message != "service worker unreachable after 30s" {
+		t.Errorf("snap2 error message mismatch: %q", snap2.Error.Message)
+	}
+	if snap2.FinishedAt == 0 {
+		t.Errorf("snap2 expected FinishedAt > 0")
+	}
+	if recTask2.Domain != "integration" {
+		t.Errorf("task 2 domain mismatch: %q", recTask2.Domain)
+	}
+
+	// Verify historical event replay from JSONL on recovered task
+	subCh, unsub, err := recTask1.Subscribe(0)
+	if err != nil {
+		t.Fatalf("Subscribe on recovered task failed: %v", err)
+	}
+	defer unsub()
+
+	var events []protocol.Event
+	for evt := range subCh {
+		events = append(events, evt)
+	}
+	if len(events) == 0 {
+		t.Errorf("expected historical events to be replayed from JSONL for recovered task 1")
+	}
+}
+
+func TestManagedTask_NotifyUpdate_SafetyAndHelpers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	task := NewManagedTask("task-safety-test", protocol.TaskRequest{Agent: "worker"}, ctx, cancel, nil)
+
+	// Verify notifyUpdate handles nil onUpdate without panic
+	task.notifyUpdate()
+
+	// Verify notifyUpdate handles panicking onUpdate without panic
+	task.SetOnUpdate(func(t *ManagedTask) {
+		panic("simulated callback panic")
+	})
+	task.notifyUpdate() // should absorb panic safely
+
+	// Verify SetStatus and UpdateActivity invoke callback
+	var updates int
+	var lastStatus protocol.TaskStatus
+	var lastAction string
+
+	task.SetOnUpdate(func(t *ManagedTask) {
+		updates++
+		lastStatus = t.CurrentStatus()
+		t.mu.RLock()
+		lastAction = t.CurrentAction
+		t.mu.RUnlock()
+	})
+
+	if err := task.SetStatus(protocol.TaskStatusPreparing); err != nil {
+		t.Fatalf("SetStatus preparing failed: %v", err)
+	}
+	if updates != 1 || lastStatus != protocol.TaskStatusPreparing {
+		t.Errorf("expected 1 update with status preparing, got %d and %s", updates, lastStatus)
+	}
+
+	// Same status should be a no-op
+	if err := task.SetStatus(protocol.TaskStatusPreparing); err != nil {
+		t.Fatalf("SetStatus same status failed: %v", err)
+	}
+	if updates != 1 {
+		t.Errorf("expected no additional update for same status, got %d", updates)
+	}
+
+	// UpdateActivity
+	task.UpdateActivity("executing step 1")
+	if updates != 2 || lastAction != "executing step 1" {
+		t.Errorf("expected 2 updates and action 'executing step 1', got %d and %q", updates, lastAction)
+	}
+
+	// UpdateActivity with phase
+	task.UpdateActivity("verify", "running assertions")
+	if updates != 3 || lastAction != "running assertions" {
+		t.Errorf("expected 3 updates and action 'running assertions', got %d and %q", updates, lastAction)
+	}
+	if task.Phase != protocol.AgentPhaseVerify {
+		t.Errorf("expected phase verify, got %s", task.Phase)
+	}
+}
+
+func TestTaskManager_WithStore_CancelTask(t *testing.T) {
+	tmpDir := t.TempDir()
+	tasksDir := filepath.Join(tmpDir, "tasks")
+
+	memStore := store.NewMemoryStore()
+	mgr, err := NewTaskManager(tasksDir, 0, WithStore(memStore))
+	if err != nil {
+		t.Fatalf("NewTaskManager failed: %v", err)
+	}
+	defer mgr.Close()
+
+	task, err := mgr.CreateTask(protocol.TaskRequest{Agent: "worker", Task: "cancel test"})
+	if err != nil {
+		t.Fatalf("CreateTask failed: %v", err)
+	}
+
+	if err := mgr.CancelTask(task.TaskID, "user requested stop"); err != nil {
+		t.Fatalf("CancelTask failed: %v", err)
+	}
+
+	rec, err := memStore.GetTask(context.Background(), task.TaskID)
+	if err != nil {
+		t.Fatalf("GetTask failed: %v", err)
+	}
+	if rec.Status != protocol.TaskStatusCanceled {
+		t.Errorf("expected store status canceled, got %s", rec.Status)
 	}
 }

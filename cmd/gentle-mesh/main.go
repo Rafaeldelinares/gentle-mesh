@@ -85,6 +85,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 
 	addr := fs.String("addr", ":8080", "HTTP coordinator listen address")
 	tasksDir := fs.String("tasks-dir", "/tmp/gentle-mesh/tasks", "Directory for task logs and state")
+	dbPath := fs.String("db-path", "", "Path to SQLite database for task persistence (defaults to <tasks-dir>/gentle-mesh.db, 'none' to disable)")
 	heartbeatTimeout := fs.Duration("heartbeat-timeout", 30*time.Second, "Heartbeat timeout for registered nodes")
 	token := fs.String("token", "", "Optional bearer authentication token")
 	taskTTL := fs.Duration("task-ttl", 24*time.Hour, "Task TTL before pruning")
@@ -96,6 +97,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	srv, err := meshhttp.NewServer(meshhttp.ServerConfig{
 		Addr:             *addr,
 		TasksDir:         *tasksDir,
+		DBPath:           *dbPath,
 		HeartbeatTimeout: *heartbeatTimeout,
 		TaskTTL:          *taskTTL,
 		BearerToken:      *token,

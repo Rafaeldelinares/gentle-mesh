@@ -1,5 +1,5 @@
 # Binarios compilados
-gentle-mesh
+/gentle-mesh
 *.zip
 /bin/
 /dist/
