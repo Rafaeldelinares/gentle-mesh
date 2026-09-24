@@ -3,7 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["server", "-addr", ":8080"]
+    command: ["server", "-addr", ":8080", "-workspace", "/workspace"]
+    volumes:
+      - .:/workspace:ro
     ports:
       - "8080:8080"
     healthcheck:
