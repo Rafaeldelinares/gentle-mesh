@@ -528,6 +528,7 @@ func (t *ManagedTask) Snapshot() protocol.TaskState {
 
 	return protocol.TaskState{
 		TaskID:     t.TaskID,
+		SessionID:  t.Request.SessionID,
 		Request:    t.Request,
 		Status:     t.Status,
 		CreatedAt:  t.CreatedAt,

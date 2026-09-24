@@ -15,8 +15,10 @@ const (
 // TaskRequest defines the payload for creating and dispatching a new remote subagent task.
 type TaskRequest struct {
 	IdempotencyKey string      `json:"idempotency_key,omitempty"`
+	SessionID      string      `json:"session_id,omitempty"`
 	Agent          string      `json:"agent"`
 	Task           string      `json:"task"`
+	Prompt         string      `json:"prompt,omitempty"`
 	Context        string      `json:"context,omitempty"`
 	WorkspaceRoot  string      `json:"workspace_root,omitempty"`
 	GitRepo        string      `json:"git_repo,omitempty"`
@@ -32,6 +34,7 @@ type TaskRequest struct {
 // TaskResponse represents the initial acknowledgement returned when a task is accepted.
 type TaskResponse struct {
 	TaskID    string     `json:"task_id"`
+	SessionID string     `json:"session_id,omitempty"`
 	Status    TaskStatus `json:"status"`
 	EventsURL string     `json:"events_url"`
 	CreatedAt int64      `json:"created_at"`
@@ -40,6 +43,7 @@ type TaskResponse struct {
 // TaskState represents a full point-in-time snapshot of a task lifecycle.
 type TaskState struct {
 	TaskID     string             `json:"task_id"`
+	SessionID  string             `json:"session_id,omitempty"`
 	Request    TaskRequest        `json:"request"`
 	Status     TaskStatus         `json:"status"`
 	CreatedAt  int64              `json:"created_at"`

@@ -173,6 +173,16 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		return
 	}
 
+	// Open Pi Viewer submits a session-scoped prompt without an explicit agent or
+	// task field. Alias "prompt" into "task" and default the agent so those
+	// clients can dispatch work with the same contract as Gentle Mesh clients.
+	if req.Task == "" && req.Prompt != "" {
+		req.Task = req.Prompt
+	}
+	if req.Agent == "" && req.Task != "" {
+		req.Agent = "worker"
+	}
+
 	if req.Agent == "" || req.Task == "" {
 		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "agent and task must not be empty"})
 		return
@@ -184,6 +194,7 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 				st := existingTask.Snapshot()
 				writeJSON(w, stdhttp.StatusOK, protocol.TaskResponse{
 					TaskID:    existingTask.TaskID,
+					SessionID: existingTask.Request.SessionID,
 					Status:    st.Status,
 					EventsURL: "/v1/tasks/" + existingTask.TaskID + "/events",
 					CreatedAt: st.CreatedAt,
@@ -238,6 +249,7 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 				st := existingTask.Snapshot()
 				writeJSON(w, stdhttp.StatusOK, protocol.TaskResponse{
 					TaskID:    existingTask.TaskID,
+					SessionID: existingTask.Request.SessionID,
 					Status:    st.Status,
 					EventsURL: "/v1/tasks/" + existingTask.TaskID + "/events",
 					CreatedAt: st.CreatedAt,
@@ -268,6 +280,7 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 
 	writeJSON(w, stdhttp.StatusCreated, protocol.TaskResponse{
 		TaskID:    t.TaskID,
+		SessionID: t.Request.SessionID,
 		Status:    t.CurrentStatus(),
 		EventsURL: "/v1/tasks/" + t.TaskID + "/events",
 		CreatedAt: t.CreatedAt,

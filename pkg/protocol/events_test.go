@@ -206,6 +206,105 @@ func TestSpecializedPayloads(t *testing.T) {
 	})
 }
 
+func TestCompletionPayloadTextAndResultAliasing(t *testing.T) {
+	t.Run("marshal with result populates text", func(t *testing.T) {
+		p := protocol.CompletionPayload{Result: "task finished"}
+		data, err := json.Marshal(p)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+
+		var raw map[string]any
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("unmarshal into map error: %v", err)
+		}
+		if raw["result"] != "task finished" {
+			t.Errorf("expected result in JSON, got: %s", string(data))
+		}
+		if raw["text"] != "task finished" {
+			t.Errorf("expected text mirror in JSON, got: %s", string(data))
+		}
+	})
+
+	t.Run("marshal with text populates result", func(t *testing.T) {
+		p := protocol.CompletionPayload{Text: "viewer message"}
+		data, err := json.Marshal(p)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+
+		var raw map[string]any
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("unmarshal into map error: %v", err)
+		}
+		if raw["result"] != "viewer message" {
+			t.Errorf("expected result mirror in JSON, got: %s", string(data))
+		}
+		if raw["text"] != "viewer message" {
+			t.Errorf("expected text in JSON, got: %s", string(data))
+		}
+	})
+
+	t.Run("unmarshal result-only payload populates text", func(t *testing.T) {
+		var decoded protocol.CompletionPayload
+		if err := json.Unmarshal([]byte(`{"result":"cli message","commit_hash":"abc123"}`), &decoded); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if decoded.Result != "cli message" {
+			t.Errorf("expected Result %q, got %q", "cli message", decoded.Result)
+		}
+		if decoded.Text != "cli message" {
+			t.Errorf("expected Text mirror %q, got %q", "cli message", decoded.Text)
+		}
+		if decoded.CommitHash != "abc123" {
+			t.Errorf("expected CommitHash %q, got %q", "abc123", decoded.CommitHash)
+		}
+	})
+
+	t.Run("unmarshal text-only payload populates result", func(t *testing.T) {
+		var decoded protocol.CompletionPayload
+		if err := json.Unmarshal([]byte(`{"text":"viewer message"}`), &decoded); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if decoded.Text != "viewer message" {
+			t.Errorf("expected Text %q, got %q", "viewer message", decoded.Text)
+		}
+		if decoded.Result != "viewer message" {
+			t.Errorf("expected Result mirror %q, got %q", "viewer message", decoded.Result)
+		}
+	})
+
+	t.Run("empty payload stays empty", func(t *testing.T) {
+		var decoded protocol.CompletionPayload
+		if err := json.Unmarshal([]byte(`{"duration_ms":12}`), &decoded); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if decoded.Result != "" || decoded.Text != "" {
+			t.Errorf("expected empty message fields, got Result=%q Text=%q", decoded.Result, decoded.Text)
+		}
+		if decoded.DurationMs != 12 {
+			t.Errorf("expected DurationMs 12, got %d", decoded.DurationMs)
+		}
+	})
+
+	t.Run("event payload carries both aliases", func(t *testing.T) {
+		evt, err := protocol.NewEvent(9, "task-9", protocol.EventCompletion, protocol.CompletionPayload{
+			Result: "streamed completion",
+		})
+		if err != nil {
+			t.Fatalf("NewEvent error: %v", err)
+		}
+
+		var decoded protocol.CompletionPayload
+		if err := evt.UnmarshalPayload(&decoded); err != nil {
+			t.Fatalf("UnmarshalPayload error: %v", err)
+		}
+		if decoded.Result != "streamed completion" || decoded.Text != "streamed completion" {
+			t.Errorf("expected both aliases populated, got Result=%q Text=%q", decoded.Result, decoded.Text)
+		}
+	})
+}
+
 func TestNewEventAndUnmarshalPayload(t *testing.T) {
 	t.Run("valid struct payload", func(t *testing.T) {
 		query := protocol.QueryPayload{

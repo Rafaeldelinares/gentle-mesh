@@ -317,6 +317,115 @@ func TestServer_TaskCreateAndEventsStreaming(t *testing.T) {
 	}
 }
 
+func TestServer_CreateTaskWithOpenPiViewerPayload(t *testing.T) {
+	_, ts := setupTestServer(t, func(cfg *meshhttp.ServerConfig) {
+		cfg.Runner = runner.NewSimulatedRunner(runner.SimulatedOptions{
+			Tokens:           []string{"Open ", "Pi ", "Viewer"},
+			TokenDelay:       5 * time.Millisecond,
+			CompletionResult: "viewer task complete",
+		})
+	})
+
+	// Open Pi Viewer dispatches work by session_id + prompt, omitting agent and task.
+	reqBody := strings.NewReader(`{"session_id":"viewer-session-42","prompt":"summarize the repository"}`)
+
+	resp, err := ts.Client().Post(ts.URL+"/v1/tasks", "application/json", reqBody)
+	if err != nil {
+		t.Fatalf("POST /v1/tasks failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected status 201 Created, got %d", resp.StatusCode)
+	}
+
+	var taskResp protocol.TaskResponse
+	if err := json.NewDecoder(resp.Body).Decode(&taskResp); err != nil {
+		t.Fatalf("failed to decode task response: %v", err)
+	}
+	if taskResp.TaskID == "" {
+		t.Fatal("expected non-empty task ID")
+	}
+	if taskResp.SessionID != "viewer-session-42" {
+		t.Errorf("expected session_id %q, got %q", "viewer-session-42", taskResp.SessionID)
+	}
+
+	// Connect to the SSE stream and collect the terminal completion payload.
+	sseResp, err := ts.Client().Get(ts.URL + taskResp.EventsURL)
+	if err != nil {
+		t.Fatalf("GET events failed: %v", err)
+	}
+	defer sseResp.Body.Close()
+
+	if sseResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", sseResp.StatusCode)
+	}
+
+	scanner := bufio.NewScanner(sseResp.Body)
+	var (
+		sawStatus     bool
+		sawCompletion bool
+		completion    protocol.CompletionPayload
+	)
+
+	for {
+		evt, err := readNextSSEEvent(scanner)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("error reading SSE event: %v", err)
+		}
+
+		switch evt.Type {
+		case protocol.EventStatus:
+			sawStatus = true
+		case protocol.EventCompletion:
+			sawCompletion = true
+			if err := evt.UnmarshalPayload(&completion); err != nil {
+				t.Fatalf("failed unmarshaling completion payload: %v", err)
+			}
+		}
+	}
+
+	if !sawStatus {
+		t.Error("expected to see status event in stream")
+	}
+	if !sawCompletion {
+		t.Fatal("expected to see completion event in stream")
+	}
+	if completion.Result != "viewer task complete" {
+		t.Errorf("expected completion result %q, got %q", "viewer task complete", completion.Result)
+	}
+	if completion.Text != "viewer task complete" {
+		t.Errorf("expected completion text %q, got %q", "viewer task complete", completion.Text)
+	}
+
+	// The prompt must be aliased into task and the agent defaulted to worker.
+	getResp, err := ts.Client().Get(ts.URL + "/v1/tasks/" + taskResp.TaskID)
+	if err != nil {
+		t.Fatalf("GET /v1/tasks/{id} failed: %v", err)
+	}
+	defer getResp.Body.Close()
+
+	var state protocol.TaskState
+	if err := json.NewDecoder(getResp.Body).Decode(&state); err != nil {
+		t.Fatalf("failed to decode task snapshot: %v", err)
+	}
+	if state.Status != protocol.TaskStatusCompleted {
+		t.Errorf("expected status completed, got %q", state.Status)
+	}
+	if state.Request.Agent != "worker" {
+		t.Errorf("expected agent to default to worker, got %q", state.Request.Agent)
+	}
+	if state.Request.Task != "summarize the repository" {
+		t.Errorf("expected task to alias the prompt, got %q", state.Request.Task)
+	}
+	if state.Request.SessionID != "viewer-session-42" {
+		t.Errorf("expected request session_id %q, got %q", "viewer-session-42", state.Request.SessionID)
+	}
+}
+
 func TestServer_LastEventIDReconnection(t *testing.T) {
 	_, ts := setupTestServer(t, func(cfg *meshhttp.ServerConfig) {
 		cfg.Runner = runner.NewSimulatedRunner(runner.SimulatedOptions{
@@ -1619,9 +1728,9 @@ func TestServer_FederatedTerritoryConflict(t *testing.T) {
 	}
 
 	var conflictResp struct {
-		Error    string                     `json:"error"`
+		Error    string                      `json:"error"`
 		Conflict *protocol.TerritoryConflict `json:"conflict"`
-		TaskID   string                     `json:"task_id"`
+		TaskID   string                      `json:"task_id"`
 	}
 	if err := json.NewDecoder(createResp.Body).Decode(&conflictResp); err != nil {
 		t.Fatalf("failed decoding conflict response: %v", err)

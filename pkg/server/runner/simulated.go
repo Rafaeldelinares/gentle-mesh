@@ -222,6 +222,7 @@ func (r *SimulatedRunner) Run(ctx context.Context, req protocol.TaskRequest, sin
 
 	if _, err := sink.EmitEvent(protocol.EventCompletion, protocol.CompletionPayload{
 		Result:       r.opts.CompletionResult,
+		Text:         r.opts.CompletionResult,
 		FilesChanged: r.opts.FilesChanged,
 	}); err != nil {
 		return err

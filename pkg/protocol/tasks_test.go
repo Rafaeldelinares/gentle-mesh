@@ -234,6 +234,138 @@ func TestTaskStateJSONSerialization(t *testing.T) {
 	}
 }
 
+func TestTaskRequestOpenPiViewerFieldsJSONSerialization(t *testing.T) {
+	t.Run("session_id and prompt round-trip", func(t *testing.T) {
+		req := protocol.TaskRequest{
+			SessionID: "viewer-session-42",
+			Prompt:    "Summarize the failing test output",
+		}
+
+		data, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("failed to marshal TaskRequest: %v", err)
+		}
+
+		s := string(data)
+		if !strings.Contains(s, `"session_id":"viewer-session-42"`) {
+			t.Errorf("expected session_id in JSON, got: %s", s)
+		}
+		if !strings.Contains(s, `"prompt":"Summarize the failing test output"`) {
+			t.Errorf("expected prompt in JSON, got: %s", s)
+		}
+
+		var parsed protocol.TaskRequest
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal TaskRequest: %v", err)
+		}
+		if parsed.SessionID != req.SessionID {
+			t.Errorf("expected SessionID %q, got %q", req.SessionID, parsed.SessionID)
+		}
+		if parsed.Prompt != req.Prompt {
+			t.Errorf("expected Prompt %q, got %q", req.Prompt, parsed.Prompt)
+		}
+	})
+
+	t.Run("unmarshal from raw viewer payload", func(t *testing.T) {
+		raw := []byte(`{"session_id":"sess-7","prompt":"do the thing"}`)
+		var parsed protocol.TaskRequest
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal viewer payload: %v", err)
+		}
+		if parsed.SessionID != "sess-7" || parsed.Prompt != "do the thing" {
+			t.Errorf("unexpected decoded request: %+v", parsed)
+		}
+	})
+
+	t.Run("omitempty when unset", func(t *testing.T) {
+		req := protocol.TaskRequest{Agent: "worker", Task: "Minimal task"}
+		data, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("failed to marshal TaskRequest: %v", err)
+		}
+		s := string(data)
+		if strings.Contains(s, "session_id") {
+			t.Errorf("expected session_id to be omitted, got: %s", s)
+		}
+		if strings.Contains(s, "prompt") {
+			t.Errorf("expected prompt to be omitted, got: %s", s)
+		}
+	})
+}
+
+func TestTaskResponseSessionIDJSONSerialization(t *testing.T) {
+	resp := protocol.TaskResponse{
+		TaskID:    "task-viewer-1",
+		SessionID: "viewer-session-42",
+		Status:    protocol.TaskStatusQueued,
+		EventsURL: "/v1/tasks/task-viewer-1/events",
+		CreatedAt: 1727085600,
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("failed to marshal TaskResponse: %v", err)
+	}
+	if !strings.Contains(string(data), `"session_id":"viewer-session-42"`) {
+		t.Errorf("expected session_id in JSON, got: %s", string(data))
+	}
+
+	var parsed protocol.TaskResponse
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal TaskResponse: %v", err)
+	}
+	if parsed != resp {
+		t.Errorf("TaskResponse round-trip mismatch:\ngot  %+v\nwant %+v", parsed, resp)
+	}
+
+	// omitempty: a response without a session must not emit the field.
+	withoutSession := protocol.TaskResponse{TaskID: "task-1", Status: protocol.TaskStatusQueued, EventsURL: "/v1/tasks/task-1/events"}
+	dataNoSession, err := json.Marshal(withoutSession)
+	if err != nil {
+		t.Fatalf("failed to marshal TaskResponse without session: %v", err)
+	}
+	if strings.Contains(string(dataNoSession), "session_id") {
+		t.Errorf("expected session_id to be omitted, got: %s", string(dataNoSession))
+	}
+}
+
+func TestTaskStateSessionIDJSONSerialization(t *testing.T) {
+	state := protocol.TaskState{
+		TaskID:    "task-viewer-1",
+		SessionID: "viewer-session-42",
+		Request: protocol.TaskRequest{
+			SessionID: "viewer-session-42",
+			Prompt:    "do the thing",
+			Agent:     "worker",
+			Task:      "do the thing",
+		},
+		Status:    protocol.TaskStatusRunning,
+		CreatedAt: 1727085600,
+	}
+
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("failed to marshal TaskState: %v", err)
+	}
+	if !strings.Contains(string(data), `"session_id":"viewer-session-42"`) {
+		t.Errorf("expected session_id in JSON, got: %s", string(data))
+	}
+
+	var parsed protocol.TaskState
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal TaskState: %v", err)
+	}
+	if parsed.SessionID != state.SessionID {
+		t.Errorf("expected SessionID %q, got %q", state.SessionID, parsed.SessionID)
+	}
+	if parsed.Request.SessionID != state.Request.SessionID {
+		t.Errorf("expected Request.SessionID %q, got %q", state.Request.SessionID, parsed.Request.SessionID)
+	}
+	if parsed.Request.Prompt != state.Request.Prompt {
+		t.Errorf("expected Request.Prompt %q, got %q", state.Request.Prompt, parsed.Request.Prompt)
+	}
+}
+
 func TestTaskStateWithError(t *testing.T) {
 	errPayload := &protocol.ErrorPayload{
 		Code:    "timeout",

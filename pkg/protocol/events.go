@@ -68,12 +68,57 @@ type QueryPayload struct {
 }
 
 // CompletionPayload carries the terminal success state of a subagent run.
+//
+// Result and Text are interchangeable aliases for the completion message: the
+// Gentle Mesh CLI reads "result" while Open Pi Viewer reads "text". Both fields
+// are kept in sync by Normalize, MarshalJSON and UnmarshalJSON so either consumer
+// observes the message content.
 type CompletionPayload struct {
 	Result       string   `json:"result"`
+	Text         string   `json:"text,omitempty"`
 	CommitHash   string   `json:"commit_hash,omitempty"`
 	Branch       string   `json:"branch,omitempty"`
 	FilesChanged []string `json:"files_changed,omitempty"`
 	DurationMs   int64    `json:"duration_ms,omitempty"`
+}
+
+// completionPayloadAlias breaks the method set of CompletionPayload so the
+// custom JSON codecs can delegate to the default struct encoding.
+type completionPayloadAlias CompletionPayload
+
+// Normalize mirrors Result and Text when only one of them is populated, keeping
+// payloads created in Go and payloads decoded from JSON interchangeable across
+// consumers that expect either field.
+func (c *CompletionPayload) Normalize() {
+	if c == nil {
+		return
+	}
+	if c.Text == "" && c.Result != "" {
+		c.Text = c.Result
+	}
+	if c.Result == "" && c.Text != "" {
+		c.Result = c.Text
+	}
+}
+
+// MarshalJSON normalizes the payload before encoding so both "result" and
+// "text" are emitted for any populated completion message.
+func (c CompletionPayload) MarshalJSON() ([]byte, error) {
+	c.Normalize()
+	return json.Marshal(completionPayloadAlias(c))
+}
+
+// UnmarshalJSON decodes a completion payload and normalizes it so a payload
+// carrying only "text" also populates Result, and vice-versa.
+func (c *CompletionPayload) UnmarshalJSON(data []byte) error {
+	var decoded completionPayloadAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	payload := CompletionPayload(decoded)
+	payload.Normalize()
+	*c = payload
+	return nil
 }
 
 // ErrorPayload carries terminal or non-fatal task error information.
