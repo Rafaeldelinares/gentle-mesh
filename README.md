@@ -105,6 +105,19 @@ Para resolverlo, el coordinador incorpora un **Semáforo Inteligente de Territor
 4. **Configuración vía CLI:**
    * El subcomando `server` expone el flag `-territory-mode=queue|warn|strict|disabled`. Un valor desconocido aborta el arranque con un error explícito, evitando degradaciones silenciosas de política.
 
+### 2.3 Compatibilidad con Open Pi Viewer y Clientes Desacoplados
+
+Gentle Mesh está diseñado para interoperar de forma nativa con interfaces gráficas de usuario, clientes de escritorio y móviles sin necesidad de instalar o ejecutar subprocesos de Node.js en la máquina cliente:
+
+1. **Protocol Aliasing de Entrada y Salida:**
+   * `TaskRequest` acepta indistintamente `prompt` o `task`, mapea el `session_id` del visor, asigna agente por defecto (`worker`) y replica el texto completado en `CompletionPayload` tanto en `result` como en `text`.
+2. **CORS y Streaming SSE Amigable para Tauri y Navegadores:**
+   * Middleware CORS que reconoce orígenes Tauri (`tauri://localhost`, `http://tauri.localhost`), localhosts web (`http://localhost:*`) y redes seguras privadas Tailscale (`100.*.*.*`, `*.ts.net`), con bypass preflight `OPTIONS` (204 No Content).
+3. **Exploración Remota de Archivos Segura:**
+   * Endpoints `GET /v1/workspace/tree` y `GET /v1/workspace/file` con contención estricta anti-traversal previa a la normalización (bloqueando escapes `..` con `403 Forbidden` y límite de lectura de 5MB).
+4. **Conector Nativo HTTP/SSE (`open-pi-viewer`):**
+   * El visor `open-pi-viewer` incorpora soporte de primera clase para `connectionType: 'mesh'`, conectándose directamente por HTTP/SSE a Gentle Mesh mediante `GentleMeshClient`, traduciendo eventos remotos en tiempo real al bus del visor sin requerir binarios locales de Node.js o Pi CLI.
+
 ---
 
 ## 3. Demostración Rápida en Local (Entorno Seguro)

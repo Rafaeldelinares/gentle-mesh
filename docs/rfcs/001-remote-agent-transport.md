@@ -96,6 +96,24 @@ Permite al orquestador o humano responder a un evento `query` emitido por el sub
   }
   ```
 
+### `GET /v1/workspace/tree` (Exploración de Directorio del Workspace Remoto)
+Permite a clientes de escritorio y móviles inspeccionar la jerarquía de archivos y carpetas del nodo remoto:
+* **Parámetros query:** `?path=subdirectorio` (opcional).
+* **Seguridad:** Validación estricta anti-traversal previo a la normalización (rechazo con `403 Forbidden` si contiene `..` fuera del `WorkspaceRoot`).
+* **Respuesta:** `200 OK` con metadata de entradas (`name`, `path`, `is_dir`, `size`, `mod_time`).
+
+### `GET /v1/workspace/file` (Lectura Segura de Archivos del Workspace Remoto)
+Descarga el contenido textual de un archivo dentro del workspace remoto:
+* **Parámetros query:** `?path=archivo.txt` (requerido).
+* **Seguridad:** Límite máximo de 5MB por archivo y protección anti-traversal.
+* **Respuesta:** `200 OK` con `{ "path": "...", "content": "...", "size": N, "mod_time": T }`.
+
+### 4.5. Compatibilidad con Frontends (Open Pi Viewer / Gentle Mobile)
+Para permitir que visores gráficos y cockpits multiplataforma se conecten directamente a Gentle Mesh sin requerir subprocesos locales de Node.js ni la CLI de Pi en el host del cliente:
+1. **Aliasing de Despacho:** `TaskRequest` acepta indistintamente `prompt` o `task`, mapea `session_id`, asigna agente por defecto (`worker`) y normaliza `text` y `result` en los payloads de finalización (`CompletionPayload`).
+2. **CORS Inteligente:** Soporte integrado para orígenes de escritorio Tauri (`tauri://localhost`, `http://tauri.localhost`), interfaces web locales (`http://localhost:*`) y redes seguras Tailscale (`100.*.*.*`, `*.ts.net`), con bypass automático de autenticación en solicitudes preflight `OPTIONS` (204 No Content).
+3. **Conector Nativo HTTP/SSE:** Adaptador TypeScript/JavaScript (`GentleMeshClient`) en el frontend que consume la API REST y los streams SSE, traduciendo eventos remotos (`thought`, `tool_call`, `tool_result`, `completion`, `status`) directamente al bus interno del visor (`message_start`, `message_update`, `tool_execution_start`, `tool_execution_end`, `message_end`, `agent_settled`).
+
 ---
 
 ## 5. Protocolo de Membresía y Descubrimiento de la Malla (`/v1/mesh`)

@@ -41,3 +41,4 @@ Implementar la primera versión ejecutable y testeada de Gentle Mesh en Go, vali
 - [x] Task 32: Adaptar protocolo y payloads para compatibilidad con Open Pi Viewer (`session_id`, alias `prompt`, default `agent`, y campo `text` en `CompletionPayload`).
 - [x] Task 33: Implementar `CORSMiddleware` en `pkg/server/http` con soporte para Tauri (`tauri://localhost`, `http://tauri.localhost`), localhosts (`http://localhost:*`), Tailscale (`100.*.*.*`) y preflight `OPTIONS` sin auth.
 - [x] Task 34: Implementar exploración remota de archivos (`GET /v1/workspace/tree` y `GET /v1/workspace/file`) en `pkg/server/http` con contención estricta anti-traversal y tests `-race`.
+- [x] Task 35: Conector nativo HTTP/SSE para Open Pi Viewer (src/infra/mesh.ts, src/infra/bridge.ts, SettingsView, i18n y tests en open-pi-viewer), desacoplando el visor de Node.js local y conectándolo directamente a Gentle Mesh.
