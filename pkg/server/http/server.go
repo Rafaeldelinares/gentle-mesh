@@ -192,6 +192,7 @@ func (s *Server) Handler() stdhttp.Handler {
 	if s.config.BearerToken != "" {
 		h = AuthMiddleware(s.config.BearerToken, h)
 	}
+	h = CORSMiddleware(h)
 	h = PanicRecoveryMiddleware(h)
 	return h
 }

@@ -2113,3 +2113,152 @@ func TestServer_TerritoryQueueMode_CancelQueuedTask(t *testing.T) {
 	gate.release("cancel-queue-1")
 	waitForCondition(t, func() bool { return srv.Scheduler().RunningLen() == 0 })
 }
+
+// headerTokens splits a comma-separated HTTP header value into trimmed, lowercased tokens.
+func headerTokens(value string) map[string]bool {
+	tokens := make(map[string]bool)
+	for _, part := range strings.Split(value, ",") {
+		token := strings.ToLower(strings.TrimSpace(part))
+		if token != "" {
+			tokens[token] = true
+		}
+	}
+	return tokens
+}
+
+func TestServer_CORSPreflightOptions(t *testing.T) {
+	_, ts := setupTestServer(t)
+
+	const origin = "tauri://localhost"
+	req, err := http.NewRequest(http.MethodOptions, ts.URL+"/v1/tasks", nil)
+	if err != nil {
+		t.Fatalf("failed building preflight request: %v", err)
+	}
+	req.Header.Set("Origin", origin)
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "content-type, authorization, last-event-id")
+
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("OPTIONS /v1/tasks failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 No Content, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != origin {
+		t.Errorf("expected Access-Control-Allow-Origin %q, got %q", origin, got)
+	}
+	allowed := headerTokens(resp.Header.Get("Access-Control-Allow-Headers"))
+	for _, want := range []string{"last-event-id", "content-type", "authorization"} {
+		if !allowed[want] {
+			t.Errorf("expected Access-Control-Allow-Headers to include %q, got %q", want, resp.Header.Get("Access-Control-Allow-Headers"))
+		}
+	}
+	if methods := resp.Header.Get("Access-Control-Allow-Methods"); methods == "" {
+		t.Error("expected non-empty Access-Control-Allow-Methods")
+	}
+	if !strings.Contains(strings.ToLower(resp.Header.Get("Vary")), "origin") {
+		t.Errorf("expected Vary to include Origin, got %q", resp.Header.Get("Vary"))
+	}
+}
+
+func TestServer_CORSPreflightOptionsWithAuth(t *testing.T) {
+	_, ts := setupTestServer(t, func(cfg *meshhttp.ServerConfig) {
+		cfg.BearerToken = "mesh-cors-token"
+	})
+
+	req, err := http.NewRequest(http.MethodOptions, ts.URL+"/v1/tasks", nil)
+	if err != nil {
+		t.Fatalf("failed building preflight request: %v", err)
+	}
+	req.Header.Set("Origin", "tauri://localhost")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("OPTIONS /v1/tasks with auth failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 No Content on authenticated preflight, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "tauri://localhost" {
+		t.Errorf("expected Access-Control-Allow-Origin to echo origin, got %q", got)
+	}
+}
+
+func TestServer_CORSOriginEchoOnRegularRequests(t *testing.T) {
+	_, ts := setupTestServer(t)
+
+	const origin = "http://localhost:5173"
+
+	getReq, err := http.NewRequest(http.MethodGet, ts.URL+"/v1/mesh/radar", nil)
+	if err != nil {
+		t.Fatalf("failed building GET request: %v", err)
+	}
+	getReq.Header.Set("Origin", origin)
+	resp, err := ts.Client().Do(getReq)
+	if err != nil {
+		t.Fatalf("GET /v1/mesh/radar failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != origin {
+		t.Errorf("expected GET Access-Control-Allow-Origin %q, got %q", origin, got)
+	}
+	if exp := resp.Header.Get("Access-Control-Expose-Headers"); !headerTokens(exp)["last-event-id"] {
+		t.Errorf("expected Access-Control-Expose-Headers to include Last-Event-ID, got %q", exp)
+	}
+
+	postReq, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/tasks", strings.NewReader(`{"agent":"coder","task":"cors check"}`))
+	if err != nil {
+		t.Fatalf("failed building POST request: %v", err)
+	}
+	postReq.Header.Set("Origin", origin)
+	postReq.Header.Set("Content-Type", "application/json")
+	postResp, err := ts.Client().Do(postReq)
+	if err != nil {
+		t.Fatalf("POST /v1/tasks failed: %v", err)
+	}
+	defer postResp.Body.Close()
+	if got := postResp.Header.Get("Access-Control-Allow-Origin"); got != origin {
+		t.Errorf("expected POST Access-Control-Allow-Origin %q, got %q", origin, got)
+	}
+}
+
+func TestServer_CORSTailscaleOriginEcho(t *testing.T) {
+	_, ts := setupTestServer(t)
+
+	const origin = "http://100.64.0.1:8080"
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/v1/mesh/radar", nil)
+	if err != nil {
+		t.Fatalf("failed building request: %v", err)
+	}
+	req.Header.Set("Origin", origin)
+
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET /v1/mesh/radar failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != origin {
+		t.Errorf("expected Tailscale origin %q to be echoed, got %q", origin, got)
+	}
+}
+
+func TestServer_CORSWildcardWithoutOrigin(t *testing.T) {
+	_, ts := setupTestServer(t)
+
+	resp, err := ts.Client().Get(ts.URL + "/v1/mesh/radar")
+	if err != nil {
+		t.Fatalf("GET /v1/mesh/radar failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("expected wildcard Access-Control-Allow-Origin, got %q", got)
+	}
+}
