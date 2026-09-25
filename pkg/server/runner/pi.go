@@ -10,6 +10,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 )
@@ -20,6 +21,9 @@ const (
 	maxPiEventLine = 8 << 20
 	// maxPiStderr bounds the captured stderr kept for failure diagnostics.
 	maxPiStderr = 64 << 10
+	// inactivityTimeout is the maximum time between output lines from Pi.
+	// If Pi produces no output for this duration, the task is killed.
+	inactivityTimeout = 5 * 60 * 1e9 // 5 minutes in nanoseconds
 )
 
 // Pi JSON stream event names, as emitted by `pi --print --mode json`.
@@ -120,14 +124,15 @@ func (r *PiRunner) Run(ctx context.Context, req protocol.TaskRequest, sink Event
 
 	// Caller cancellation wins over any incidental stream or exit error.
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		// Emit error event for timeout/cancellation so the client knows
-		switch ctxErr {
-		case context.DeadlineExceeded:
+		// Distinguish between timeout (external deadline) and cancellation.
+		// Timeout should emit an error so the client knows the task was killed.
+		// Cancellation (user-initiated) is expected and does not need an extra error event.
+		if ctxErr == context.DeadlineExceeded {
 			r.failRun(sink, "TASK_TIMEOUT", fmt.Errorf("task exceeded timeout"))
-		case context.Canceled:
-			r.failRun(sink, "TASK_CANCELED", fmt.Errorf("task was canceled"))
-		default:
-			r.failRun(sink, "TASK_ERROR", ctxErr)
+		}
+		// For readErr (inactivity timeout), emit error so client knows
+		if readErr != nil && readErr.Error() == "inactivity timeout" {
+			r.failRun(sink, "TASK_INACTIVITY_TIMEOUT", fmt.Errorf("task timed out due to inactivity"))
 		}
 		return ctxErr
 	}
@@ -192,14 +197,28 @@ type piStream struct {
 }
 
 // consume reads newline-delimited JSON events until the stream ends.
+// It enforces an inactivity timeout: if no output is received for 5 minutes,
+// the stream is killed with an error.
 func (s *piStream) consume(ctx context.Context, out io.Reader) error {
 	scanner := bufio.NewScanner(out)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxPiEventLine)
+
+	// inactivityTimer tracks time since last output
+	lastOutput := time.Now()
 
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+
+		// Check for inactivity timeout (only if no context deadline is set)
+		if ctx.Err() == nil {
+			elapsed := time.Since(lastOutput)
+			if elapsed > time.Duration(inactivityTimeout) {
+				return fmt.Errorf("inactivity timeout: no output for %v", elapsed)
+			}
+		}
+		lastOutput = time.Now()
 
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
