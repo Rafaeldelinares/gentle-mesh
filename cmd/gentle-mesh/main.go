@@ -87,6 +87,8 @@ func runCLIWithIO(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		return runTokenList(ctx, cmdArgs, stdout, stderr)
 	case "token-revoke":
 		return runTokenRevoke(ctx, cmdArgs, stdout, stderr)
+	case "gen-csr":
+		return runGenCSR(ctx, cmdArgs, stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -112,6 +114,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  gen-token    Generate an enrollment token for auto-cert")
 	fmt.Fprintln(w, "  token-list   List enrollment tokens")
 	fmt.Fprintln(w, "  token-revoke Revoke an enrollment token")
+	fmt.Fprintln(w, "  gen-csr      Generate a CSR locally for enrollment (no CA needed)")
 	fmt.Fprintln(w, "  help      Show help for gentle-mesh")
 }
 
@@ -1282,6 +1285,49 @@ func runCertIssue(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	fmt.Fprintln(stdout, "")
 	fmt.Fprintf(stdout, "Distribute the certificate and key to the node, then run:\n")
 	fmt.Fprintf(stdout, "  gentle-mesh worker -coordinator https://... -cert %s -key %s\n", certFile, keyFile)
+
+	return nil
+}
+
+// runGenCSR generates a CSR locally for enrollment (no CA required).
+func runGenCSR(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("gen-csr", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	nodeID := fs.String("node-id", "", "Node identifier for the CSR (required)")
+	outputDir := fs.String("output", ".", "Output directory for CSR and key files")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *nodeID == "" {
+		return errors.New("-node-id is required")
+	}
+
+	// Generate CSR locally
+	csrResult, err := pki.GenerateCSR(*nodeID)
+	if err != nil {
+		return fmt.Errorf("failed to generate CSR: %w", err)
+	}
+
+	// Save CSR and key
+	csrFile := filepath.Join(*outputDir, *nodeID+".csr")
+	keyFile := filepath.Join(*outputDir, *nodeID+".key")
+
+	if err := os.WriteFile(csrFile, []byte(csrResult.CSRPEM), 0600); err != nil {
+		return fmt.Errorf("failed to save CSR: %w", err)
+	}
+	if err := os.WriteFile(keyFile, []byte(csrResult.PrivateKeyPEM), 0600); err != nil {
+		return fmt.Errorf("failed to save private key: %w", err)
+	}
+
+	fmt.Fprintf(stdout, "✅ CSR generated for node: %s\n", *nodeID)
+	fmt.Fprintf(stdout, "  CSR: %s\n", csrFile)
+	fmt.Fprintf(stdout, "  Private key: %s\n", keyFile)
+	fmt.Fprintln(stdout, "")
+	fmt.Fprintf(stdout, "Send the CSR to the coordinator for signing.\n")
+	fmt.Fprintf(stdout, "Use -join-token with the worker to auto-enroll.\n")
 
 	return nil
 }

@@ -1,0 +1,35 @@
+services:
+  coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["server", "-addr", ":8443", "-tls", "-tls-dir", "/tls", "-db-path", "/data/mesh.db", "-workspace", "/workspace"]
+    volumes:
+      - ./tls-test:/tls
+      - ./data:/data
+    ports:
+      - "8443:8443"
+    healthcheck:
+      test: ["CMD", "curl", "-kf", "https://localhost:8443/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - gentle-mesh-net
+
+  worker-alpha:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # TODO: agregar -join-token cuando esté soportado en el worker de Docker
+    command: ["worker", "-coordinator", "https://coordinator:8443", "-node-id", "worker-alpha", "-endpoint", "http://worker-alpha:8081", "-agents", "worker", "-tags", "go,fast", "-concurrency", "2", "-insecure-skip-tls-verify"]
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    networks:
+      - gentle-mesh-net
+
+networks:
+  gentle-mesh-net:
+    driver: bridge
