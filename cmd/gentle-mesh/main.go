@@ -209,6 +209,13 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		}
 		serverConfig.TokenStore = store.NewSQLiteTokenStore(db)
 		fmt.Fprintf(stdout, "Enrollment tokens enabled\n")
+
+		// Initialize webhook store and dispatcher
+		if err := store.InitWebhookSchema(db); err != nil {
+			return fmt.Errorf("failed to init webhook schema: %w", err)
+		}
+		serverConfig.WebhookStore = store.NewSQLiteWebhookStore(db)
+		fmt.Fprintf(stdout, "Webhooks enabled\n")
 	}
 
 	// Configure mTLS if required

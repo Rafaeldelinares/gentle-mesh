@@ -13,6 +13,7 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/task"
+	"github.com/gentleman-programming/gentle-mesh/pkg/server/webhook"
 )
 
 // errNilManagedTask is returned when a nil task is handed to the scheduler.
@@ -25,6 +26,7 @@ type SchedulerConfig struct {
 	TerritoryManager *federation.TerritoryManager
 	Registry         *registry.Registry
 	Runner           runner.Runner
+	WebhookDispatcher *webhook.Dispatcher
 }
 
 // TerritoryScheduler is the coordinator's territory semaphore. Depending on the
@@ -42,6 +44,7 @@ type TerritoryScheduler struct {
 	territoryManager *federation.TerritoryManager
 	registry         *registry.Registry
 	runner           runner.Runner
+	webhookDispatcher *webhook.Dispatcher
 }
 
 // NewTerritoryScheduler constructs a TerritoryScheduler, defaulting the mode to
@@ -61,6 +64,7 @@ func NewTerritoryScheduler(cfg SchedulerConfig) *TerritoryScheduler {
 		territoryManager: cfg.TerritoryManager,
 		registry:         cfg.Registry,
 		runner:           cfg.Runner,
+		webhookDispatcher: cfg.WebhookDispatcher,
 	}
 
 	if s.territoryManager == nil {
@@ -310,6 +314,10 @@ func (s *TerritoryScheduler) startRunner(mt *task.ManagedTask) {
 					Fatal:   true,
 				})
 			}
+			// Notify webhooks if dispatcher is configured
+			if s.webhookDispatcher != nil {
+				s.notifyWebhooks(mt)
+			}
 			s.complete(mt)
 		}()
 
@@ -325,6 +333,31 @@ func (s *TerritoryScheduler) startRunner(mt *task.ManagedTask) {
 			}
 		}
 	}()
+}
+
+// notifyWebhooks sends webhook notifications based on task final status.
+func (s *TerritoryScheduler) notifyWebhooks(mt *task.ManagedTask) {
+	taskState := mt.Snapshot()
+
+
+	switch mt.Status {
+	case protocol.TaskStatusCompleted:
+		s.webhookDispatcher.NotifyTaskCompleted(&taskState, "")
+	case protocol.TaskStatusFailed:
+		msg := "task failed"
+		if mt.Error != nil {
+			msg = mt.Error.Message
+		}
+		// Determine event type based on error code
+		event := "task.failed"
+		if mt.Error != nil {
+			switch mt.Error.Code {
+			case "TASK_TIMEOUT", "TASK_INACTIVITY_TIMEOUT":
+				event = "task.timeout"
+			}
+		}
+		s.webhookDispatcher.Notify(event, mt.TaskID, "failed", &taskState, nil, &msg)
+	}
 }
 
 // complete releases the branch lock, removes the task from the running set, and drains

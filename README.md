@@ -368,6 +368,95 @@ El enrollment automático usa un flujo **Zero-Knowledge**:
 
 ---
 
+## 3.6 Webhooks de Notificación
+
+Gentle Mesh soporta **webhooks** para recibir notificaciones cuando las tareas terminan, fallan o expiran. Esto elimina la necesidad de hacer polling constante.
+
+### 3.6.1 Registrar un Webhook
+
+```bash
+# Registrar webhook para recibir notificaciones
+curl -X POST http://localhost:8080/v1/webhooks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://tu-servidor.com/webhook",
+    "secret": "tu-secret-opcional",
+    "events": ["task.completed", "task.failed", "task.timeout"]
+  }'
+```
+
+### 3.6.2 Eventos Soportados
+
+| Evento | Descripción |
+|--------|-------------|
+| `task.completed` | Tarea completada exitosamente |
+| `task.failed` | Tarea falló por error |
+| `task.timeout` | Tarea expiró por timeout |
+| `*` | Todos los eventos |
+
+### 3.6.3 Payload del Webhook
+
+```json
+{
+  "id": "notif-1234567890",
+  "event": "task.completed",
+  "timestamp": 1699999999,
+  "task_id": "task-abc123",
+  "status": "completed",
+  "result": "Resultado de la tarea...",
+  "task": {
+    "task_id": "task-abc123",
+    "status": "completed",
+    "agent": "worker"
+  }
+}
+```
+
+### 3.6.4 Seguridad
+
+Los webhooks incluyen firma HMAC-SHA256 para verificar autenticidad:
+
+```
+X-Webhook-Signature: sha256=<firma>
+X-Webhook-Event: task.completed
+X-Webhook-ID: notif-123
+```
+
+Para verificar la firma:
+
+```python
+import hmac, hashlib
+
+def verify_signature(payload, signature, secret):
+    expected = 'sha256=' + hmac.new(
+        secret.encode(),
+        payload,
+        hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(signature, expected)
+```
+
+### 3.6.5 Listar y Eliminar Webhooks
+
+```bash
+# Listar webhooks
+curl http://localhost:8080/v1/webhooks
+
+# Eliminar webhook
+curl -X DELETE http://localhost:8080/v1/webhooks/wh-123
+```
+
+### 3.6.6 Casos de Uso
+
+| Uso | Ejemplo |
+|-----|---------|
+| CI/CD | Notificar cuando termina un build |
+| Slack | Enviar mensajes a un canal |
+| Logging | Archivar resultados en S3/Datadog |
+| Monitoring | Alertar si una tarea falla |
+
+---
+
 ## 4. Documentación y Arquitectura Interactiva (Archify)
 
 El repositorio incluye diagramas de arquitectura interactivos y autocontenidos (HTML puro sin dependencias externas) generados con **Archify**, diseñados para explorar visualmente el sistema, simular rutas y comprender el porqué de cada compuerta de seguridad.

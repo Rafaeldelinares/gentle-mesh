@@ -16,6 +16,7 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/federation"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
+	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/task"
 )
 
@@ -40,6 +41,10 @@ func (s *Server) registerRoutes(mux *stdhttp.ServeMux) {
 	mux.HandleFunc("GET /v1/workspace/tree", s.handleWorkspaceTree)
 	mux.HandleFunc("GET /v1/workspace/file", s.handleWorkspaceFile)
 	mux.HandleFunc("POST /v1/certs/enroll", s.handleCertsEnroll)
+	// Webhook management
+	mux.HandleFunc("POST /v1/webhooks", s.handleCreateWebhook)
+	mux.HandleFunc("GET /v1/webhooks", s.handleListWebhooks)
+	mux.HandleFunc("DELETE /v1/webhooks/{id}", s.handleDeleteWebhook)
 }
 
 func writeJSON(w stdhttp.ResponseWriter, status int, data any) {
@@ -740,4 +745,119 @@ func (s *Server) handleWorkspaceFile(w stdhttp.ResponseWriter, r *stdhttp.Reques
 		ModTime: fi.ModTime().Unix(),
 		Content: string(content),
 	})
+}
+
+// Webhook management handlers
+
+// CreateWebhookRequest represents a webhook creation request.
+type CreateWebhookRequest struct {
+	URL    string   `json:"url"`
+	Secret string   `json:"secret,omitempty"`
+	Events []string `json:"events"`
+}
+
+// WebhookResponse represents a webhook in API responses.
+type WebhookResponse struct {
+	ID        string   `json:"id"`
+	URL       string   `json:"url"`
+	Events    []string `json:"events"`
+	CreatedAt int64    `json:"created_at"`
+	Active    bool     `json:"active"`
+}
+
+// handleCreateWebhook creates a new webhook.
+func (s *Server) handleCreateWebhook(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if s.webhookStore == nil {
+		writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]string{"error": "webhooks not configured"})
+		return
+	}
+
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, 4<<10)
+	var req CreateWebhookRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request: %v", err)})
+		return
+	}
+
+	if req.URL == "" {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "url is required"})
+		return
+	}
+	if len(req.Events) == 0 {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "at least one event is required"})
+		return
+	}
+
+	// Generate ID
+	id := fmt.Sprintf("wh-%d", time.Now().UnixNano())
+
+	record := &store.WebhookRecord{
+		ID:        id,
+		URL:       req.URL,
+		Secret:    req.Secret,
+		Events:    req.Events,
+		CreatedAt: time.Now(),
+		Active:    true,
+	}
+
+	if err := s.webhookStore.CreateWebhook(r.Context(), record); err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to create webhook: %v", err)})
+		return
+	}
+
+	writeJSON(w, stdhttp.StatusCreated, WebhookResponse{
+		ID:        id,
+		URL:       req.URL,
+		Events:    req.Events,
+		CreatedAt: record.CreatedAt.Unix(),
+		Active:    true,
+	})
+}
+
+// handleListWebhooks lists all webhooks.
+func (s *Server) handleListWebhooks(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if s.webhookStore == nil {
+		writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]string{"error": "webhooks not configured"})
+		return
+	}
+
+	webhooks, err := s.webhookStore.ListWebhooks(r.Context())
+	if err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to list webhooks: %v", err)})
+		return
+	}
+
+	response := make([]WebhookResponse, 0, len(webhooks))
+	for _, wh := range webhooks {
+		response = append(response, WebhookResponse{
+			ID:        wh.ID,
+			URL:       wh.URL,
+			Events:    wh.Events,
+			CreatedAt: wh.CreatedAt.Unix(),
+			Active:    wh.Active,
+		})
+	}
+
+	writeJSON(w, stdhttp.StatusOK, map[string]any{"webhooks": response})
+}
+
+// handleDeleteWebhook deletes a webhook.
+func (s *Server) handleDeleteWebhook(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if s.webhookStore == nil {
+		writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]string{"error": "webhooks not configured"})
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/v1/webhooks/")
+	if id == "" {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "webhook id is required"})
+		return
+	}
+
+	if err := s.webhookStore.DeleteWebhook(r.Context(), id); err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to delete webhook: %v", err)})
+		return
+	}
+
+	writeJSON(w, stdhttp.StatusOK, map[string]string{"deleted": id})
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/task"
+	"github.com/gentleman-programming/gentle-mesh/pkg/server/webhook"
 )
 
 // ServerConfig defines configuration parameters for the mesh HTTP coordinator server.
@@ -48,6 +49,8 @@ type ServerConfig struct {
 	RequireMTLS    bool // Require client certificates for all connections
 	// Enrollment configuration
 	TokenStore  store.TokenStore // For enrollment token validation
+	// Webhook configuration
+	WebhookStore store.WebhookStore // For webhook notifications
 }
 
 // Server provides the HTTP REST and SSE coordinator daemon for gentle-mesh.
@@ -64,6 +67,7 @@ type Server struct {
 	startTime        time.Time
 	meshCA           *pki.MeshCA
 	tokenStore       store.TokenStore
+	webhookStore     store.WebhookStore
 }
 
 // NewServer initializes a new Server with defaults for omitted configuration fields.
@@ -143,12 +147,19 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if !mode.Valid() {
 		mode = protocol.TerritoryModeQueue
 	}
+	// Create webhook dispatcher if webhook store is configured
+	var webhookDispatcher *webhook.Dispatcher
+	if cfg.WebhookStore != nil {
+		webhookDispatcher = webhook.NewDispatcher(cfg.WebhookStore)
+	}
+
 	scheduler := NewTerritoryScheduler(SchedulerConfig{
-		Mode:             mode,
-		TaskManager:      cfg.TaskManager,
-		TerritoryManager: cfg.TerritoryManager,
-		Registry:         cfg.Registry,
-		Runner:           cfg.Runner,
+		Mode:              mode,
+		TaskManager:       cfg.TaskManager,
+		TerritoryManager:  cfg.TerritoryManager,
+		Registry:          cfg.Registry,
+		Runner:            cfg.Runner,
+		WebhookDispatcher: webhookDispatcher,
 	})
 
 	s := &Server{
@@ -163,6 +174,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		startTime:        time.Now(),
 		meshCA:           cfg.MeshCA,
 		tokenStore:       cfg.TokenStore,
+		webhookStore:     cfg.WebhookStore,
 	}
 
 	s.httpServer = &stdhttp.Server{
