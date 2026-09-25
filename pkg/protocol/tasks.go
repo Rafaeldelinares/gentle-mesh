@@ -28,6 +28,9 @@ type TaskRequest struct {
 	EditSurfaces   []string    `json:"edit_surfaces,omitempty"`
 	Patch          string      `json:"patch,omitempty"`
 	TimeoutSeconds int         `json:"timeout_seconds,omitempty"`
+	// Retry configuration
+	MaxRetries    int          `json:"max_retries,omitempty"` // 0 = no retry
+	RetryDelay    int          `json:"retry_delay_seconds,omitempty"` // delay between retries
 	Tags           []string    `json:"tags,omitempty"`
 }
 

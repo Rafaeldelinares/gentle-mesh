@@ -7,6 +7,7 @@ import (
 	"runtime/debug"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/federation"
@@ -326,12 +327,74 @@ func (s *TerritoryScheduler) startRunner(mt *task.ManagedTask) {
 		}
 		err := r.Run(mt.Context(), mt.Request, mt)
 		if err != nil {
-			// Task failed (timeout, canceled, etc.) - transition to failed
+			// Task failed - handle retry if configured
+			if mt.Request.MaxRetries > 0 {
+				s.handleRetry(mt, err)
+				return // Don't call complete, retry will do it
+			}
+			// No retry configured - mark as failed
 			err2 := mt.SetStatus(protocol.TaskStatusFailed)
 			if err2 != nil {
 				// Log but don't fail
 			}
 		}
+	}()
+}
+
+// handleRetry schedules a retry for the task if retries remain.
+func (s *TerritoryScheduler) handleRetry(mt *task.ManagedTask, lastErr error) {
+	// Track retry count in request (stored in request for persistence)
+	currentRetry := 0
+	if mt.Request.Context != "" {
+		// Extract retry count from context if stored
+		if n, _ := fmt.Sscanf(mt.Request.Context, "retry:%d:", &currentRetry); n == 0 {
+			currentRetry = 0
+		}
+	}
+
+	if currentRetry >= mt.Request.MaxRetries {
+		// Max retries reached - mark as failed
+		log.Printf("scheduler: task %s failed after %d retries: %v", mt.TaskID, currentRetry, lastErr)
+		mt.SetStatus(protocol.TaskStatusFailed)
+		return
+	}
+
+	// Calculate delay
+	retryDelay := mt.Request.RetryDelay
+	if retryDelay <= 0 {
+		retryDelay = 30 // default 30 seconds
+	}
+
+	nextRetry := currentRetry + 1
+	log.Printf("scheduler: task %s will retry %d/%d in %ds: %v", mt.TaskID, nextRetry, mt.Request.MaxRetries, retryDelay, lastErr)
+
+	// Schedule retry
+	go func() {
+		time.Sleep(time.Duration(retryDelay) * time.Second)
+
+		// Re-enqueue the task for scheduling
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		// Reset task status to queued
+		if err := mt.TransitionTo(protocol.TaskStatusQueued); err != nil {
+			log.Printf("scheduler: failed to re-queue task %s for retry: %v", mt.TaskID, err)
+			return
+		}
+
+		// Update context to track retry count
+		mt.Request.Context = fmt.Sprintf("retry:%d:", nextRetry)
+
+		// Add to queue
+		s.queue = append(s.queue, mt)
+
+		// Emit retry event
+		_, _ = mt.EmitEvent(protocol.EventRetry, protocol.RetryPayload{
+			RetryNumber:   nextRetry,
+			MaxRetries:    mt.Request.MaxRetries,
+			RetryAfterSec:  retryDelay,
+			LastError:      lastErr.Error(),
+		})
 	}()
 }
 

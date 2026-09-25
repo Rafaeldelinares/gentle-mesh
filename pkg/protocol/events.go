@@ -23,6 +23,7 @@ const (
 	EventQuery      EventType = "query"
 	EventCompletion EventType = "completion"
 	EventError      EventType = "error"
+	EventRetry      EventType = "retry"
 )
 
 // Event represents a single discrete protocol message streamed over SSE or stored in task logs.
@@ -134,6 +135,14 @@ type ErrorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Fatal   bool   `json:"fatal,omitempty"`
+}
+
+// RetryPayload carries automatic retry scheduling information.
+type RetryPayload struct {
+	RetryNumber  int    `json:"retry_number"`
+	MaxRetries   int    `json:"max_retries"`
+	RetryAfterSec int   `json:"retry_after_seconds"`
+	LastError    string `json:"last_error,omitempty"`
 }
 
 // NewEvent constructs a new Event with serialized payload and current Unix timestamp if 0.

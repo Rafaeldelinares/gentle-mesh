@@ -368,6 +368,57 @@ El enrollment automático usa un flujo **Zero-Knowledge**:
 
 ---
 
+## 3.7 Automatic Retry
+
+Gentle Mesh soporta **reintento automático** para tareas que fallan, útil para operaciones no determinísticas o redes inestables.
+
+### 3.7.1 Configurar Retry
+
+```bash
+# Enviar tarea con retry automático
+curl -X POST http://localhost:8080/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent": "worker",
+    "task": "Compilar y desplegar aplicación",
+    "max_retries": 3,
+    "retry_delay_seconds": 30
+  }'
+```
+
+### 3.7.2 Comportamiento
+
+| Campo | Default | Descripción |
+|-------|---------|-------------|
+| `max_retries` | 0 (sin retry) | Número máximo de reintentos |
+| `retry_delay_seconds` | 30 | Segundos entre intentos |
+
+### 3.7.3 Eventos de Retry
+
+El servidor emite eventos `retry` cuando programa un reintento:
+
+```json
+{
+  "type": "retry",
+  "id": 5,
+  "payload": {
+    "retry_number": 1,
+    "max_retries": 3,
+    "retry_after_seconds": 30,
+    "last_error": "connection timeout"
+  }
+}
+```
+
+### 3.7.4 Ejemplo con gentle-mesh run
+
+```bash
+# Con max_retries=3 y retry_delay=60s
+gentle-mesh run -task "mi tarea" -max-retries 3 -retry-delay 60
+```
+
+---
+
 ## 3.6 Webhooks de Notificación
 
 Gentle Mesh soporta **webhooks** para recibir notificaciones cuando las tareas terminan, fallan o expiran. Esto elimina la necesidad de hacer polling constante.

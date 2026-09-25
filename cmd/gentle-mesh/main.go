@@ -983,6 +983,8 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	surfaces := fs.String("surfaces", "", "Comma-separated edit surfaces (files or directories)")
 	tags := fs.String("tags", "", "Comma-separated required node tags (e.g. gpu, fast)")
 	timeout := fs.Int("timeout", 60, "Task timeout in seconds")
+	maxRetries := fs.Int("max-retries", 0, "Maximum automatic retries on failure (0 = no retry)")
+	retryDelay := fs.Int("retry-delay", 30, "Seconds to wait between retries")
 	token := fs.String("token", "", "Optional bearer authentication token")
 	caCert := fs.String("ca", "", "Path to mesh CA certificate for TLS verification")
 	insecureSkipTLS := fs.Bool("insecure-skip-tls-verify", false, "Skip TLS verification (for development only)")
@@ -1009,6 +1011,8 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 		EditSurfaces:   parseCommaSeparated(*surfaces),
 		Tags:           parseCommaSeparated(*tags),
 		TimeoutSeconds: *timeout,
+		MaxRetries:     *maxRetries,
+		RetryDelay:     *retryDelay,
 	}
 
 	reqBytes, err := json.Marshal(taskReq)
