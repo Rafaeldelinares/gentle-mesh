@@ -17,7 +17,7 @@ Te adjunto el repositorio completo de `gentle-mesh` en un archivo ZIP (`gentle-m
 ### Restricciones Arquitectónicas de Diseño
 1. **Lenguaje y Dependencias:** Go 1.22+ estándar puro (`net/http`, `encoding/json`, `sync`, `context`, etc.). Cero dependencias externas pesadas ni frameworks web (para garantizar un binario estático único de ~15MB con `CGO_ENABLED=0`).
 2. **Desacople Cómputo vs Coordinación:** El orquestador local del usuario es ultra-liviano. La carga pesada y las colas de concurrencia residen en los nodos trabajadores remotos (servidores, VPS o máquinas secundarias).
-3. **Transporte y Persistencia:** HTTP REST + Server-Sent Events (SSE) para streaming continuo de pensamientos y tokens; persistencia append-only en disco (JSONL) para permitir reconexión histórica instantánea (`Last-Event-ID`) con consumo de RAM O(1).
+3. **Transporte y Persistencia:** HTTPS REST + Server-Sent Events (HTTPS/SSE) para streaming continuo y seguro de pensamientos y tokens con cifrado en tránsito de nivel aplicación; persistencia append-only en disco (JSONL) para permitir reconexión histórica instantánea (`Last-Event-ID`) con consumo de RAM O(1).
 4. **Construcción Colectiva y Consciencia Situacional (Radar de Ámbitos):** Más allá del balanceo de carga, el sistema implementa un Protocolo de Territorio y un Radar en tiempo real con 3 dimensiones de alcance por agente:
    - **Dominio Arquitectónico:** (ej. `auth`, `database`, `billing`, `ui`).
    - **Superficies de Edición:** Rutas y globs autorizados (`pkg/auth/*`).

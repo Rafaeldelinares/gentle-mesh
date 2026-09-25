@@ -1,6 +1,6 @@
 // Package client provides the local side of the Gentle Mesh transport. The
 // Bridge adapts the Pi subagent command protocol (newline-delimited JSON on
-// stdin/stdout) onto the Gentle Mesh coordinator HTTP/SSE API, translating
+// stdin/stdout) onto the Gentle Mesh coordinator HTTPS/SSE API, translating
 // remote events (thought, tool_call, tool_result, completion, status) into the
 // viewer event bus (message_start, message_update, tool_execution_start,
 // tool_execution_end, message_end, agent_settled).

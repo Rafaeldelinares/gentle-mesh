@@ -40,9 +40,9 @@ Proponemos introducir un **Transporte Enchufable (Pluggable Transport)** dentro 
                      ▼                                                  ▼
           [Transport: "local"] (Default)                     [Transport: "remote"]
           Pi corre como subproceso hijo                      Gentle Mesh Client
-          en el host local (como hoy).                       Despacha HTTP REST + SSE
+          en el host local (como hoy).                       Despacha HTTPS REST + SSE
                                                                         │
-                                                                        ▼ (Tailscale / Red Privada)
+                                                                        ▼ (Tailscale / Red Privada Cifrada)
                                                              [Gentle Mesh Daemon en Servidor]
                                                              Ejecuta Pi headless en el nodo
                                                              Streaming de eventos al cliente
@@ -54,7 +54,7 @@ Proponemos introducir un **Transporte Enchufable (Pluggable Transport)** dentro 
 
 1. **No-Breaking Change (100% Retrocompatible):** Si el desarrollador no configura un nodo remoto, el 100% de Pi y Gentle AI se comporta exactamente igual que hoy.
 2. **Binario Único en Go (`zero-dependency`):** El demonio del servidor y el cliente se distribuyen en un único binario compilado estáticamente (`CGO_ENABLED=0`).
-3. **Streaming Reactivo mediante SSE (Server-Sent Events):** La terminal del cliente recibe pensamientos, llamadas a herramientas (`toolCalls`) y respuestas en tiempo real mediante HTTP unidireccional estándar, compatible con cualquier proxy.
+3. **Streaming Reactivo mediante HTTPS/SSE (Server-Sent Events Seguro):** La terminal del cliente recibe pensamientos, llamadas a herramientas (`toolCalls`) y respuestas en tiempo real mediante HTTPS unidireccional estándar con cifrado de nivel aplicación, compatible con cualquier proxy seguro.
 4. **Handoff y Trazabilidad basada en Git:** El código remoto se commitea en ramas Git dedicadas (`feature/mesh-...`). El cliente local sincroniza vía `git pull`.
 
 ---
@@ -112,7 +112,7 @@ Descarga el contenido textual de un archivo dentro del workspace remoto:
 Para permitir que visores gráficos y cockpits multiplataforma se conecten directamente a Gentle Mesh sin requerir subprocesos locales de Node.js ni la CLI de Pi en el host del cliente:
 1. **Aliasing de Despacho:** `TaskRequest` acepta indistintamente `prompt` o `task`, mapea `session_id`, asigna agente por defecto (`worker`) y normaliza `text` y `result` en los payloads de finalización (`CompletionPayload`).
 2. **CORS Inteligente:** Soporte integrado para orígenes de escritorio Tauri (`tauri://localhost`, `http://tauri.localhost`), interfaces web locales (`http://localhost:*`) y redes seguras Tailscale (`100.*.*.*`, `*.ts.net`), con bypass automático de autenticación en solicitudes preflight `OPTIONS` (204 No Content).
-3. **Conector Nativo HTTP/SSE:** Adaptador TypeScript/JavaScript (`GentleMeshClient`) en el frontend que consume la API REST y los streams SSE, traduciendo eventos remotos (`thought`, `tool_call`, `tool_result`, `completion`, `status`) directamente al bus interno del visor (`message_start`, `message_update`, `tool_execution_start`, `tool_execution_end`, `message_end`, `agent_settled`).
+3. **Conector Nativo HTTPS/SSE:** Adaptador TypeScript/JavaScript (`GentleMeshClient`) en el frontend que consume la API HTTPS REST y los streams SSE, traduciendo eventos remotos (`thought`, `tool_call`, `tool_result`, `completion`, `status`) directamente al bus interno del visor (`message_start`, `message_update`, `tool_execution_start`, `tool_execution_end`, `message_end`, `agent_settled`).
 
 ---
 
@@ -120,7 +120,7 @@ Para permitir que visores gráficos y cockpits multiplataforma se conecten direc
 
 #### Motivación
 
-El conector HTTP/SSE nativo (4.5) exige que el frontend implemente un cliente REST/SSE específico de la malla. Sin embargo, la mayoría de las interfaces ya existentes de Pi (Open Pi Viewer stock, cockpits móviles, scripts de automatización) hablan un protocolo distinto: **JSON-RPC delimitado por saltos de línea sobre `stdin`/`stdout`**. Obligar a cada frontend a reimplementar el transporte de la malla fragmentaría el ecosistema y bloquearía la adopción.
+El conector HTTPS/SSE nativo (4.5) exige que el frontend implemente un cliente REST/SSE específico de la malla. Sin embargo, la mayoría de las interfaces ya existentes de Pi (Open Pi Viewer stock, cockpits móviles, scripts de automatización) hablan un protocolo distinto: **JSON-RPC delimitado por saltos de línea sobre `stdin`/`stdout`**. Obligar a cada frontend a reimplementar el transporte de la malla fragmentaría el ecosistema y bloquearía la adopción.
 
 Para eliminar esa fricción, el cliente CLI incorpora el subcomando `gentle-mesh rpc`: un **proceso adaptador drop-in** que ocupa el lugar exacto donde un frontend Pi lanzaría su entrypoint local, sin requerir ningún cambio en el visor.
 
@@ -171,13 +171,13 @@ Para eliminar esa fricción, el cliente CLI incorpora el subcomando `gentle-mesh
 El puente se lanza con la **misma forma de argumentos** que un binario Pi local para poder sustituirlo sin cambiar la configuración del frontend:
 
 ```bash
-gentle-mesh rpc -coordinator http://100.107.67.35:8085
-gentle-mesh rpc --mode rpc --approve --session /tmp/pi-session.json -coordinator http://localhost:8080
+gentle-mesh rpc -coordinator https://100.107.67.35:8443
+gentle-mesh rpc --mode rpc --approve --session /tmp/pi-session.json -coordinator https://localhost:8443
 ```
 
 | Flag | Rol |
 | --- | --- |
-| `-coordinator` | URL base del coordinador. Por defecto `GENTLE_MESH_COORDINATOR` o `http://localhost:8080`. |
+| `-coordinator` | URL base del coordinador. Por defecto `GENTLE_MESH_COORDINATOR` o `https://localhost:8443`. |
 | `-token` | Token Bearer opcional. Por defecto `GENTLE_MESH_TOKEN`. |
 | `-agent` | Rol de subagente despachado por cada prompt. Por defecto `worker`. |
 | `-mode`, `-approve`, `-session` | Flags de compatibilidad del launcher de Pi: se **aceptan e ignoran** para permitir el drop-in. |
@@ -200,7 +200,7 @@ Para operar como una verdadera malla federada (Mesh), los nodos remotos anuncian
   ```json
   {
     "node_id": "vps-la-fabrica-gpu",
-    "endpoint": "http://100.64.0.15:8080",
+    "endpoint": "https://100.64.0.15:8443",
     "hardware": {
       "cpus": 32,
       "ram_gb": 64,
@@ -457,7 +457,7 @@ Consulta el radar de subagentes activos en el clúster:
 #### Subcomando CLI `gentle-mesh radar`
 Permite a cualquier operador inspeccionar el radar directamente desde la terminal:
 ```bash
-$ gentle-mesh radar -coordinator http://mesh.internal:8080 -token secret-token
+$ gentle-mesh radar -coordinator https://mesh.internal:8443 -token secret-token
 NODE/TASK ID                          AGENT   PHASE    DOMAIN  BLAST RADIUS   SURFACES                       CURRENT ACTION
 vps-la-fabrica-gpu/task-1725004000... worker  apply    auth    shared-schema  pkg/auth/jwt.go,pkg/auth/mi... Editing pkg/auth/jwt.go
 node-alpha-arm64/task-1725004120...   explore explore  db      read-only      pkg/db/schema.sql              Running tool read
@@ -654,7 +654,7 @@ Durante la conceptualización inicial del Punto 1 (Workspace y Transporte de Có
 ## 10. Hoja de Ruta de la Prueba de Concepto (PoC)
 
 * [ ] **Fase 1:** Especificación de tipos en Go (`pkg/protocol/`).
-* [ ] **Fase 2:** Servidor HTTP con simulación de runner (`pkg/server/`).
+* [ ] **Fase 2:** Servidor HTTPS con simulación de runner (`pkg/server/`).
 * [ ] **Fase 3:** Cliente CLI para ejecutar tareas remotas (`cmd/gentle-mesh/`).
 * [ ] **Fase 4:** Prueba real entre Laptop y Servidor La Fábrica.
 * [ ] **Fase 5:** Presentación formal en el canal `#ideas-y-propuestas` de Discord de Gentleman Programming.

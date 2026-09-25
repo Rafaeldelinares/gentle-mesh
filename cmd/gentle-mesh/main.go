@@ -102,12 +102,12 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: gentle-mesh <subcommand> [flags]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Subcommands:")
-	fmt.Fprintln(w, "  server    Run the mesh coordinator HTTP REST and SSE server")
+	fmt.Fprintln(w, "  server    Run the mesh coordinator HTTPS/HTTP REST and SSE server")
 	fmt.Fprintln(w, "  worker    Run a mesh worker node registering with coordinator")
 	fmt.Fprintln(w, "  nodes     List registered mesh nodes and status")
 	fmt.Fprintln(w, "  radar     Display real-time active subagents radar and scope")
 	fmt.Fprintln(w, "  run       Submit a task and stream SSE execution events")
-	fmt.Fprintln(w, "  rpc       Run stdio-to-HTTP/SSE RPC bridge for Pi frontends")
+	fmt.Fprintln(w, "  rpc       Run stdio-to-HTTPS/SSE RPC bridge for Pi frontends")
 	fmt.Fprintln(w, "  cert-issue   Issue a new node certificate (mTLS)")
 	fmt.Fprintln(w, "  cert-revoke  Revoke a node certificate")
 	fmt.Fprintln(w, "  cert-list     List all issued certificates")
@@ -118,12 +118,12 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  help      Show help for gentle-mesh")
 }
 
-// runServer starts the coordinator HTTP REST and SSE server.
+// runServer starts the coordinator HTTPS/HTTP REST and SSE server.
 func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	addr := fs.String("addr", ":8080", "HTTP coordinator listen address (use :8443 for HTTPS)")
+	addr := fs.String("addr", ":8080", "Coordinator listen address (e.g. :8443 for HTTPS, :8080 for HTTP)")
 	tasksDir := fs.String("tasks-dir", "/tmp/gentle-mesh/tasks", "Directory for task logs and state")
 	dbPath := fs.String("db-path", "", "Path to SQLite database for task persistence (defaults to <tasks-dir>/gentle-mesh.db, 'none' to disable)")
 	heartbeatTimeout := fs.Duration("heartbeat-timeout", 30*time.Second, "Heartbeat timeout for registered nodes")
@@ -988,7 +988,7 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	blastRadius := fs.String("blast-radius", "isolated-branch", "Blast radius scope (e.g. isolated-branch, read-only, shared-schema, breaking-change)")
 	surfaces := fs.String("surfaces", "", "Comma-separated edit surfaces (files or directories)")
 	tags := fs.String("tags", "", "Comma-separated required node tags (e.g. gpu, fast)")
-	timeout := fs.Int("timeout", 60, "Task timeout in seconds")
+	timeout := fs.Int("timeout", 300, "Task timeout in seconds (default 300s / 5m)")
 	maxRetries := fs.Int("max-retries", 0, "Maximum automatic retries on failure (0 = no retry)")
 	retryDelay := fs.Int("retry-delay", 30, "Seconds to wait between retries")
 	priority := fs.Int("priority", 0, "Task priority (-100 to 100, higher runs first)")

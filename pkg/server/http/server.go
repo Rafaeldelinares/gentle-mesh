@@ -21,7 +21,7 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/webhook"
 )
 
-// ServerConfig defines configuration parameters for the mesh HTTP coordinator server.
+// ServerConfig defines configuration parameters for the mesh HTTPS/HTTP coordinator server.
 type ServerConfig struct {
 	Addr                 string
 	TasksDir             string
@@ -57,7 +57,7 @@ type ServerConfig struct {
 	RateLimitBurst    int           // Max burst size
 }
 
-// Server provides the HTTP REST and SSE coordinator daemon for gentle-mesh.
+// Server provides the HTTPS/HTTP REST and SSE coordinator daemon for gentle-mesh.
 type Server struct {
 	config           ServerConfig
 	httpServer       *stdhttp.Server

@@ -42,7 +42,7 @@ Hoy en día, el uso de agentes de IA es aislado y solitario: un desarrollador co
 ## 2. Pila Tecnológica y Arquitectura
 
 * **Lenguaje:** Go 1.22+ estándar (`net/http`, `encoding/json`, `sync`, `context`, `database/sql`). Cero frameworks web externos ni librerías de C.
-* **Transporte:** HTTP REST + Server-Sent Events (SSE) para streaming continuo de pensamientos (`thought`), llamadas a herramientas (`tool_call`) y resultados.
+* **Transporte:** HTTPS REST + Server-Sent Events (HTTPS/SSE) para streaming continuo y seguro de pensamientos (`thought`), llamadas a herramientas (`tool_call`) y resultados con cifrado de nivel aplicación.
 * **Persistencia Dual y Resiliencia ante Caídas (Crash Recovery):**
   * **Streaming de Eventos:** Append-only logs en formato **JSONL** (`<tasks-dir>/{id}.jsonl`). Permite reconexión histórica instantánea vía el header estándar `Last-Event-ID` con consumo de RAM constante $O(1)$.
   * **Estado Maestro y Rehidratación:** Base de datos embebida **SQLite en Go puro** (`modernc.org/sqlite`, `CGO_ENABLED=0`) con modo **WAL** (*Write-Ahead Logging*). Si el servidor se apaga o reinicia, rehidrata automáticamente el catálogo de tareas sin pérdida de estado.
@@ -55,7 +55,7 @@ gentle-mesh/
 ├── pkg/
 │   ├── protocol/             # Tipos canónicos, eventos SSE, serialización y colisiones
 │   ├── server/
-│   │   ├── http/             # Servidor REST, middleware Bearer y streaming SSE
+│   │   ├── http/             # Servidor HTTPS REST, middleware Bearer y streaming SSE
 │   │   ├── registry/         # Catálogo de nodos, branch locking e idempotencia
 │   │   ├── store/            # TaskStore: MemoryStore y SQLiteStore embebido (WAL mode)
 │   │   ├── task/             # Gestor de tareas, state machine, crash recovery y logger JSONL
@@ -115,8 +115,8 @@ Gentle Mesh está diseñado para interoperar de forma nativa con interfaces grá
    * Middleware CORS que reconoce orígenes Tauri (`tauri://localhost`, `http://tauri.localhost`), localhosts web (`http://localhost:*`) y redes seguras privadas Tailscale (`100.*.*.*`, `*.ts.net`), con bypass preflight `OPTIONS` (204 No Content).
 3. **Exploración Remota de Archivos Segura:**
    * Endpoints `GET /v1/workspace/tree` y `GET /v1/workspace/file` con contención estricta anti-traversal previa a la normalización (bloqueando escapes `..` con `403 Forbidden` y límite de lectura de 5MB).
-4. **Conector Nativo HTTP/SSE (`open-pi-viewer`):**
-   * El visor `open-pi-viewer` incorpora soporte de primera clase para `connectionType: 'mesh'`, conectándose directamente por HTTP/SSE a Gentle Mesh mediante `GentleMeshClient`, traduciendo eventos remotos en tiempo real al bus del visor sin requerir binarios locales de Node.js o Pi CLI.
+4. **Conector Nativo HTTPS/SSE (`open-pi-viewer`):**
+   * El visor `open-pi-viewer` incorpora soporte de primera clase para `connectionType: 'mesh'`, conectándose directamente por HTTPS/SSE a Gentle Mesh mediante `GentleMeshClient`, traduciendo eventos remotos en tiempo real al bus del visor sin requerir binarios locales de Node.js o Pi CLI.
 
 ---
 
@@ -131,10 +131,12 @@ go test -v -race ./...
 ```
 *(Todos los paquetes cuentan con cobertura unitaria y 0 race conditions).*
 
-### Levantar el coordinador en local
+### Levantar el coordinador en local (Modo Seguro HTTPS/mTLS)
 ```bash
 go run ./cmd/gentle-mesh server \
-  -addr :8080 \
+  -addr :8443 \
+  -tls-cert gentle-mesh-ca.pem \
+  -tls-key gentle-mesh-ca.key \
   -territory-mode queue
 ```
 El flag `-territory-mode` acepta `queue` (por defecto), `warn`, `strict` o `disabled`; consultá el semáforo inteligente en la sección 2.2.
@@ -147,26 +149,26 @@ docker compose -f docker-compose.test.yml up -d
 
 ### Consultar los nodos registrados en la malla
 ```bash
-go run ./cmd/gentle-mesh nodes -coordinator http://localhost:8080
+go run ./cmd/gentle-mesh nodes -coordinator https://localhost:8443
 ```
 Salida esperada:
 ```text
-NODE ID         ENDPOINT                    STATUS  CONCURRENCY  AGENTS   TAGS
-worker-alpha    http://worker-alpha:8081    online  0/2          worker   go,fast
-worker-beta     http://worker-beta:8081     online  0/4          worker   heavy,docker
-worker-gamma    http://worker-gamma:8081    online  0/2          explore  research
-worker-delta    http://worker-delta:8081    online  0/1          worker   gpu,ml
-worker-epsilon  http://worker-epsilon:8081  online  0/2          verify   ci,testing
+NODE ID         ENDPOINT                     STATUS  CONCURRENCY  AGENTS   TAGS
+worker-alpha    https://worker-alpha:8081    online  0/2          worker   go,fast
+worker-beta     https://worker-beta:8081     online  0/4          worker   heavy,docker
+worker-gamma    https://worker-gamma:8081    online  0/2          explore  research
+worker-delta    https://worker-delta:8081    online  0/1          worker   gpu,ml
+worker-epsilon  https://worker-epsilon:8081  online  0/2          verify   ci,testing
 ```
 
 ### Consultar el Radar de Ámbitos y Actividad en Vivo
 ```bash
-go run ./cmd/gentle-mesh radar -coordinator http://localhost:8080
+go run ./cmd/gentle-mesh radar -coordinator https://localhost:8443
 ```
 
 ### Despachar una tarea con ámbito acotado
 ```bash
-go run ./cmd/gentle-mesh run -coordinator http://localhost:8080 \
+go run ./cmd/gentle-mesh run -coordinator https://localhost:8443 \
   -task "Refactorizar validación de JWT" \
   -domain "auth" \
   -blast-radius "isolated-branch" \
@@ -181,14 +183,14 @@ Acepta los mismos flags de compatibilidad que un entrypoint local de Pi (`--mode
 
 1. **Entrada (`stdin`):** lee solicitudes JSON-RPC delimitadas por saltos de línea (`prompt`, `get_state`, `get_messages`, `new_session`, `abort`), tolerando líneas vacías o malformadas sin abortar la sesión y respetando la concurrencia de múltiples prompts.
 2. **Traducción a REST:** convierte cada `prompt` en un despacho `POST /v1/tasks` contra el coordinador, con el agente configurado y el token Bearer opcional.
-3. **Streaming SSE:** consume el stream de eventos de la tarea (`GET /v1/tasks/{id}/events`) y traduce los eventos remotos (`thought`, `tool_call`, `tool_result`, `completion`, `status`).
+3. **Streaming HTTPS/SSE:** consume el stream cifrado de eventos de la tarea (`GET /v1/tasks/{id}/events`) y traduce los eventos remotos (`thought`, `tool_call`, `tool_result`, `completion`, `status`).
 4. **Salida (`stdout`):** escribe líneas JSON-RPC estándar de Pi (`message_start`, `message_update`, `tool_execution_start`, `tool_execution_end`, `agent_settled`, `message_end`), de modo que el visor no distingue que la ejecución ocurrió en un nodo remoto.
 
 ```bash
-go run ./cmd/gentle-mesh rpc -coordinator http://100.107.67.35:8085
+go run ./cmd/gentle-mesh rpc -coordinator https://100.107.67.35:8443
 ```
 
-Flags propios del puente: `-coordinator` (por defecto `GENTLE_MESH_COORDINATOR` o `http://localhost:8080`), `-token` (opcional; por defecto `GENTLE_MESH_TOKEN`) y `-agent` (rol despachado por cada prompt, por defecto `worker`). Los flags `--mode`, `--approve` y `--session` se aceptan e ignoran, permitiendo lanzarlo con la misma forma de argumentos que un binario Pi local. El comando `abort` cancela todos los prompts en vuelo.
+Flags propios del puente: `-coordinator` (por defecto `GENTLE_MESH_COORDINATOR` o `https://localhost:8443`), `-token` (opcional; por defecto `GENTLE_MESH_TOKEN`) y `-agent` (rol despachado por cada prompt, por defecto `worker`). Los flags `--mode`, `--approve` y `--session` se aceptan e ignoran, permitiendo lanzarlo con la misma forma de argumentos que un binario Pi local. El comando `abort` cancela todos los prompts en vuelo.
 
 ---
 
@@ -376,7 +378,7 @@ Gentle Mesh soporta **prioridad de tareas** para ejecutar tareas importantes pri
 
 ```bash
 # Tarea de alta prioridad (se ejecuta antes)
-curl -X POST http://localhost:8080/v1/tasks \
+curl -X POST https://localhost:8443/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "agent": "worker",
@@ -385,7 +387,7 @@ curl -X POST http://localhost:8080/v1/tasks \
   }'
 
 # Tarea de baja prioridad (se ejecuta después)
-curl -X POST http://localhost:8080/v1/tasks \
+curl -X POST https://localhost:8443/v1/tasks \
   -d '{"agent": "worker", "task": "Limpieza", "priority": -100}'
 ```
 
@@ -423,7 +425,7 @@ Gentle Mesh soporta **checkpoint y resume** para tareas largas. El worker puede 
 
 ```bash
 # Guardar checkpoint durante ejecución
-curl -X POST http://localhost:8080/v1/tasks/{task_id}/checkpoint \
+curl -X POST https://localhost:8443/v1/tasks/{task_id}/checkpoint \
   -H "Content-Type: application/json" \
   -d '{
     "step": 3,
@@ -438,7 +440,7 @@ curl -X POST http://localhost:8080/v1/tasks/{task_id}/checkpoint \
 
 ```bash
 # Recuperar último checkpoint
-curl http://localhost:8080/v1/tasks/{task_id}/checkpoint
+curl https://localhost:8443/v1/tasks/{task_id}/checkpoint
 ```
 
 ### 3.8.3 Eventos de Checkpoint
@@ -509,7 +511,7 @@ Gentle Mesh soporta **reintento automático** para tareas que fallan, útil para
 
 ```bash
 # Enviar tarea con retry automático
-curl -X POST http://localhost:8080/v1/tasks \
+curl -X POST https://localhost:8443/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "agent": "worker",
@@ -560,7 +562,7 @@ Gentle Mesh soporta **webhooks** para recibir notificaciones cuando las tareas t
 
 ```bash
 # Registrar webhook para recibir notificaciones
-curl -X POST http://localhost:8080/v1/webhooks \
+curl -X POST https://localhost:8443/v1/webhooks \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://tu-servidor.com/webhook",
@@ -624,10 +626,10 @@ def verify_signature(payload, signature, secret):
 
 ```bash
 # Listar webhooks
-curl http://localhost:8080/v1/webhooks
+curl https://localhost:8443/v1/webhooks
 
 # Eliminar webhook
-curl -X DELETE http://localhost:8080/v1/webhooks/wh-123
+curl -X DELETE https://localhost:8443/v1/webhooks/wh-123
 ```
 
 ### 3.6.6 Casos de Uso
