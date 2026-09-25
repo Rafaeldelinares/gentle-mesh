@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/federation"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
@@ -38,6 +39,7 @@ func (s *Server) registerRoutes(mux *stdhttp.ServeMux) {
 	mux.HandleFunc("POST /v1/tasks/{id}/cancel", s.handleTaskCancel)
 	mux.HandleFunc("GET /v1/workspace/tree", s.handleWorkspaceTree)
 	mux.HandleFunc("GET /v1/workspace/file", s.handleWorkspaceFile)
+	mux.HandleFunc("POST /v1/certs/enroll", s.handleCertsEnroll)
 }
 
 func writeJSON(w stdhttp.ResponseWriter, status int, data any) {
@@ -87,6 +89,100 @@ func (s *Server) handleMeshCA(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=86400") // Cache for 24 hours
 	w.WriteHeader(stdhttp.StatusOK)
 	w.Write(caData)
+}
+
+// EnrollmentRequest represents a certificate enrollment request.
+type EnrollmentRequest struct {
+	Token  string `json:"token"`
+	CSR    string `json:"csr"`     // PEM-encoded CSR
+	NodeID string `json:"node_id"` // Requested node identifier
+}
+
+// EnrollmentResponse represents a certificate enrollment response.
+type EnrollmentResponse struct {
+	CertPEM string `json:"cert_pem"` // PEM-encoded signed certificate
+	NodeID  string `json:"node_id"`
+}
+
+// handleCertsEnroll handles certificate enrollment via CSR and token.
+// This endpoint allows automatic certificate issuance without admin intervention.
+func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if !s.TLSEnabled() {
+		writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]string{
+			"error": "TLS is not enabled on this coordinator",
+		})
+		return
+	}
+
+	if s.tokenStore == nil || s.meshCA == nil {
+		writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]string{
+			"error": "Enrollment is not configured on this coordinator",
+		})
+		return
+	}
+
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, 64<<10)
+
+	var req EnrollmentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request: %v", err)})
+		return
+	}
+
+	if req.Token == "" {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "token is required"})
+		return
+	}
+
+	if req.CSR == "" {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "csr is required"})
+		return
+	}
+
+	// Validate token
+	_, err := s.tokenStore.UseToken(r.Context(), req.Token)
+	if err != nil {
+		if err.Error() == "token not found" {
+			writeJSON(w, stdhttp.StatusUnauthorized, map[string]string{"error": "invalid token"})
+			return
+		}
+		if err.Error() == "token expired" {
+			writeJSON(w, stdhttp.StatusUnauthorized, map[string]string{"error": "token expired"})
+			return
+		}
+		if err.Error() == "token max uses exceeded" {
+			writeJSON(w, stdhttp.StatusUnauthorized, map[string]string{"error": "token already used"})
+			return
+		}
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("token validation failed: %v", err)})
+		return
+	}
+
+	// Use provided NodeID or extract from CSR
+	nodeID := req.NodeID
+	if nodeID == "" {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "node_id is required"})
+		return
+	}
+
+	// Sign CSR with CA
+	cert, err := s.meshCA.SignCSR(req.CSR, nodeID, 365*24*time.Hour)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to sign certificate: %v", err)})
+		return
+	}
+
+	// Convert to PEM
+	certPEM, err := pki.CertificateToPEM(cert)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to encode certificate: %v", err)})
+		return
+	}
+
+	writeJSON(w, stdhttp.StatusOK, EnrollmentResponse{
+		CertPEM: certPEM,
+		NodeID:  nodeID,
+	})
 }
 
 func (s *Server) handleMeshJoin(w stdhttp.ResponseWriter, r *stdhttp.Request) {

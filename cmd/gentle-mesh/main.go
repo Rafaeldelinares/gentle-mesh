@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -27,6 +29,7 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
+	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/worker"
 )
 
@@ -78,6 +81,12 @@ func runCLIWithIO(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		return runCertRevoke(ctx, cmdArgs, stdout, stderr)
 	case "cert-list":
 		return runCertList(ctx, cmdArgs, stdout, stderr)
+	case "gen-token":
+		return runGenToken(ctx, cmdArgs, stdout, stderr)
+	case "token-list":
+		return runTokenList(ctx, cmdArgs, stdout, stderr)
+	case "token-revoke":
+		return runTokenRevoke(ctx, cmdArgs, stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -100,6 +109,9 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  cert-issue   Issue a new node certificate (mTLS)")
 	fmt.Fprintln(w, "  cert-revoke  Revoke a node certificate")
 	fmt.Fprintln(w, "  cert-list     List all issued certificates")
+	fmt.Fprintln(w, "  gen-token    Generate an enrollment token for auto-cert")
+	fmt.Fprintln(w, "  token-list   List enrollment tokens")
+	fmt.Fprintln(w, "  token-revoke Revoke an enrollment token")
 	fmt.Fprintln(w, "  help      Show help for gentle-mesh")
 }
 
@@ -170,7 +182,9 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	// Configure TLS if enabled
 	if *tlsEnable {
 		fmt.Fprintf(stdout, "TLS enabled, loading certificates from %s...\n", tlsDirPath)
-		ca, serverCert, err := pki.EnsureMeshTLS(tlsDirPath, "Gentle Mesh", "mesh-coordinator", []string{}, false)
+		// Include localhost and 127.0.0.1 in server cert for local development
+		hostnames := []string{"localhost", "127.0.0.1"}
+		ca, serverCert, err := pki.EnsureMeshTLS(tlsDirPath, "Gentle Mesh", "mesh-coordinator", hostnames, false)
 		if err != nil {
 			return fmt.Errorf("failed to load TLS certificates: %w", err)
 		}
@@ -181,6 +195,17 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		serverConfig.MeshCAPemFile = filepath.Join(tlsDirPath, pki.CAPemFile)
 		fmt.Fprintf(stdout, "TLS ready: CA=%s\n", ca.Cert.Subject.CommonName)
 		fmt.Fprintf(stdout, "Server cert expires: %s\n", serverCert.Cert.NotAfter.Format("2006-01-02"))
+
+		// Initialize token store for enrollment
+		db, err := sql.Open("sqlite", *dbPath)
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		if err := store.InitTokenSchema(db); err != nil {
+			return fmt.Errorf("failed to init token schema: %w", err)
+		}
+		serverConfig.TokenStore = store.NewSQLiteTokenStore(db)
+		fmt.Fprintf(stdout, "Enrollment tokens enabled\n")
 	}
 
 	// Configure mTLS if required
@@ -193,7 +218,8 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	} else if *addr == ":8443" || strings.HasPrefix(*addr, ":8443") {
 		// Auto-enable TLS if using common HTTPS port without -tls flag
 		fmt.Fprintf(stdout, "Auto-enabling TLS on port 8443...\n")
-		ca, serverCert, err := pki.EnsureMeshTLS(tlsDirPath, "Gentle Mesh", "mesh-coordinator", []string{}, false)
+		hostnames := []string{"localhost", "127.0.0.1"}
+		ca, serverCert, err := pki.EnsureMeshTLS(tlsDirPath, "Gentle Mesh", "mesh-coordinator", hostnames, false)
 		if err != nil {
 			return fmt.Errorf("failed to load TLS certificates: %w", err)
 		}
@@ -285,6 +311,7 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	insecureSkipTLS := fs.Bool("insecure-skip-tls-verify", false, "Skip TLS verification (for development only)")
 	clientCert := fs.String("cert", "", "Path to client certificate for mTLS authentication (requires -key)")
 	clientKey := fs.String("key", "", "Path to client private key for mTLS authentication (requires -cert)")
+	joinToken := fs.String("join-token", "", "Enrollment token for automatic certificate issuance (uses CSR-based enrollment)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -338,10 +365,13 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	// Auto-download CA from coordinator if not provided
 	caPath := *caCert
 	if caPath == "" && !*insecureSkipTLS {
+		// Use insecure client for initial download (self-signed certs)
+		tempClient := newTLSClient("", true) // skip verification
+
 		// Check if coordinator is using TLS by probing health
 		healthURL := coordURL + "/healthz"
 		healthReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		healthResp, err := httpClient.Do(healthReq)
+		healthResp, err := tempClient.Do(healthReq)
 		if err == nil {
 			healthResp.Body.Close()
 			// If TLS is enabled on coordinator, download CA
@@ -353,7 +383,7 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			}
 			if healthData.TLS == "enabled" {
 				fmt.Fprintf(stdout, "Coordinator has TLS enabled, downloading CA...\n")
-				caData, err := downloadCA(ctx, httpClient, caURL)
+				caData, err := downloadCA(ctx, tempClient, caURL)
 				if err != nil {
 					return fmt.Errorf("failed to download CA from coordinator: %w\nTIP: Use -ca flag or run with -insecure-skip-tls-verify for development", err)
 				}
@@ -362,10 +392,104 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 					return fmt.Errorf("failed to save CA: %w", err)
 				}
 				fmt.Fprintf(stdout, "CA saved to %s\n", caPath)
-				// Re-create client with CA
-				httpClient = newTLSClient(caPath, false)
-				httpClient.Timeout = 10 * time.Second
 			}
+		}
+	}
+
+	// If we need enrollment, download CA first (if not already done)
+	if *joinToken != "" && (*clientCert == "" || *clientKey == "") && caPath == "" {
+		fmt.Fprintf(stdout, "Downloading CA for enrollment...\n")
+		// Use insecure client for downloading CA (skips cert verification)
+		tempClient := newTLSClient("", true) // true = skip verification
+		caData, err := downloadCA(ctx, tempClient, caURL)
+		if err != nil {
+			return fmt.Errorf("failed to download CA for enrollment: %w", err)
+		}
+		caPath = filepath.Join(os.TempDir(), "gentle-mesh-ca.pem")
+		if err := os.WriteFile(caPath, caData, 0644); err != nil {
+			return fmt.Errorf("failed to save CA: %w", err)
+		}
+		fmt.Fprintf(stdout, "CA saved to %s\n", caPath)
+	}
+
+	// Auto-enrollment via token: generate CSR and get certificate from coordinator
+	if *joinToken != "" && (*clientCert == "" || *clientKey == "") {
+		fmt.Fprintf(stdout, "Auto-enrollment via token...\n")
+
+		// For enrollment, use insecure client (skips cert verification for self-signed)
+		enrollClient := newTLSClient("", true) // skip verification
+
+		// Generate CSR locally (private key never leaves the node)
+		fmt.Fprintf(stdout, "Generating CSR locally (private key stays here)...\n")
+		csrResult, err := pki.GenerateCSR(id)
+		if err != nil {
+			return fmt.Errorf("failed to generate CSR: %w", err)
+		}
+
+		// Enroll with coordinator
+		enrollURL := coordURL + "/v1/certs/enroll"
+		enrollReq := map[string]string{
+			"token":   *joinToken,
+			"csr":     csrResult.CSRPEM,
+			"node_id": id,
+		}
+		enrollBody, _ := json.Marshal(enrollReq)
+		enrollHTTPReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, enrollURL, bytes.NewReader(enrollBody))
+		enrollHTTPReq.Header.Set("Content-Type", "application/json")
+
+		enrollResp, err := enrollClient.Do(enrollHTTPReq)
+		if err != nil {
+			return fmt.Errorf("failed to enroll: %w\nTIP: Check if coordinator is reachable and token is valid", err)
+		}
+		defer enrollResp.Body.Close()
+
+		if enrollResp.StatusCode != http.StatusOK {
+			var errResp map[string]string
+			json.NewDecoder(enrollResp.Body).Decode(&errResp)
+			return fmt.Errorf("enrollment failed (HTTP %d): %s", enrollResp.StatusCode, errResp["error"])
+		}
+
+		var enrollResult struct {
+			CertPEM string `json:"cert_pem"`
+			NodeID  string `json:"node_id"`
+		}
+		if err := json.NewDecoder(enrollResp.Body).Decode(&enrollResult); err != nil {
+			return fmt.Errorf("failed to parse enrollment response: %w", err)
+		}
+
+		// Save certificate and key to temp directory
+		certDir := filepath.Join(os.TempDir(), "gentle-mesh", id)
+		if err := os.MkdirAll(certDir, 0700); err != nil {
+			return fmt.Errorf("failed to create cert directory: %w", err)
+		}
+
+		certPath := filepath.Join(certDir, "cert.pem")
+		keyPath := filepath.Join(certDir, "key.pem")
+
+		if err := os.WriteFile(certPath, []byte(enrollResult.CertPEM), 0600); err != nil {
+			return fmt.Errorf("failed to save certificate: %w", err)
+		}
+		if err := os.WriteFile(keyPath, []byte(csrResult.PrivateKeyPEM), 0600); err != nil {
+			return fmt.Errorf("failed to save private key: %w", err)
+		}
+
+		fmt.Fprintf(stdout, "Certificate enrolled!\n")
+		fmt.Fprintf(stdout, "  Cert: %s\n", certPath)
+		fmt.Fprintf(stdout, "  Key:  %s\n", keyPath)
+
+		// Update client cert paths for mTLS
+		*clientCert = certPath
+		*clientKey = keyPath
+
+		// Re-create HTTP client with proper CA for mTLS
+		// If we have CA, use it for server verification; otherwise use system CAs
+		httpClient, err = newMTLSClient(caPath, certPath, keyPath, caPath == "")
+		if err != nil {
+			return fmt.Errorf("failed to create mTLS client: %w", err)
+		}
+		httpClient.Timeout = 10 * time.Second
+		if caPath == "" {
+			fmt.Fprintf(stderr, "⚠️  Warning: No CA downloaded, using system CAs (mTLS may fail with self-signed certs)\n")
 		}
 	}
 
@@ -1240,4 +1364,209 @@ func runCertList(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	}
 
 	return nil
+}
+
+// Token management commands
+
+// runGenToken generates an enrollment token for automatic certificate enrollment.
+func runGenToken(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("gen-token", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	dbPath := fs.String("db-path", "", "Path to SQLite database (required)")
+	maxUses := fs.Int("max-uses", 1, "Maximum number of times the token can be used (0 = unlimited)")
+	validDays := fs.Int("valid-days", 30, "Number of days until the token expires (0 = never)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *dbPath == "" || *dbPath == "none" {
+		return errors.New("-db-path is required (e.g., /tmp/mesh/gentle-mesh.db)")
+	}
+
+	// Open database
+	db, err := sql.Open("sqlite", *dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to open database: %w", err)
+	}
+	defer db.Close()
+
+	// Initialize schemas if needed
+	if err := store.InitTokenSchema(db); err != nil {
+		return fmt.Errorf("failed to init token schema: %w", err)
+	}
+
+	tokenStore := store.NewSQLiteTokenStore(db)
+
+	// Generate random token
+	token := generateSecureToken()
+
+	// Calculate expiration
+	var expiresAt *time.Time
+	if *validDays > 0 {
+		exp := time.Now().Add(time.Duration(*validDays) * 24 * time.Hour)
+		expiresAt = &exp
+	}
+
+	record := &store.TokenRecord{
+		Token:     token,
+		CreatedAt: time.Now(),
+		ExpiresAt: expiresAt,
+		MaxUses:   *maxUses,
+	}
+
+	if err := tokenStore.CreateToken(ctx, record); err != nil {
+		return fmt.Errorf("failed to create token: %w", err)
+	}
+
+	fmt.Fprintln(stdout, "✅ Enrollment token generated")
+	fmt.Fprintf(stdout, "  Token: %s\n", token)
+	if *maxUses > 0 {
+		fmt.Fprintf(stdout, "  Max uses: %d\n", *maxUses)
+	} else {
+		fmt.Fprintln(stdout, "  Max uses: unlimited")
+	}
+	if expiresAt != nil {
+		fmt.Fprintf(stdout, "  Expires: %s\n", expiresAt.Format("2006-01-02 15:04"))
+	} else {
+		fmt.Fprintln(stdout, "  Expires: never")
+	}
+	fmt.Fprintln(stdout, "")
+	fmt.Fprintf(stdout, "Share this token with a node to auto-enroll.\n")
+	fmt.Fprintf(stdout, "The node will use it like:\n")
+	fmt.Fprintf(stdout, "  gentle-mesh worker -join-token %s -coordinator https://...\n", token)
+
+	return nil
+}
+
+// runTokenList lists all enrollment tokens.
+func runTokenList(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("token-list", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	dbPath := fs.String("db-path", "", "Path to SQLite database (required)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *dbPath == "" || *dbPath == "none" {
+		return errors.New("-db-path is required")
+	}
+
+	db, err := sql.Open("sqlite", *dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to open database: %w", err)
+	}
+	defer db.Close()
+
+	tokenStore := store.NewSQLiteTokenStore(db)
+
+	tokens, err := tokenStore.ListTokens(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list tokens: %w", err)
+	}
+
+	fmt.Fprintln(stdout, "📜 Enrollment tokens:")
+	fmt.Fprintln(stdout, "")
+
+	if len(tokens) == 0 {
+		fmt.Fprintln(stdout, "  (No tokens)")
+		return nil
+	}
+
+	for _, t := range tokens {
+		status := "active"
+		if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {
+			status = "expired"
+		} else if t.Uses >= t.MaxUses && t.MaxUses > 0 {
+			status = "used"
+		}
+
+		fmt.Fprintf(stdout, "  Token: %s [%s]\n", t.Token, status)
+		fmt.Fprintf(stdout, "    Created: %s\n", t.CreatedAt.Format("2006-01-02 15:04"))
+		if t.ExpiresAt != nil {
+			fmt.Fprintf(stdout, "    Expires: %s\n", t.ExpiresAt.Format("2006-01-02 15:04"))
+		}
+		fmt.Fprintf(stdout, "    Uses: %d/%d\n", t.Uses, t.MaxUses)
+		if t.UsedAt != nil {
+			fmt.Fprintf(stdout, "    Last used: %s\n", t.UsedAt.Format("2006-01-02 15:04"))
+		}
+		fmt.Fprintln(stdout, "")
+	}
+
+	return nil
+}
+
+// runTokenRevoke revokes an enrollment token.
+func runTokenRevoke(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("token-revoke", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	dbPath := fs.String("db-path", "", "Path to SQLite database (required)")
+	tokenValue := fs.String("token", "", "Token to revoke (required)")
+
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *tokenValue == "" {
+		return errors.New("-token is required")
+	}
+
+	if *dbPath == "" || *dbPath == "none" {
+		return errors.New("-db-path is required")
+	}
+
+	db, err := sql.Open("sqlite", *dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to open database: %w", err)
+	}
+	defer db.Close()
+
+	tokenStore := store.NewSQLiteTokenStore(db)
+
+	// Mark as used (effectively revokes by setting uses = max)
+	t, err := tokenStore.UseToken(ctx, *tokenValue)
+	if err != nil {
+		if err.Error() == "token not found" {
+			return fmt.Errorf("token not found: %s", *tokenValue)
+		}
+		return fmt.Errorf("failed to revoke token: %w", err)
+	}
+
+	fmt.Fprintf(stdout, "✅ Token revoked: %s\n", *tokenValue)
+	fmt.Fprintf(stdout, "  Total uses: %d\n", t.Uses)
+	_ = t // suppress unused
+
+	return nil
+}
+
+// generateSecureToken generates a cryptographically secure random token.
+func generateSecureToken() string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	const length = 32
+
+	randBytes := make([]byte, length)
+	for i := range randBytes {
+		randBytes[i] = charset[i%len(charset)]
+	}
+
+	// Read random bytes using crypto/rand (already imported)
+	_, err := rand.Read(randBytes)
+	if err != nil {
+		// Fallback to time-based if crypto/rand fails
+		for i := range randBytes {
+			randBytes[i] = charset[time.Now().UnixNano()%int64(len(charset))]
+		}
+	}
+
+	result := make([]byte, length)
+	for i, b := range randBytes {
+		result[i] = charset[int(b)%len(charset)]
+	}
+
+	return string(result)
 }

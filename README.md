@@ -192,6 +192,121 @@ Flags propios del puente: `-coordinator` (por defecto `GENTLE_MESH_COORDINATOR` 
 
 ---
 
+## 3.5 Seguridad TLS/mTLS
+
+Gentle Mesh soporta cifrado de tráfico con TLS y autenticación mutua (mTLS) para garantizar que solo nodos verificados puedan unirse a la malla.
+
+### 3.5.1 PKI Centralizada
+
+El coordinator actúa como **CA raíz** de la malla, emitiendo certificados para cada nodo:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                     Coordinator (CA Raíz)                     │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │  gentle-mesh-ca.pem (público, compartir)          │    │
+│  │  gentle-mesh-ca.key (privado, NUNCA compartir)     │    │
+│  └─────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          ▼                   ▼                   ▼
+    ┌──────────┐       ┌──────────┐       ┌──────────┐
+    │ worker-α │       │ worker-β │       │  viewer  │
+    │  (mTLS)  │       │  (mTLS)  │       │ (viewer) │
+    └──────────┘       └──────────┘       └──────────┘
+```
+
+### 3.5.2 Inicializar TLS
+
+```bash
+# Genera CA + certificado de servidor automáticamente
+gentle-mesh server -tls-init -tasks-dir /tmp/mesh
+```
+
+Archivos generados:
+- `tls/gentle-mesh-ca.pem` — CA pública (compartir con nodos)
+- `tls/gentle-mesh-ca.key` — Clave CA (privada)
+- `tls/cert.pem` — Certificado del servidor
+- `tls/cert.key` — Clave del servidor
+
+### 3.5.3 Modos de Seguridad
+
+| Modo | Descripción | Uso |
+|------|------------|-----|
+| **HTTP** | Sin cifrado (desarrollo local) | `gentle-mesh server` |
+| **TLS** | Cifrado de canal (servidor → cliente) | `gentle-mesh server -tls` |
+| **mTLS** | Cifrado + autenticación mutua | `gentle-mesh server -tls -require-mtls` |
+
+### 3.5.4 mTLS: Autenticación Mutua
+
+Con `-require-mtls`, el coordinator **exige** que cada cliente presente un certificado firmado por la CA de la malla:
+
+```bash
+# 1. Iniciar coordinator con mTLS obligatorio
+gentle-mesh server -tls -tls-dir /tmp/mesh/tls -require-mtls -addr :8443
+
+# 2. Emitir certificado para un nodo
+gentle-mesh cert-issue -tls-dir /tmp/mesh/tls -node-id worker-alpha
+
+# 3. Listar certificados emitidos
+gentle-mesh cert-list -tls-dir /tmp/mesh/tls
+
+# 4. Worker conecta con certificado
+gentle-mesh worker \
+  -coordinator https://localhost:8443 \
+  -ca /tmp/mesh/tls/gentle-mesh-ca.pem \
+  -cert /tmp/mesh/tls/worker-alpha.pem \
+  -key /tmp/mesh/tls/worker-alpha.key
+```
+
+### 3.5.5 Comandos de Gestión de Certificados
+
+```bash
+# Emitir certificado para un nodo
+gentle-mesh cert-issue -tls-dir /tmp/mesh/tls -node-id worker-alpha \
+  -valid-days 365 -output /tmp/node-certs
+
+# Listar certificados emitidos
+gentle-mesh cert-list -tls-dir /tmp/mesh/tls
+
+# Revocar certificado (futuro: CRL)
+gentle-mesh cert-revoke -node-id worker-alpha
+```
+
+### 3.5.6 Flags TLS/mTLS
+
+**Server:**
+- `-tls` — Habilitar HTTPS
+- `-tls-dir <path>` — Directorio con certificados
+- `-tls-init` — Generar nueva CA y certificados
+- `-require-mtls` — Exigir certificados de cliente
+
+**Worker/Cliente:**
+- `-ca <path>` — CA para verificar el servidor
+- `-cert <path>` — Certificado de cliente (mTLS)
+- `-key <path>` — Clave del certificado (mTLS)
+- `-insecure-skip-tls-verify` — Para desarrollo (NO usar en producción)
+
+### 3.5.7 Descarga Automática de CA
+
+Si el worker no tiene CA configurada, intenta descargarla automáticamente del coordinator:
+
+```bash
+# Sin especificar CA - el worker descarga automáticamente del coordinator
+gentle-mesh worker -coordinator https://coordinator:8443
+```
+
+### 3.5.8 Seguridad: Viewer vs Worker
+
+| Función | open-pi-viewer como Viewer | open-pi-viewer como Worker |
+|---------|---------------------------|---------------------------|
+| Confiar en CA | ✅ Necesario | ✅ Necesario |
+| Certificado de cliente | ❌ No | ✅ Necesario |
+| Flags | `-ca` | `-ca -cert -key` |
+
+---
+
 ## 4. Documentación y Arquitectura Interactiva (Archify)
 
 El repositorio incluye diagramas de arquitectura interactivos y autocontenidos (HTML puro sin dependencias externas) generados con **Archify**, diseñados para explorar visualmente el sistema, simular rutas y comprender el porqué de cada compuerta de seguridad.

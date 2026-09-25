@@ -46,6 +46,8 @@ type ServerConfig struct {
 	MeshCAPemFile  string
 	// mTLS configuration
 	RequireMTLS    bool // Require client certificates for all connections
+	// Enrollment configuration
+	TokenStore  store.TokenStore // For enrollment token validation
 }
 
 // Server provides the HTTP REST and SSE coordinator daemon for gentle-mesh.
@@ -60,6 +62,8 @@ type Server struct {
 	scheduler        *TerritoryScheduler
 	workspaceRoot    string
 	startTime        time.Time
+	meshCA           *pki.MeshCA
+	tokenStore       store.TokenStore
 }
 
 // NewServer initializes a new Server with defaults for omitted configuration fields.
@@ -157,6 +161,8 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		scheduler:        scheduler,
 		workspaceRoot:    workspaceRoot,
 		startTime:        time.Now(),
+		meshCA:           cfg.MeshCA,
+		tokenStore:       cfg.TokenStore,
 	}
 
 	s.httpServer = &stdhttp.Server{

@@ -588,3 +588,126 @@ func EnsureMeshTLS(dir, org, orgUnit string, hostnames []string, force bool) (*M
 
 	return ca, cert, nil
 }
+
+// CSR-related types and functions
+
+// CSRResult holds the generated private key and CSR for a node.
+type CSRResult struct {
+	PrivateKeyPEM string // PEM-encoded ECDSA private key
+	CSRPEM        string // PEM-encoded CSR
+	NodeID        string // The node ID used in the CSR
+}
+
+// GenerateCSR creates a new private key and generates a Certificate Signing Request.
+// The private key is returned so it never leaves the node.
+func GenerateCSR(nodeID string) (*CSRResult, error) {
+	// Generate private key
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to generate private key: %v", ErrGenerationFailed, err)
+	}
+
+	// Marshal private key to PEM
+	keyBytes, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to marshal private key: %v", ErrGenerationFailed, err)
+	}
+
+	privateKeyPEM := string(pem.EncodeToMemory(&pem.Block{
+		Type:  "EC PRIVATE KEY",
+		Bytes: keyBytes,
+	}))
+
+	// Create CSR template
+	template := &x509.CertificateRequest{
+		Subject: pkix.Name{
+			CommonName: nodeID,
+		},
+		DNSNames: []string{nodeID},
+	}
+
+	// Generate CSR
+	csrBytes, err := x509.CreateCertificateRequest(rand.Reader, template, privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to create CSR: %v", ErrGenerationFailed, err)
+	}
+
+	csrPEM := string(pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE REQUEST",
+		Bytes: csrBytes,
+	}))
+
+	return &CSRResult{
+		PrivateKeyPEM: privateKeyPEM,
+		CSRPEM:        csrPEM,
+		NodeID:        nodeID,
+	}, nil
+}
+
+// SignCSR signs a Certificate Signing Request with the CA and returns a certificate.
+func (ca *MeshCA) SignCSR(csrPEM string, nodeID string, validFor time.Duration) (*x509.Certificate, error) {
+	if validFor == 0 {
+		validFor = DefaultValidDuration
+	}
+
+	// Decode CSR
+	block, _ := pem.Decode([]byte(csrPEM))
+	if block == nil {
+		return nil, fmt.Errorf("%w: no PEM block found", ErrInvalidCert)
+	}
+
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to parse CSR: %v", ErrInvalidCert, err)
+	}
+
+	// Verify CSR signature
+	if err := csr.CheckSignature(); err != nil {
+		return nil, fmt.Errorf("%w: CSR signature verification failed", ErrInvalidCert)
+	}
+
+	// Generate serial number
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to generate serial: %v", ErrGenerationFailed, err)
+	}
+
+	// Create certificate template
+	certTemplate := &x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName: nodeID,
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(validFor),
+		KeyUsage:             x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:          []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		BasicConstraintsValid: true,
+		DNSNames:             []string{nodeID},
+	}
+
+	// Sign the certificate with the CA
+	certDER, err := x509.CreateCertificate(rand.Reader, certTemplate, ca.Cert, csr.PublicKey, ca.Key)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to sign certificate: %v", ErrGenerationFailed, err)
+	}
+
+	return x509.ParseCertificate(certDER)
+}
+
+// ParseCSR parses a PEM-encoded CSR.
+func ParseCSR(csrPEM string) (*x509.CertificateRequest, error) {
+	block, _ := pem.Decode([]byte(csrPEM))
+	if block == nil {
+		return nil, fmt.Errorf("%w: no PEM block found", ErrInvalidCert)
+	}
+	return x509.ParseCertificateRequest(block.Bytes)
+}
+
+// CertificateToPEM converts a certificate to PEM format.
+func CertificateToPEM(cert *x509.Certificate) (string, error) {
+	return string(pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: cert.Raw,
+	})), nil
+}
