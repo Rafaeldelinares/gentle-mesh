@@ -10,10 +10,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +45,11 @@ type Config struct {
 	// HTTPClient is an optional HTTP client. When nil, http.DefaultClient is
 	// used. Tests inject one so the coordinator test server is trusted.
 	HTTPClient *http.Client
+	// CACertFile is the path to the mesh CA certificate for TLS verification.
+	// If empty, uses system default CA pool.
+	CACertFile string
+	// InsecureSkipTLSVerify skips TLS verification (for development only).
+	InsecureSkipTLSVerify bool
 }
 
 // Bridge adapts Pi subagent commands to the Gentle Mesh coordinator API.
@@ -118,6 +126,34 @@ func (b *Bridge) httpClient() *http.Client {
 	if b.config.HTTPClient != nil {
 		return b.config.HTTPClient
 	}
+
+	// Build custom client with TLS configuration if needed
+	if b.config.CACertFile != "" || b.config.InsecureSkipTLSVerify {
+		tlsConfig := &tls.Config{}
+
+		if b.config.InsecureSkipTLSVerify {
+			tlsConfig.InsecureSkipVerify = true
+		} else if b.config.CACertFile != "" {
+			// Load custom CA certificate
+			caCert, err := os.ReadFile(b.config.CACertFile)
+			if err != nil {
+				// Fall back to default client if CA file can't be read
+				return http.DefaultClient
+			}
+			caPool := x509.NewCertPool()
+			if !caPool.AppendCertsFromPEM(caCert) {
+				return http.DefaultClient
+			}
+			tlsConfig.RootCAs = caPool
+		}
+
+		return &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: tlsConfig,
+			},
+		}
+	}
+
 	return http.DefaultClient
 }
 

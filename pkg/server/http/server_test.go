@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
@@ -2595,5 +2596,117 @@ func TestServer_WorkspaceFileSizeLimit(t *testing.T) {
 	}
 	if body["error"] != "file exceeds 5MB maximum size" {
 		t.Errorf("unexpected error message %q", body["error"])
+	}
+}
+
+// TLS tests
+
+func setupTLSTestServer(t *testing.T) (*meshhttp.Server, *httptest.Server, string) {
+	t.Helper()
+
+	tlsDir := t.TempDir()
+
+	// Initialize TLS
+	ca, serverCert, err := pki.EnsureMeshTLS(tlsDir, "Gentle Mesh Test", "testing", []string{"localhost"}, true)
+	if err != nil {
+		t.Fatalf("failed to init TLS: %v", err)
+	}
+	_ = ca
+	_ = serverCert
+
+	tasksDir := t.TempDir()
+	cfg := meshhttp.ServerConfig{
+		TasksDir:         tasksDir,
+		HeartbeatTimeout: 5 * time.Second,
+		TaskTTL:          1 * time.Hour,
+		TLSEnabled:       true,
+		TLSCertFile:      filepath.Join(tlsDir, pki.CertPemFile),
+		TLSKeyFile:       filepath.Join(tlsDir, pki.CertKeyFile),
+		MeshCA:           ca,
+		MeshCAPemFile:    filepath.Join(tlsDir, pki.CAPemFile),
+	}
+
+	srv, err := meshhttp.NewServer(cfg)
+	if err != nil {
+		t.Fatalf("failed to create TLS server: %v", err)
+	}
+
+	ts := httptest.NewTLSServer(srv.Handler())
+	t.Cleanup(func() {
+		ts.Close()
+		_ = srv.Shutdown(context.Background())
+	})
+
+	return srv, ts, filepath.Join(tlsDir, pki.CAPemFile)
+}
+
+func TestServer_TLSHealthz(t *testing.T) {
+	srv, ts, _ := setupTLSTestServer(t)
+
+	if !srv.TLSEnabled() {
+		t.Error("expected TLS to be enabled")
+	}
+
+	resp, err := ts.Client().Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var res struct {
+		Status  string `json:"status"`
+		TLS     string `json:"tls"`
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if res.Status != "ok" {
+		t.Errorf("expected status ok, got %q", res.Status)
+	}
+	if res.TLS != "enabled" {
+		t.Errorf("expected tls enabled, got %q", res.TLS)
+	}
+}
+
+func TestServer_TLSCADownload(t *testing.T) {
+	_, ts, caPath := setupTLSTestServer(t)
+
+	resp, err := ts.Client().Get(ts.URL + "/v1/mesh/ca")
+	if err != nil {
+		t.Fatalf("GET /v1/mesh/ca failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	if resp.Header.Get("Content-Type") != "application/x-pem-file" {
+		t.Errorf("expected Content-Type application/x-pem-file, got %s", resp.Header.Get("Content-Type"))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read CA: %v", err)
+	}
+
+	if !strings.HasPrefix(string(body), "-----BEGIN CERTIFICATE-----") {
+		t.Error("CA should be a PEM certificate")
+	}
+
+	// Verify CA matches the file we know about
+	caData, err := os.ReadFile(caPath)
+	if err != nil {
+		t.Fatalf("failed to read CA file: %v", err)
+	}
+
+	if !bytes.Equal(body, caData) {
+		t.Error("downloaded CA should match CA file")
 	}
 }

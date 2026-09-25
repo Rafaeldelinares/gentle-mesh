@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/federation"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
@@ -35,6 +36,12 @@ type ServerConfig struct {
 	TerritoryManager     *federation.TerritoryManager
 	TerritoryMode        protocol.TerritoryMode
 	WorkspaceRoot        string
+	// TLS configuration
+	TLSEnabled     bool
+	TLSCertFile    string
+	TLSKeyFile     string
+	MeshCA         *pki.MeshCA
+	MeshCAPemFile  string
 }
 
 // Server provides the HTTP REST and SSE coordinator daemon for gentle-mesh.
@@ -212,7 +219,7 @@ func (s *Server) Handler() stdhttp.Handler {
 	return h
 }
 
-// Start begins listening and serving HTTP requests on the configured address.
+// Start begins listening and serving HTTP or HTTPS requests on the configured address.
 func (s *Server) Start() error {
 	if s.httpServer == nil {
 		s.httpServer = &stdhttp.Server{
@@ -222,10 +229,29 @@ func (s *Server) Start() error {
 			IdleTimeout:       120 * time.Second,
 		}
 	}
+
+	// Use HTTPS with TLS if enabled
+	if s.config.TLSEnabled && s.config.TLSCertFile != "" && s.config.TLSKeyFile != "" {
+		if err := s.httpServer.ListenAndServeTLS(s.config.TLSCertFile, s.config.TLSKeyFile); err != nil && !errors.Is(err, stdhttp.ErrServerClosed) {
+			return err
+		}
+		return nil
+	}
+
 	if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, stdhttp.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// TLSEnabled returns true if TLS is configured.
+func (s *Server) TLSEnabled() bool {
+	return s.config.TLSEnabled
+}
+
+// MeshCAPemFile returns the path to the mesh CA PEM file for nodes to download.
+func (s *Server) MeshCAPemFile() string {
+	return s.config.MeshCAPemFile
 }
 
 // Shutdown gracefully stops the HTTP server and releases task manager resources.

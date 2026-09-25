@@ -20,6 +20,7 @@ import (
 
 func (s *Server) registerRoutes(mux *stdhttp.ServeMux) {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /v1/mesh/ca", s.handleMeshCA) // Public: download mesh CA
 	mux.HandleFunc("POST /v1/mesh/join", s.handleMeshJoin)
 	mux.HandleFunc("POST /v1/mesh/heartbeat", s.handleMeshHeartbeat)
 	mux.HandleFunc("GET /v1/mesh/nodes", s.handleMeshNodes)
@@ -49,11 +50,43 @@ func writeJSON(w stdhttp.ResponseWriter, status int, data any) {
 
 func (s *Server) handleHealthz(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	uptime := int64(time.Since(s.startTime).Seconds())
+	tlsStatus := "disabled"
+	if s.TLSEnabled() {
+		tlsStatus = "enabled"
+	}
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
 		"status":         "ok",
 		"uptime_seconds": uptime,
 		"version":        "v1",
+		"tls":            tlsStatus,
 	})
+}
+
+// handleMeshCA serves the mesh CA certificate for nodes to download and trust.
+// This endpoint is public (no auth required) because the CA is meant to be shared.
+func (s *Server) handleMeshCA(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	caFile := s.MeshCAPemFile()
+	if caFile == "" {
+		writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]string{
+			"error": "TLS not configured, no CA available",
+		})
+		return
+	}
+
+	caData, err := os.ReadFile(caFile)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{
+			"error": "failed to read CA certificate",
+		})
+		return
+	}
+
+	// Set headers for download
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="gentle-mesh-ca.pem"`))
+	w.Header().Set("Cache-Control", "public, max-age=86400") // Cache for 24 hours
+	w.WriteHeader(stdhttp.StatusOK)
+	w.Write(caData)
 }
 
 func (s *Server) handleMeshJoin(w stdhttp.ResponseWriter, r *stdhttp.Request) {
