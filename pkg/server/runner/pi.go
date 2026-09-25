@@ -120,6 +120,15 @@ func (r *PiRunner) Run(ctx context.Context, req protocol.TaskRequest, sink Event
 
 	// Caller cancellation wins over any incidental stream or exit error.
 	if ctxErr := ctx.Err(); ctxErr != nil {
+		// Emit error event for timeout/cancellation so the client knows
+		switch ctxErr {
+		case context.DeadlineExceeded:
+			r.failRun(sink, "TASK_TIMEOUT", fmt.Errorf("task exceeded timeout"))
+		case context.Canceled:
+			r.failRun(sink, "TASK_CANCELED", fmt.Errorf("task was canceled"))
+		default:
+			r.failRun(sink, "TASK_ERROR", ctxErr)
+		}
 		return ctxErr
 	}
 	if readErr != nil {

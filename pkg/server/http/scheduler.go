@@ -316,7 +316,14 @@ func (s *TerritoryScheduler) startRunner(mt *task.ManagedTask) {
 		if r == nil {
 			return
 		}
-		_ = r.Run(mt.Context(), mt.Request, mt)
+		err := r.Run(mt.Context(), mt.Request, mt)
+		if err != nil {
+			// Task failed (timeout, canceled, etc.) - transition to failed
+			err2 := mt.SetStatus(protocol.TaskStatusFailed)
+			if err2 != nil {
+				// Log but don't fail
+			}
+		}
 	}()
 }
 
