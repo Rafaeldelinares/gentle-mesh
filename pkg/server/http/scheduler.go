@@ -198,7 +198,7 @@ func (s *TerritoryScheduler) Schedule(mt *task.ManagedTask) (bool, error) {
 	default:
 		s.mu.Lock()
 		if s.findConflictLocked(mt) != nil {
-			s.queue = append(s.queue, mt)
+			s.enqueueByPriorityLocked(mt)
 			s.mu.Unlock()
 			return true, nil
 		}
@@ -209,7 +209,7 @@ func (s *TerritoryScheduler) Schedule(mt *task.ManagedTask) (bool, error) {
 			// run at this point, so enqueuing the task here guarantees it is picked up
 			// instead of being stranded in the queued state.
 			if errors.Is(err, registry.ErrBranchLocked) {
-				s.queue = append(s.queue, mt)
+				s.enqueueByPriorityLocked(mt)
 				s.mu.Unlock()
 				return true, nil
 			}
@@ -385,8 +385,8 @@ func (s *TerritoryScheduler) handleRetry(mt *task.ManagedTask, lastErr error) {
 		// Update context to track retry count
 		mt.Request.Context = fmt.Sprintf("retry:%d:", nextRetry)
 
-		// Add to queue
-		s.queue = append(s.queue, mt)
+		// Add to queue (by priority)
+		s.enqueueByPriorityLocked(mt)
 
 		// Emit retry event
 		_, _ = mt.EmitEvent(protocol.EventRetry, protocol.RetryPayload{
@@ -452,6 +452,38 @@ func (s *TerritoryScheduler) findConflictLocked(mt *task.ManagedTask) *protocol.
 		return nil
 	}
 	return s.territoryManager.FindRunningConflict(mt.Territory())
+}
+
+// enqueueByPriorityLocked inserts mt into the queue based on its priority.
+// Higher priority tasks are placed near the front. The caller must hold s.mu.
+func (s *TerritoryScheduler) enqueueByPriorityLocked(mt *task.ManagedTask) {
+	priority := int32(mt.Request.Priority)
+	if priority < -100 {
+		priority = -100
+	} else if priority > 100 {
+		priority = 100
+	}
+
+	// Find position to insert (higher priority first)
+	insertPos := len(s.queue)
+	for i := 0; i < len(s.queue); i++ {
+		qPriority := int32(s.queue[i].Request.Priority)
+		if qPriority < -100 {
+			qPriority = -100
+		} else if qPriority > 100 {
+			qPriority = 100
+		}
+		if priority > qPriority {
+			insertPos = i
+			break
+		}
+	}
+
+	if insertPos == len(s.queue) {
+		s.queue = append(s.queue, mt)
+	} else {
+		s.queue = append(s.queue[:insertPos], append([]*task.ManagedTask{mt}, s.queue[insertPos:]...)...)
+	}
 }
 
 // emitConflictWarning records a non-fatal territory conflict warning on the task.

@@ -31,6 +31,8 @@ type TaskRequest struct {
 	// Retry configuration
 	MaxRetries    int          `json:"max_retries,omitempty"` // 0 = no retry
 	RetryDelay    int          `json:"retry_delay_seconds,omitempty"` // delay between retries
+	// Priority: higher = runs first (default 0, range -100 to 100)
+	Priority      int          `json:"priority,omitempty"`
 	Tags           []string    `json:"tags,omitempty"`
 }
 

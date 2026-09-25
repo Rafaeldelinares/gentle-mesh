@@ -368,7 +368,54 @@ El enrollment automático usa un flujo **Zero-Knowledge**:
 
 ---
 
-## 3.7 Automatic Retry
+## 3.7 Task Priority
+
+Gentle Mesh soporta **prioridad de tareas** para ejecutar tareas importantes primero.
+
+### 3.7.1 Configurar Prioridad
+
+```bash
+# Tarea de alta prioridad (se ejecuta antes)
+curl -X POST http://localhost:8080/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent": "worker",
+    "task": "Deploy crítico",
+    "priority": 100
+  }'
+
+# Tarea de baja prioridad (se ejecuta después)
+curl -X POST http://localhost:8080/v1/tasks \
+  -d '{"agent": "worker", "task": "Limpieza", "priority": -100}'
+```
+
+### 3.7.2 Escala de Prioridad
+
+| Valor | Significado |
+|-------|-------------|
+| 100 | Crítico (se ejecuta primero) |
+| 1-99 | Alta prioridad |
+| 0 | Normal (default) |
+| -1 a -99 | Baja prioridad |
+| -100 | Mínimo |
+
+### 3.7.3 Con Retry
+
+Combina prioridad y retry para tareas importantes:
+
+```bash
+curl -d '{
+  "agent": "worker",
+  "task": "Deploy producción",
+  "priority": 50,
+  "max_retries": 3,
+  "retry_delay_seconds": 60
+}'
+```
+
+---
+
+## 3.8 Automatic Retry
 
 Gentle Mesh soporta **reintento automático** para tareas que fallan, útil para operaciones no determinísticas o redes inestables.
 
