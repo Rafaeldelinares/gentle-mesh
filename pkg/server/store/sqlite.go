@@ -83,6 +83,12 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		}
 	}
 
+	// Initialize certificate schema
+	if err := InitCertSchema(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to initialize cert schema: %w", err)
+	}
+
 	return &SQLiteStore{
 		db: db,
 	}, nil

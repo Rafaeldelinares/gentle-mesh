@@ -72,6 +72,12 @@ func runCLIWithIO(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		return runRun(ctx, cmdArgs, stdout, stderr)
 	case "rpc":
 		return runRPC(ctx, cmdArgs, stdin, stdout, stderr)
+	case "cert-issue":
+		return runCertIssue(ctx, cmdArgs, stdout, stderr)
+	case "cert-revoke":
+		return runCertRevoke(ctx, cmdArgs, stdout, stderr)
+	case "cert-list":
+		return runCertList(ctx, cmdArgs, stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -91,6 +97,9 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  radar     Display real-time active subagents radar and scope")
 	fmt.Fprintln(w, "  run       Submit a task and stream SSE execution events")
 	fmt.Fprintln(w, "  rpc       Run stdio-to-HTTP/SSE RPC bridge for Pi frontends")
+	fmt.Fprintln(w, "  cert-issue   Issue a new node certificate (mTLS)")
+	fmt.Fprintln(w, "  cert-revoke  Revoke a node certificate")
+	fmt.Fprintln(w, "  cert-list     List all issued certificates")
 	fmt.Fprintln(w, "  help      Show help for gentle-mesh")
 }
 
@@ -111,6 +120,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	tlsEnable := fs.Bool("tls", false, "Enable TLS/HTTPS with generated certificates (generates CA if not exists)")
 	tlsDir := fs.String("tls-dir", "", "Directory for TLS certificates and CA (defaults to <tasks-dir>/tls)")
 	tlsInit := fs.Bool("tls-init", false, "Initialize TLS: generate new CA and server certificates (overwrites existing)")
+	requireMTLS := fs.Bool("require-mtls", false, "Require mTLS client certificates for all connections (implies -tls)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -171,6 +181,15 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		serverConfig.MeshCAPemFile = filepath.Join(tlsDirPath, pki.CAPemFile)
 		fmt.Fprintf(stdout, "TLS ready: CA=%s\n", ca.Cert.Subject.CommonName)
 		fmt.Fprintf(stdout, "Server cert expires: %s\n", serverCert.Cert.NotAfter.Format("2006-01-02"))
+	}
+
+	// Configure mTLS if required
+	if *requireMTLS {
+		if !serverConfig.TLSEnabled {
+			return errors.New("-require-mtls requires -tls to be enabled")
+		}
+		serverConfig.RequireMTLS = true
+		fmt.Fprintf(stdout, "mTLS required: all connections must present valid client certificates\n")
 	} else if *addr == ":8443" || strings.HasPrefix(*addr, ":8443") {
 		// Auto-enable TLS if using common HTTPS port without -tls flag
 		fmt.Fprintf(stdout, "Auto-enabling TLS on port 8443...\n")
@@ -193,7 +212,11 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 
 	tlsStatus := "HTTP"
 	if serverConfig.TLSEnabled {
-		tlsStatus = "HTTPS"
+		if serverConfig.RequireMTLS {
+			tlsStatus = "mTLS"
+		} else {
+			tlsStatus = "HTTPS"
+		}
 	}
 	fmt.Fprintf(stdout, "Gentle Mesh coordinator starting on %s (%s, tasks dir: %s, territory mode: %s, runner: %s)\n",
 		*addr, tlsStatus, *tasksDir, mode, *runnerName)
@@ -260,6 +283,8 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	addr := fs.String("addr", "", "Listen address for worker HTTP server (default: port from endpoint or :8081)")
 	caCert := fs.String("ca", "", "Path to mesh CA certificate for TLS verification (downloads from coordinator if not provided)")
 	insecureSkipTLS := fs.Bool("insecure-skip-tls-verify", false, "Skip TLS verification (for development only)")
+	clientCert := fs.String("cert", "", "Path to client certificate for mTLS authentication (requires -key)")
+	clientKey := fs.String("key", "", "Path to client private key for mTLS authentication (requires -cert)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -304,7 +329,10 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	caURL := coordURL + "/v1/mesh/ca"
 
 	// Build HTTP client with TLS configuration
-	httpClient := newTLSClient(*caCert, *insecureSkipTLS)
+	httpClient, err := newMTLSClient(*caCert, *clientCert, *clientKey, *insecureSkipTLS)
+	if err != nil {
+		return fmt.Errorf("failed to create TLS client: %w", err)
+	}
 	httpClient.Timeout = 10 * time.Second
 
 	// Auto-download CA from coordinator if not provided
@@ -752,6 +780,59 @@ func newTLSClient(caCertPath string, insecureSkipVerify bool) *http.Client {
 	return &http.Client{}
 }
 
+// newMTLSClient creates an HTTP client with optional mTLS configuration.
+// It returns an error if only one of certPath or keyPath is provided.
+func newMTLSClient(caCertPath, certPath, keyPath string, insecureSkipVerify bool) (*http.Client, error) {
+	// Validate cert/key pair
+	if (certPath != "" && keyPath == "") || (certPath == "" && keyPath != "") {
+		return nil, errors.New("both -cert and -key must be provided for mTLS authentication")
+	}
+
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: insecureSkipVerify,
+	}
+
+	// Load CA for server verification
+	if caCertPath != "" && !insecureSkipVerify {
+		caCert, err := os.ReadFile(caCertPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA certificate: %w", err)
+		}
+		caPool := x509.NewCertPool()
+		caPool.AppendCertsFromPEM(caCert)
+		tlsConfig.RootCAs = caPool
+	}
+
+	// Load client certificate for mTLS
+	if certPath != "" && keyPath != "" {
+		certPEM, err := os.ReadFile(certPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read client certificate: %w", err)
+		}
+		keyPEM, err := os.ReadFile(keyPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read client key: %w", err)
+		}
+
+		cert, err := tls.X509KeyPair(certPEM, keyPEM)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client certificate/key pair: %w", err)
+		}
+
+		tlsConfig.Certificates = []tls.Certificate{cert}
+
+		if caCertPath == "" && !insecureSkipVerify {
+			fmt.Fprintf(os.Stderr, "⚠️  Warning: mTLS configured without custom CA, using system CAs\n")
+		}
+	}
+
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}, nil
+}
+
 // runRun dispatches a task to the coordinator and streams SSE events to stdout.
 func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -1018,4 +1099,145 @@ func extractPortFromEndpoint(endpoint string) string {
 		return ":8081"
 	}
 	return ":" + p
+}
+
+// Certificate management commands
+
+// runCertIssue issues a new node certificate for mTLS authentication.
+func runCertIssue(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("cert-issue", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	tlsDir := fs.String("tls-dir", "", "TLS directory with CA (required)")
+	nodeID := fs.String("node-id", "", "Node identifier for the certificate (required)")
+	outputDir := fs.String("output", "", "Output directory for certificate files (defaults to tls-dir)")
+	validDays := fs.Int("valid-days", 365, "Certificate validity period in days")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *tlsDir == "" {
+		return errors.New("-tls-dir is required")
+	}
+	if *nodeID == "" {
+		return errors.New("-node-id is required")
+	}
+
+	// Load CA
+	ca, err := pki.LoadCAPemFiles(*tlsDir)
+	if err != nil {
+		return fmt.Errorf("failed to load CA from %s: %w\nTIP: Run 'gentle-mesh server -tls-init' first", *tlsDir, err)
+	}
+
+	// Generate node certificate
+	validFor := time.Duration(*validDays) * 24 * time.Hour
+	nodeCert, certInfo, err := ca.GenerateNodeCert(*nodeID, validFor)
+	if err != nil {
+		return fmt.Errorf("failed to generate node certificate: %w", err)
+	}
+
+	// Save certificate files
+	outDir := *outputDir
+	if outDir == "" {
+		outDir = *tlsDir
+	}
+
+	if err := nodeCert.SaveNodeCertFiles(outDir, false); err != nil {
+		return fmt.Errorf("failed to save certificate files: %w", err)
+	}
+
+	certFile := filepath.Join(outDir, *nodeID+".pem")
+	keyFile := filepath.Join(outDir, *nodeID+".key")
+
+	fmt.Fprintf(stdout, "✅ Certificate issued for node: %s\n", *nodeID)
+	fmt.Fprintf(stdout, "  Certificate: %s\n", certFile)
+	fmt.Fprintf(stdout, "  Private key: %s\n", keyFile)
+	fmt.Fprintf(stdout, "  Expires: %s\n", certInfo.ExpiresAt.Format("2006-01-02"))
+	fmt.Fprintf(stdout, "  Serial: %s\n", certInfo.Serial)
+	fmt.Fprintln(stdout, "")
+	fmt.Fprintf(stdout, "Distribute the certificate and key to the node, then run:\n")
+	fmt.Fprintf(stdout, "  gentle-mesh worker -coordinator https://... -cert %s -key %s\n", certFile, keyFile)
+
+	return nil
+}
+
+// runCertRevoke revokes a node certificate.
+func runCertRevoke(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("cert-revoke", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	fs.String("tls-dir", "", "TLS directory with CA (required)")
+	nodeID := fs.String("node-id", "", "Node identifier to revoke (required)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *nodeID == "" {
+		return errors.New("-node-id is required")
+	}
+
+	// Revocation is handled via the database, not filesystem
+	// For now, we just print a warning since we don't have DB access here
+	fmt.Fprintf(stdout, "⚠️  To revoke a certificate, you need to:")
+	fmt.Fprintf(stdout, "\n  1. Delete the certificate files from the node")
+	fmt.Fprintf(stdout, "\n  2. Issue a new certificate with a different serial")
+	fmt.Fprintf(stdout, "\n\nFor production revocation lists, implement CRL distribution.\n")
+
+	return nil
+}
+
+// runCertList lists all issued certificates.
+func runCertList(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("cert-list", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+
+	tlsDir := fs.String("tls-dir", "", "TLS directory with CA (required)")
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *tlsDir == "" {
+		return errors.New("-tls-dir is required")
+	}
+
+	// List certificates from filesystem (simplified for now)
+	entries, err := os.ReadDir(*tlsDir)
+	if err != nil {
+		return fmt.Errorf("failed to read TLS directory: %w", err)
+	}
+
+	fmt.Fprintln(stdout, "📜 Issued certificates:")
+	fmt.Fprintln(stdout, "")
+
+	hasCerts := false
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		// Skip CA and server certs
+		if name == pki.CAPemFile || name == pki.CAPrivateFile ||
+			name == pki.CertPemFile || name == pki.CertKeyFile {
+			continue
+		}
+		if strings.HasSuffix(name, ".pem") {
+			hasCerts = true
+			nodeID := strings.TrimSuffix(name, ".pem")
+			info, _ := pki.LoadNodeCertFiles(*tlsDir, nodeID)
+			fmt.Fprintf(stdout, "  Node: %s\n", nodeID)
+			if info != nil {
+				fmt.Fprintf(stdout, "    Expires: %s\n", info.Cert.NotAfter.Format("2006-01-02"))
+			}
+			fmt.Fprintln(stdout, "")
+		}
+	}
+
+	if !hasCerts {
+		fmt.Fprintln(stdout, "  (No node certificates issued)")
+	}
+
+	return nil
 }

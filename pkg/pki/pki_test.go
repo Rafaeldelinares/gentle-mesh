@@ -295,3 +295,170 @@ func parseCertFromPEM(certPEM []byte) (*x509.Certificate, error) {
 	}
 	return x509.ParseCertificate(block.Bytes)
 }
+
+// NodeCert tests
+
+func TestGenerateNodeCert(t *testing.T) {
+	ca, err := GenerateCA("Gentle Mesh Test", "testing", 0)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+
+	nodeID := "worker-alpha"
+	nodeCert, info, err := ca.GenerateNodeCert(nodeID, 0)
+	if err != nil {
+		t.Fatalf("GenerateNodeCert failed: %v", err)
+	}
+
+	if nodeCert == nil {
+		t.Fatal("GenerateNodeCert returned nil")
+	}
+
+	if nodeCert.NodeID != nodeID {
+		t.Errorf("expected NodeID %s, got %s", nodeID, nodeCert.NodeID)
+	}
+
+	if nodeCert.Cert == nil {
+		t.Error("Node certificate is nil")
+	}
+
+	if nodeCert.Key == nil {
+		t.Error("Node key is nil")
+	}
+
+	if nodeCert.Cert.IsCA {
+		t.Error("Node certificate should not be a CA")
+	}
+
+	if info.NodeID != nodeID {
+		t.Errorf("expected NodeCertInfo.NodeID %s, got %s", nodeID, info.NodeID)
+	}
+
+	if info.Revoked {
+		t.Error("Newly generated cert should not be revoked")
+	}
+
+	if info.Serial == "" {
+		t.Error("Serial should not be empty")
+	}
+
+	// Verify cert is signed by CA (verify against the CA cert directly)
+	if nodeCert.Cert.CheckSignatureFrom(ca.Cert) != nil {
+		t.Error("Node certificate should be signed by CA")
+	}
+}
+
+func TestNodeCertValidity(t *testing.T) {
+	ca, err := GenerateCA("Gentle Mesh Test", "testing", 0)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+
+	nodeCert, _, err := ca.GenerateNodeCert("test-node", 0)
+	if err != nil {
+		t.Fatalf("GenerateNodeCert failed: %v", err)
+	}
+
+	if !nodeCert.IsNodeCertValid() {
+		t.Error("Newly generated cert should be valid")
+	}
+}
+
+func TestSaveAndLoadNodeCert(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	ca, err := GenerateCA("Gentle Mesh Test", "testing", 0)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+
+	nodeID := "worker-beta"
+	nodeCert, _, err := ca.GenerateNodeCert(nodeID, 0)
+	if err != nil {
+		t.Fatalf("GenerateNodeCert failed: %v", err)
+	}
+
+	// Save node cert
+	err = nodeCert.SaveNodeCertFiles(tmpDir, false)
+	if err != nil {
+		t.Fatalf("SaveNodeCertFiles failed: %v", err)
+	}
+
+	// Load node cert
+	loadedCert, err := LoadNodeCertFiles(tmpDir, nodeID)
+	if err != nil {
+		t.Fatalf("LoadNodeCertFiles failed: %v", err)
+	}
+
+	if loadedCert.NodeID != nodeID {
+		t.Errorf("expected NodeID %s, got %s", nodeID, loadedCert.NodeID)
+	}
+
+	if loadedCert.Cert.SerialNumber.Cmp(nodeCert.Cert.SerialNumber) != 0 {
+		t.Error("Loaded cert serial doesn't match original")
+	}
+}
+
+func TestSaveNodeCertFileExists(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	ca, err := GenerateCA("Gentle Mesh Test", "testing", 0)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+
+	nodeCert, _, err := ca.GenerateNodeCert("test-node", 0)
+	if err != nil {
+		t.Fatalf("GenerateNodeCert failed: %v", err)
+	}
+
+	// Save once
+	err = nodeCert.SaveNodeCertFiles(tmpDir, false)
+	if err != nil {
+		t.Fatalf("First SaveNodeCertFiles failed: %v", err)
+	}
+
+	// Try to save again without force
+	err = nodeCert.SaveNodeCertFiles(tmpDir, false)
+	if err == nil {
+		t.Error("Expected error on second save without force")
+	}
+
+	// Force save should work
+	err = nodeCert.SaveNodeCertFiles(tmpDir, true)
+	if err != nil {
+		t.Errorf("SaveNodeCertFiles with force=true failed: %v", err)
+	}
+}
+
+func TestLoadNodeCertNotFound(t *testing.T) {
+	_, err := LoadNodeCertFiles("/nonexistent", "node-id")
+	if err == nil {
+		t.Error("Expected error for nonexistent node cert")
+	}
+}
+
+func TestNodeCertClientAuth(t *testing.T) {
+	ca, err := GenerateCA("Gentle Mesh Test", "testing", 0)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+
+	nodeCert, _, err := ca.GenerateNodeCert("test-client", 0)
+	if err != nil {
+		t.Fatalf("GenerateNodeCert failed: %v", err)
+	}
+
+	// Check that the cert has client auth ext key usage
+	hasClientAuth := false
+	for _, usage := range nodeCert.Cert.ExtKeyUsage {
+		if usage == x509.ExtKeyUsageClientAuth {
+			hasClientAuth = true
+			break
+		}
+	}
+
+	if !hasClientAuth {
+		t.Error("Node cert should have client auth ext key usage")
+	}
+}

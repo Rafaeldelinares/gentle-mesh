@@ -59,6 +59,25 @@ type ServerCert struct {
 	Key  *ecdsa.PrivateKey
 }
 
+// NodeCert holds a node/client certificate and its private key for mTLS.
+// This is used by workers and clients to authenticate to the coordinator.
+type NodeCert struct {
+	Cert   *x509.Certificate
+	Key    *ecdsa.PrivateKey
+	NodeID string
+}
+
+// NodeCertInfo is the metadata stored for issued node certificates.
+type NodeCertInfo struct {
+	NodeID     string
+	CommonName string
+	IssuedAt   time.Time
+	ExpiresAt  time.Time
+	Revoked    bool
+	RevokedAt  *time.Time
+	Serial     string
+}
+
 // GenerateCA creates a new root CA certificate with the given organizational details.
 // The CA is self-signed and can sign other certificates.
 func GenerateCA(org, orgUnit string, validFor time.Duration) (*MeshCA, error) {
@@ -156,7 +175,137 @@ func (ca *MeshCA) GenerateServerCert(hostnames []string, validFor time.Duration)
 	return &ServerCert{Cert: cert, Key: key}, nil
 }
 
-// SaveCAPemFiles saves the CA certificate and key to separate PEM files.
+// GenerateNodeCert creates a client/node certificate signed by the provided CA.
+// This is used for mTLS authentication of workers and clients.
+func (ca *MeshCA) GenerateNodeCert(nodeID string, validFor time.Duration) (*NodeCert, *NodeCertInfo, error) {
+	if validFor == 0 {
+		validFor = DefaultValidDuration
+	}
+
+	// Generate node private key
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: failed to generate node key: %v", ErrGenerationFailed, err)
+	}
+
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: failed to generate serial: %v", ErrGenerationFailed, err)
+	}
+
+	// Build node certificate template
+	cert := &x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName: nodeID,
+		},
+		NotBefore:   time.Now(),
+		NotAfter:    time.Now().Add(validFor),
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		DNSNames:    []string{nodeID}, // Required for verification
+	}
+
+	// Sign with CA
+	certDER, err := x509.CreateCertificate(rand.Reader, cert, ca.Cert, &key.PublicKey, ca.Key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: failed to sign node cert: %v", ErrGenerationFailed, err)
+	}
+
+	cert, err = x509.ParseCertificate(certDER)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: failed to parse node cert: %v", ErrGenerationFailed, err)
+	}
+
+	info := &NodeCertInfo{
+		NodeID:     nodeID,
+		CommonName: nodeID,
+		IssuedAt:   cert.NotBefore,
+		ExpiresAt:  cert.NotAfter,
+		Revoked:    false,
+		Serial:     serialNumber.String(),
+	}
+
+	return &NodeCert{Cert: cert, Key: key, NodeID: nodeID}, info, nil
+}
+
+// SaveNodeCertFiles saves the node certificate and key to PEM files.
+// Files are named: <nodeID>.pem and <nodeID>.key
+func (nc *NodeCert) SaveNodeCertFiles(dir string, force bool) error {
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+
+	certPath := filepath.Join(dir, nc.NodeID+".pem")
+	keyPath := filepath.Join(dir, nc.NodeID+".key")
+
+	if !force {
+		if _, err := os.Stat(certPath); err == nil {
+			return fmt.Errorf("%w: %s", ErrFileExists, certPath)
+		}
+		if _, err := os.Stat(keyPath); err == nil {
+			return fmt.Errorf("%w: %s", ErrFileExists, keyPath)
+		}
+	}
+
+	if err := WriteCertificatePemFile(certPath, nc.Cert); err != nil {
+		return err
+	}
+	if err := WritePrivateKeyPemFile(keyPath, nc.Key); err != nil {
+		return err
+	}
+	if err := os.Chmod(keyPath, 0600); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// LoadNodeCertFiles loads a node certificate and key from PEM files.
+func LoadNodeCertFiles(dir, nodeID string) (*NodeCert, error) {
+	certPath := filepath.Join(dir, nodeID+".pem")
+	keyPath := filepath.Join(dir, nodeID+".key")
+
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrFileNotFound, certPath)
+	}
+
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrFileNotFound, keyPath)
+	}
+
+	// Parse certificate
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return nil, fmt.Errorf("%w: no PEM block found", ErrInvalidCert)
+	}
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidCert, err)
+	}
+
+	// Parse private key
+	block, _ = pem.Decode(keyPEM)
+	if block == nil {
+		return nil, fmt.Errorf("%w: no PEM block found", ErrInvalidKey)
+	}
+
+	key, err := x509.ParseECPrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidKey, err)
+	}
+
+	return &NodeCert{Cert: cert, Key: key, NodeID: cert.Subject.CommonName}, nil
+}
+
+// IsNodeCertValid checks if a node certificate is valid (not expired, not revoked).
+func (nc *NodeCert) IsNodeCertValid() bool {
+	now := time.Now()
+	return now.After(nc.Cert.NotBefore) && now.Before(nc.Cert.NotAfter)
+}
 // If force is false and files exist, returns ErrFileExists.
 func (ca *MeshCA) SaveCAPemFiles(dir string, force bool) error {
 	// Save certificate

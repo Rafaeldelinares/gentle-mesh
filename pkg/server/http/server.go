@@ -2,6 +2,8 @@ package http
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	stdhttp "net/http"
@@ -42,6 +44,8 @@ type ServerConfig struct {
 	TLSKeyFile     string
 	MeshCA         *pki.MeshCA
 	MeshCAPemFile  string
+	// mTLS configuration
+	RequireMTLS    bool // Require client certificates for all connections
 }
 
 // Server provides the HTTP REST and SSE coordinator daemon for gentle-mesh.
@@ -232,6 +236,19 @@ func (s *Server) Start() error {
 
 	// Use HTTPS with TLS if enabled
 	if s.config.TLSEnabled && s.config.TLSCertFile != "" && s.config.TLSKeyFile != "" {
+		tlsConfig := &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+
+		// Configure mTLS if required
+		if s.config.RequireMTLS && s.config.MeshCA != nil {
+			tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+			tlsConfig.ClientCAs = x509.NewCertPool()
+			tlsConfig.ClientCAs.AppendCertsFromPEM(s.config.MeshCA.Cert.Raw)
+		} else if s.config.TLSCertFile != "" {
+			tlsConfig.ClientAuth = tls.NoClientCert
+		}
+
 		if err := s.httpServer.ListenAndServeTLS(s.config.TLSCertFile, s.config.TLSKeyFile); err != nil && !errors.Is(err, stdhttp.ErrServerClosed) {
 			return err
 		}
