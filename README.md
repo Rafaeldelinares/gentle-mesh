@@ -415,7 +415,93 @@ curl -d '{
 
 ---
 
-## 3.8 Automatic Retry
+## 3.8 Checkpoint / Resume
+
+Gentle Mesh soporta **checkpoint y resume** para tareas largas. El worker puede guardar progreso periódico y retomarlo si falla o si se desconecta.
+
+### 3.8.1 Guardar Checkpoint
+
+```bash
+# Guardar checkpoint durante ejecución
+curl -X POST http://localhost:8080/v1/tasks/{task_id}/checkpoint \
+  -H "Content-Type: application/json" \
+  -d '{
+    "step": 3,
+    "total_steps": 10,
+    "progress": "Compilando módulo auth...",
+    "files_done": ["src/auth/login.go", "src/auth/logout.go"],
+    "context": {"build_id": "abc123", "env": "production"}
+  }'
+```
+
+### 3.8.2 Obtener Checkpoint
+
+```bash
+# Recuperar último checkpoint
+curl http://localhost:8080/v1/tasks/{task_id}/checkpoint
+```
+
+### 3.8.3 Eventos de Checkpoint
+
+Los suscriptores SSE reciben eventos `checkpoint`:
+
+```json
+{
+  "type": "checkpoint",
+  "id": 15,
+  "payload": {
+    "step": 3,
+    "total_steps": 10,
+    "progress": "Compilando módulo auth...",
+    "files_done": ["src/auth/login.go"],
+    "context": {"build_id": "abc123"},
+    "last_updated": 1699999999
+  }
+}
+```
+
+### 3.8.4 Casos de Uso
+
+| Escenario | Solución |
+|-----------|----------|
+| Tarea larga | Guardar progreso cada N pasos |
+| Worker desconectado | Resume con último checkpoint |
+| Falla temporal | Reintentar desde checkpoint |
+| Debug | Ver progreso en tiempo real |
+
+---
+
+## 3.9 Rate Limiting
+
+Protege el coordinator de abuse con rate limiting configurable.
+
+### 3.9.1 Configurar Rate Limit
+
+```bash
+# 100 requests por minuto, burst de 20
+gentle-mesh server -rate-limit 100 -rate-limit-window 1m -rate-limit-burst 20
+```
+
+### 3.9.2 Parámetros
+
+| Flag | Default | Descripción |
+|------|---------|-------------|
+| `-rate-limit` | 0 (disabled) | Requests por ventana |
+| `-rate-limit-window` | 1m | Duración de la ventana |
+| `-rate-limit-burst` | 10 | Tamaño máximo de ráfaga |
+
+### 3.9.3 Respuesta de Rate Limit
+
+```json
+{
+  "error": "rate limit exceeded",
+  "retry_after": "1m0s"
+}
+```
+
+---
+
+## 3.10 Automatic Retry
 
 Gentle Mesh soporta **reintento automático** para tareas que fallan, útil para operaciones no determinísticas o redes inestables.
 

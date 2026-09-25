@@ -136,6 +136,9 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	tlsDir := fs.String("tls-dir", "", "Directory for TLS certificates and CA (defaults to <tasks-dir>/tls)")
 	tlsInit := fs.Bool("tls-init", false, "Initialize TLS: generate new CA and server certificates (overwrites existing)")
 	requireMTLS := fs.Bool("require-mtls", false, "Require mTLS client certificates for all connections (implies -tls)")
+	rateLimitRequests := fs.Int("rate-limit", 0, "Rate limit: requests per window (0 = disabled)")
+	rateLimitWindow := fs.Duration("rate-limit-window", 1*time.Minute, "Rate limit window duration")
+	rateLimitBurst := fs.Int("rate-limit-burst", 10, "Rate limit max burst size")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -180,6 +183,9 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		TerritoryMode:    mode,
 		WorkspaceRoot:    *workspace,
 		Runner:           selectedRunner,
+		RateLimitRequests: *rateLimitRequests,
+		RateLimitWindow:   *rateLimitWindow,
+		RateLimitBurst:    *rateLimitBurst,
 	}
 
 	// Configure TLS if enabled

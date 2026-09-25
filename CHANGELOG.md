@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Certificate Enrollment**: CSR-based automatic certificate enrollment with tokens (zero-knowledge)
 - **Territory Scheduling**: Branch-aware scheduling with conflict detection
 - **Multi-client Streaming**: Multiple viewers can subscribe to task events simultaneously
+- **Checkpoint/Resume**: Save and restore task progress for long-running tasks
+- **Rate Limiting**: Protect coordinator from abuse with configurable per-IP limits
 
 #### Infrastructure
 - **Coordinator Server**: HTTP server with task management, SSE streaming, and enrollment
@@ -24,10 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Operations
 - **Webhook Notifications**: Push notifications for task.completed, task.failed, task.timeout events
-- **Automatic Retry**: Configurable retry with exponential backoff
+- **Automatic Retry**: Configurable retry with configurable delay
 - **Task Priority**: Priority-based scheduling (-100 to 100)
 - **Timeout Protection**: Task timeout and inactivity timeout (5 min)
 - **Idempotency Keys**: Prevent duplicate task execution
+- **Checkpoint API**: POST/GET /v1/tasks/{id}/checkpoint
 
 #### Developer Experience
 - **Single Binary**: Zero-dependency deployment

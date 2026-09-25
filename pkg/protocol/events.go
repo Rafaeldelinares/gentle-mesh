@@ -24,6 +24,7 @@ const (
 	EventCompletion EventType = "completion"
 	EventError      EventType = "error"
 	EventRetry      EventType = "retry"
+	EventCheckpoint EventType = "checkpoint"
 )
 
 // Event represents a single discrete protocol message streamed over SSE or stored in task logs.

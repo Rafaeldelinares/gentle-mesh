@@ -52,6 +52,7 @@ type ManagedTask struct {
 	pendingQueries map[string]chan string
 	finishedTime   time.Time
 	onUpdate       func(t *ManagedTask)
+	checkpoint    *protocol.CheckpointPayload
 }
 
 // NewManagedTask constructs a new ManagedTask instance.
@@ -548,6 +549,7 @@ func (t *ManagedTask) Snapshot() protocol.TaskState {
 		FinishedAt: t.FinishedAt,
 		Completion: comp,
 		Error:      errPayload,
+		Checkpoint: t.checkpoint,
 	}
 }
 
@@ -556,6 +558,14 @@ func (t *ManagedTask) CurrentStatus() protocol.TaskStatus {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.Status
+}
+
+// SetCheckpoint saves task progress for resume capability.
+func (t *ManagedTask) SetCheckpoint(cp *protocol.CheckpointPayload) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.checkpoint = cp
+	t.LastActivityAt = time.Now().Unix()
 }
 
 // Subscribe returns an event channel delivering historical events with ID > sinceID

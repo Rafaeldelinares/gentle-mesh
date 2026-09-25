@@ -34,6 +34,10 @@ type TaskRequest struct {
 	// Priority: higher = runs first (default 0, range -100 to 100)
 	Priority      int          `json:"priority,omitempty"`
 	Tags           []string    `json:"tags,omitempty"`
+	// Checkpoint resume
+	ResumeFrom    *CheckpointPayload `json:"resume_from,omitempty"` // Resume from checkpoint
+	EnableCheckpoint bool            `json:"enable_checkpoint"`    // Enable periodic checkpointing
+	CheckpointInterval int           `json:"checkpoint_interval_secs"` // Seconds between checkpoints
 }
 
 // TaskResponse represents the initial acknowledgement returned when a task is accepted.
@@ -56,6 +60,18 @@ type TaskState struct {
 	FinishedAt int64              `json:"finished_at,omitempty"`
 	Completion *CompletionPayload `json:"completion,omitempty"`
 	Error      *ErrorPayload      `json:"error,omitempty"`
+	// Checkpoint for resume
+	Checkpoint *CheckpointPayload  `json:"checkpoint,omitempty"`
+}
+
+// CheckpointPayload stores task progress for resume capability.
+type CheckpointPayload struct {
+	Step        int               `json:"step"`          // Current step number
+	TotalSteps  int               `json:"total_steps"`   // Estimated total steps
+	Progress    string            `json:"progress"`      // Human-readable progress
+	FilesDone   []string         `json:"files_done"`    // Files modified so far
+	Context     map[string]string `json:"context"`      // Arbitrary key-value state
+	LastUpdated int64            `json:"last_updated"`  // Unix timestamp
 }
 
 // TaskReplyRequest represents a response to an interactive query event from a subagent.

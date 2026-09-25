@@ -51,6 +51,10 @@ type ServerConfig struct {
 	TokenStore  store.TokenStore // For enrollment token validation
 	// Webhook configuration
 	WebhookStore store.WebhookStore // For webhook notifications
+	// Rate limiting configuration
+	RateLimitRequests  int           // Requests per window (0 = disabled)
+	RateLimitWindow   time.Duration // Time window
+	RateLimitBurst    int           // Max burst size
 }
 
 // Server provides the HTTP REST and SSE coordinator daemon for gentle-mesh.
@@ -233,6 +237,17 @@ func (s *Server) Handler() stdhttp.Handler {
 	s.registerRoutes(mux)
 
 	var h stdhttp.Handler = mux
+
+	// Apply rate limiting if configured
+	if s.config.RateLimitRequests > 0 {
+		rateLimiter := NewRateLimiter(
+			s.config.RateLimitRequests,
+			s.config.RateLimitWindow,
+			s.config.RateLimitBurst,
+		)
+		h = RateLimitMiddleware(rateLimiter)(h)
+	}
+
 	if s.config.BearerToken != "" {
 		h = AuthMiddleware(s.config.BearerToken, h)
 	}

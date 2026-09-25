@@ -38,6 +38,8 @@ func (s *Server) registerRoutes(mux *stdhttp.ServeMux) {
 	mux.HandleFunc("GET /v1/tasks/{id}/events", s.handleTaskEvents)
 	mux.HandleFunc("POST /v1/tasks/{id}/reply", s.handleTaskReply)
 	mux.HandleFunc("POST /v1/tasks/{id}/cancel", s.handleTaskCancel)
+	mux.HandleFunc("POST /v1/tasks/{id}/checkpoint", s.handleTaskCheckpoint)
+	mux.HandleFunc("GET /v1/tasks/{id}/checkpoint", s.handleGetCheckpoint)
 	mux.HandleFunc("GET /v1/workspace/tree", s.handleWorkspaceTree)
 	mux.HandleFunc("GET /v1/workspace/file", s.handleWorkspaceFile)
 	mux.HandleFunc("POST /v1/certs/enroll", s.handleCertsEnroll)
@@ -860,4 +862,81 @@ func (s *Server) handleDeleteWebhook(w stdhttp.ResponseWriter, r *stdhttp.Reques
 	}
 
 	writeJSON(w, stdhttp.StatusOK, map[string]string{"deleted": id})
+}
+
+// checkpointPayload is the request body for setting a checkpoint.
+type checkpointPayload struct {
+	Step       int               `json:"step"`
+	TotalSteps int               `json:"total_steps"`
+	Progress   string            `json:"progress"`
+	FilesDone  []string          `json:"files_done"`
+	Context    map[string]string `json:"context"`
+}
+
+// handleTaskCheckpoint sets a checkpoint for a running task.
+func (s *Server) handleTaskCheckpoint(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "task id is required"})
+		return
+	}
+
+	t, exists := s.taskManager.GetTask(id)
+	if !exists {
+		writeJSON(w, stdhttp.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+
+	var req checkpointPayload
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+	}
+
+	cp := &protocol.CheckpointPayload{
+		Step:        req.Step,
+		TotalSteps:  req.TotalSteps,
+		Progress:    req.Progress,
+		FilesDone:   req.FilesDone,
+		Context:     req.Context,
+		LastUpdated: time.Now().Unix(),
+	}
+
+	t.SetCheckpoint(cp)
+
+	// Also emit checkpoint event for streaming subscribers
+	t.EmitEvent(protocol.EventCheckpoint, cp)
+
+	writeJSON(w, stdhttp.StatusOK, map[string]any{
+		"task_id":   id,
+		"checkpoint": cp,
+	})
+}
+
+// handleGetCheckpoint returns the current checkpoint for a task.
+func (s *Server) handleGetCheckpoint(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "task id is required"})
+		return
+	}
+
+	t, exists := s.taskManager.GetTask(id)
+	if !exists {
+		writeJSON(w, stdhttp.StatusNotFound, map[string]string{"error": "task not found"})
+		return
+	}
+
+	state := t.Snapshot()
+	if state.Checkpoint == nil {
+		writeJSON(w, stdhttp.StatusNotFound, map[string]string{"error": "no checkpoint found"})
+		return
+	}
+
+	writeJSON(w, stdhttp.StatusOK, map[string]any{
+		"task_id":   id,
+		"checkpoint": state.Checkpoint,
+	})
 }
