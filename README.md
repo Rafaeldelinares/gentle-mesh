@@ -297,7 +297,68 @@ Si el worker no tiene CA configurada, intenta descargarla automáticamente del c
 gentle-mesh worker -coordinator https://coordinator:8443
 ```
 
-### 3.5.8 Seguridad: Viewer vs Worker
+### 3.5.8 Enrollment Automático con Tokens
+
+Para entornos de producción, Gentle Mesh soporta **enrollment automático de certificados** mediante tokens de invitación. Este flujo usa **CSR (Certificate Signing Request)** para que la clave privada del nodo **nunca salga de la máquina local**.
+
+**Flujo de enrollment:**
+
+```
+1. Admin genera token:
+   gentle-mesh gen-token -db-path /var/mesh/gentle-mesh.db
+   → Token: xyz123... (usar 1 vez, expira en 30 días)
+
+2. Worker usa token para enroll:
+   gentle-mesh worker -join-token xyz123... -coordinator https://mesh.example.com
+
+3. Worker genera CSR localmente (clave privada stays local)
+
+4. Worker envía CSR + token al coordinator
+
+5. Coordinator valida token, firma CSR con CA
+
+6. Coordinator devuelve certificado firmado
+
+7. Worker guarda cert+key, usa mTLS para unirse
+```
+
+**Comandos de tokens:**
+
+```bash
+# Generar token de enrollment (max-uses: 1 por defecto)
+gentle-mesh gen-token -db-path /var/mesh/gentle-mesh.db
+
+# Generar token multi-uso (para varios workers)
+gentle-mesh gen-token -db-path /var/mesh/gentle-mesh.db -max-uses 10 -valid-days 7
+
+# Listar tokens activos
+gentle-mesh token-list -db-path /var/mesh/gentle-mesh.db
+
+# Revocar token
+gentle-mesh token-revoke -db-path /var/mesh/gentle-mesh.db -token xyz123...
+```
+
+**Seguridad del CSR:**
+
+El enrollment automático usa un flujo **Zero-Knowledge**:
+
+| Paso | Qué ocurre | Dónde está la clave |
+|------|-----------|-------------------|
+| 1 | Worker genera par de claves ECDSA P-256 | Local |
+| 2 | Worker genera CSR con clave pública | Local |
+| 3 | Worker envía CSR al coordinator | CSR tiene clave pública, NO la privada |
+| 4 | Coordinator firma CSR con CA | Coordinator |
+| 5 | Coordinator devuelve certificado | Worker |
+| **6** | **Worker tiene clave privada + certificado** | **Local** |
+
+**Ventajas sobre issuance manual:**
+
+- ✅ Clave privada nunca sale del nodo
+- ✅ No requiere acceso SSH al nodo
+- ✅ Tokens auditables y revocables
+- ✅ Perfect Forward Secrecy (cada nodo tiene su propia clave)
+
+### 3.5.9 Seguridad: Viewer vs Worker
 
 | Función | open-pi-viewer como Viewer | open-pi-viewer como Worker |
 |---------|---------------------------|---------------------------|
