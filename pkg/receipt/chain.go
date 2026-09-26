@@ -305,11 +305,20 @@ type VerificationResult struct {
 }
 
 // ComputeReceiptHash computes the JCS canonical SHA-256 hash of a receipt
-// with both signature fields cleared. Used for signing and verification.
+// with all mutable fields cleared: both signatures, emitter acceptance,
+// acceptance timestamp, and dispute reason.
+//
+// This represents the EXECUTOR-signed content: the immutable receipt data
+// plus assertions, as signed by the executor agent. The emitter signs this
+// exact same content (via AcceptReceipt/DisputeReceipt) so that verification
+// is deterministic regardless of whether the emitter has responded yet.
 func ComputeReceiptHash(r *SettlementReceipt) (string, error) {
 	cleared := *r
 	cleared.ExecutorSignature = ""
+	cleared.EmitterAcceptance = ""
+	cleared.EmitterAcceptanceAt = nil
 	cleared.EmitterSignature = ""
+	cleared.DisputeReason = ""
 
 	data, err := jcs.Marshal(&cleared)
 	if err != nil {

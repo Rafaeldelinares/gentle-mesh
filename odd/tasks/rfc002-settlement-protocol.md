@@ -117,7 +117,7 @@ EMITTED → ACCEPTED (inmutable)
 - [x] Work unit 3: Envelope signing
 - [x] Work unit 4: Keystore
 - [x] Work unit 5: Receipt types
-- [ ] Work unit 6: Receipt chain
+- [x] Work unit 6: Receipt chain (`66fd60f`) — chain linkage, verification, SQLite persistence
 - [ ] Work unit 7: Receipt signing
 - [ ] Work unit 8: Settlement DSL
 - [ ] Work unit 9: Settlement engine
