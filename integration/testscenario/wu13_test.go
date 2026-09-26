@@ -297,7 +297,7 @@ func TestWU13_ConcurrentWritesToSameExecutor(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			rec, err := fanDispatchLeg(ctx, aClient, bClient, aSigner, "agent-b",
+			rec, err := fanDispatchLeg(ctx, aClient, bClient, aSigner, "agent-b", "agent-b",
 				fmt.Sprintf("concurrent-%d", idx))
 			results[idx] = rec
 			errors[idx] = err

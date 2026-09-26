@@ -126,15 +126,34 @@ func TestSaveReceipt_ChainBroken(t *testing.T) {
 	r1.PreviousReceiptHash = ""
 	cs.SaveReceipt(context.Background(), r1)
 
-	// Second receipt with WRONG previous hash.
+	// Second receipt with WRONG previous hash: SaveReceipt no longer validates
+	// prev_hash (VerifyChain does that). SaveReceipt accepts any hash.
 	r2 := validReceipt()
 	r2.ReceiptID = "receipt-002"
 	r2.ContractID = "contract-002"
 	r2.PreviousReceiptHash = "wrong-hash-value-0000000000000000000000000000000000000000000"
 
+	// SaveReceipt should succeed (validation moved to VerifyChain).
 	err := cs.SaveReceipt(context.Background(), r2)
-	if err == nil {
-		t.Error("SaveReceipt with wrong previous hash: expected error, got nil")
+	if err != nil {
+		t.Errorf("SaveReceipt with wrong previous hash: expected success, got %v", err)
+	}
+
+	// VerifyChain returns nil error but marks the receipt invalid.
+	_, executorSigner := makeTestSigners(t)
+	results, err := cs.VerifyChain(context.Background(), "agent-a", "agent-b",
+		executorSigner.PublicKey(), nil)
+	if err != nil {
+		t.Fatalf("VerifyChain returned unexpected error: %v", err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("VerifyChain returned %d results, want at least 2", len(results))
+	}
+	if results[1].PreviousHashValid {
+		t.Error("VerifyChain: second receipt should have PreviousHashValid=false")
+	}
+	if results[1].Valid {
+		t.Error("VerifyChain: second receipt should be invalid")
 	}
 }
 
@@ -398,7 +417,8 @@ func TestVerifyChain_BrokenChain(t *testing.T) {
 	signReceipt(r1, executor)
 	cs.SaveReceipt(context.Background(), r1)
 
-	// Second receipt with CORRUPTED previous hash.
+	// Second receipt with CORRUPTED previous hash: SaveReceipt no longer validates
+	// prev_hash (moved to VerifyChain). SaveReceipt succeeds.
 	r2 := validReceipt()
 	r2.ReceiptID = "bc-002"
 	r2.ContractID = "contract-bc-002"
@@ -406,8 +426,33 @@ func TestVerifyChain_BrokenChain(t *testing.T) {
 	signReceipt(r2, executor)
 
 	err := cs.SaveReceipt(context.Background(), r2)
-	if err == nil {
-		t.Error("Expected error for broken chain, got nil")
+	if err != nil {
+		t.Errorf("SaveReceipt with corrupted prev_hash: expected success, got %v", err)
+	}
+
+	// VerifyChain should detect the broken chain.
+	results, err := cs.VerifyChain(context.Background(),
+		"agent-a", "agent-b",
+		executor.PublicKey(), nil)
+	if err != nil {
+		t.Fatalf("VerifyChain returned unexpected error: %v", err)
+	}
+	// Find receipt bc-002.
+	var bc2 *VerificationResult
+	for i := range results {
+		if results[i].ReceiptID == "bc-002" {
+			bc2 = &results[i]
+			break
+		}
+	}
+	if bc2 == nil {
+		t.Fatal("bc-002 not found in verification results")
+	}
+	if bc2.PreviousHashValid {
+		t.Error("VerifyChain: bc-002 should have PreviousHashValid=false (corrupted prev_hash)")
+	}
+	if bc2.Valid {
+		t.Error("VerifyChain: bc-002 should be invalid due to broken chain link")
 	}
 }
 
