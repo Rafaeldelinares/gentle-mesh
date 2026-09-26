@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -157,14 +158,22 @@ func TestChain_TamperDetection(t *testing.T) {
 
 		// Corrupt the second receipt's prev_hash in the DB.
 		corruptedHash := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
-		_, err := db.Exec(
-			"UPDATE receipts SET data = REPLACE(data, ?, ?) WHERE receipt_id = ?",
-			chain[1].PreviousReceiptHash,
-			corruptedHash,
-			chain[1].ReceiptID,
+		// Corrupt prev_hash by reading the raw JSON, corrupting the field,
+		// and writing it back. REPLACE fails because JSON stores the hash with quotes.
+		rec2 := chain[1]
+		corruptedRec2 := *rec2
+		corruptedRec2.PreviousReceiptHash = corruptedHash
+		corruptedJSON, err := json.Marshal(&corruptedRec2)
+		if err != nil {
+			t.Fatalf("marshal corrupted receipt: %v", err)
+		}
+		_, err = db.Exec(
+			"UPDATE receipts SET data = ? WHERE receipt_id = ?",
+			string(corruptedJSON),
+			rec2.ReceiptID,
 		)
 		if err != nil {
-			t.Fatalf("corrupt update: %v", err)
+			t.Fatalf("update corrupted receipt: %v", err)
 		}
 
 		results, err := cs.VerifyChain(ctx, "agent-a", "agent-b",
@@ -206,17 +215,23 @@ func TestChain_TamperDetection(t *testing.T) {
 			t.Skip("need at least 2 receipts")
 		}
 
-		// Corrupt receipt #1 signature (flip one byte).
-		origSig := chain[0].ExecutorSignature
-		corruptedSig := origSig[:len(origSig)-1] + "X"
-		_, err := db.Exec(
-			"UPDATE receipts SET data = REPLACE(data, ?, ?) WHERE receipt_id = ?",
-			origSig,
-			corruptedSig,
-			chain[0].ReceiptID,
+		// Corrupt receipt #1 signature by reading the raw JSON, corrupting the sig,
+		// and writing it back.
+		// REPLACE(origSig, ...) fails because JSON stores it as "<sig>" with quotes.
+		origRec := chain[0]
+		corruptedRec := *origRec
+		corruptedRec.ExecutorSignature = origRec.ExecutorSignature[:len(origRec.ExecutorSignature)-1] + "X"
+		corruptedJSON, err := json.Marshal(&corruptedRec)
+		if err != nil {
+			t.Fatalf("marshal corrupted receipt: %v", err)
+		}
+		_, err = db.Exec(
+			"UPDATE receipts SET data = ? WHERE receipt_id = ?",
+			string(corruptedJSON),
+			origRec.ReceiptID,
 		)
 		if err != nil {
-			t.Fatalf("corrupt sig update: %v", err)
+			t.Fatalf("update corrupted receipt: %v", err)
 		}
 
 		results, err := cs.VerifyChain(ctx, "agent-a", "agent-b",

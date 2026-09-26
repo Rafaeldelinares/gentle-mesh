@@ -128,6 +128,7 @@ func runScenario(args []string) {
 	fs := flag.NewFlagSet("test-scenario", flag.ContinueOnError)
 	aURL := fs.String("agent-a", "https://agent-a:8443", "Agent A URL (default: https://agent-a:8443)")
 	bURL := fs.String("agent-b", "https://agent-b:8443", "Agent B URL (default: https://agent-b:8443)")
+	cURL := fs.String("agent-c", "", "Agent C URL (optional; enables fan-out test)")
 	workspace := fs.String("workspace", "/srv/workspace", "Workspace directory")
 	caCert := fs.String("ca-cert", "/certs/ca.crt", "Root CA certificate for TLS verification")
 	insecure := fs.Bool("insecure", false, "Skip TLS certificate verification (development only)")
@@ -137,10 +138,10 @@ func runScenario(args []string) {
 	}
 
 	if *aURL == "" && *bURL == "" {
-		log.Fatal("either --agent-a and --agent-b are required, or run in-process")
+		log.Fatal("--agent-a and --agent-b are required")
 	}
 
-	scenario, err := testscenario.NewScenarioTLS(*aURL, *bURL, *workspace, *caCert, *insecure)
+	scenario, err := testscenario.NewScenarioTLS(*aURL, *bURL, *cURL, *workspace, *caCert, *insecure)
 	if err != nil {
 		log.Fatalf("create scenario: %v", err)
 	}

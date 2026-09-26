@@ -243,6 +243,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		AgentID:   s.config.AgentID,
 		Role:      string(s.config.Role),
 		Timestamp: time.Now().UTC(),
+		PublicKey: hexEncode(s.signer.PublicKey()),
 	})
 }
 
@@ -522,11 +523,13 @@ func (s *Server) handleGetChain(w http.ResponseWriter, r *http.Request) {
 	entries := make([]ChainReceiptEntry, len(chain))
 	for i, rec := range chain {
 		entries[i] = ChainReceiptEntry{
-			ReceiptID:         rec.ReceiptID,
-			ContractID:        rec.ContractID,
-			EnvelopeHash:     rec.EnvelopeHash,
-			Verdict:          string(rec.Verdict),
-			ExecutorSignedAt: rec.ExecutorSignedAt.Format(time.RFC3339),
+			ReceiptID:            rec.ReceiptID,
+			ContractID:           rec.ContractID,
+			EnvelopeHash:        rec.EnvelopeHash,
+			Verdict:             string(rec.Verdict),
+			ExecutorSignedAt:    rec.ExecutorSignedAt.Format(time.RFC3339),
+			ExecutorSignature:    rec.ExecutorSignature,
+			PreviousReceiptHash: rec.PreviousReceiptHash,
 		}
 		if rec.EmitterAcceptanceAt != nil {
 			entries[i].EmitterSignedAt = rec.EmitterAcceptanceAt.Format(time.RFC3339)

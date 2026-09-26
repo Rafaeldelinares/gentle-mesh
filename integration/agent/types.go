@@ -85,13 +85,15 @@ type ChainResponse struct {
 
 // ChainReceiptEntry is a single entry in the chain response.
 type ChainReceiptEntry struct {
-	ReceiptID           string `json:"receipt_id"`
-	ContractID         string `json:"contract_id"`
-	EnvelopeHash       string `json:"envelope_hash"`
-	Verdict            string `json:"verdict"`
-	ExecutorSignedAt   string `json:"executor_signed_at"`
-	EmitterAcceptance  string `json:"emitter_acceptance,omitempty"`
-	EmitterSignedAt    string `json:"emitter_signed_at,omitempty"`
+	ReceiptID            string `json:"receipt_id"`
+	ContractID          string `json:"contract_id"`
+	EnvelopeHash        string `json:"envelope_hash"`
+	Verdict             string `json:"verdict"`
+	ExecutorSignedAt    string `json:"executor_signed_at"`
+	ExecutorSignature    string `json:"executor_signature,omitempty"` // needed for chain verification
+	PreviousReceiptHash string `json:"previous_receipt_hash,omitempty"`
+	EmitterAcceptance   string `json:"emitter_acceptance,omitempty"`
+	EmitterSignedAt     string `json:"emitter_signed_at,omitempty"`
 }
 
 // VerifyRequest is the POST /verify request body.
@@ -115,6 +117,8 @@ type HealthResponse struct {
 	AgentID   string    `json:"agent_id"`
 	Role      string    `json:"role"`
 	Timestamp time.Time `json:"timestamp"`
+	// PublicKey is the agent's Ed25519 public key as hex (for remote verification).
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 // ErrorResponse is a generic error response.

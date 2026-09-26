@@ -26,15 +26,18 @@ import (
 type Scenario struct {
 	aClient   *agent.HTTPClient // Agent A (emitter)
 	bClient   *agent.HTTPClient // Agent B (executor)
+	cClient   *agent.HTTPClient // Agent C (optional executor for fan-out)
 	aSigner   *signing.BasicSigner
 	bSigner   *signing.BasicSigner
+	cSigner   *signing.BasicSigner
 	workspace string
 }
 
-// NewScenario creates a new test scenario with TLS-aware HTTPS clients.
+// NewScenarioTLS creates a new test scenario with TLS-aware HTTPS clients.
 // It uses the provided CA certificate to verify server certificates.
 // Pass insecure=true only for local development with self-signed certs.
-func NewScenarioTLS(aURL, bURL, workspace, caCertPath string, insecure bool) (*Scenario, error) {
+// If cURL is non-empty, agent-c is initialized for fan-out tests.
+func NewScenarioTLS(aURL, bURL, cURL, workspace, caCertPath string, insecure bool) (*Scenario, error) {
 	opts := []agent.TLSClientOption{}
 	if caCertPath != "" {
 		opts = append(opts, agent.WithCACert(caCertPath))
@@ -51,9 +54,17 @@ func NewScenarioTLS(aURL, bURL, workspace, caCertPath string, insecure bool) (*S
 	if err != nil {
 		return nil, fmt.Errorf("create TLS client for agent-b: %w", err)
 	}
+	var cClient *agent.HTTPClient
+	if cURL != "" {
+		cClient, err = agent.NewHTTPClientTLS(cURL, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("create TLS client for agent-c: %w", err)
+		}
+	}
 	return &Scenario{
 		aClient:   aClient,
 		bClient:   bClient,
+		cClient:   cClient,
 		workspace: workspace,
 	}, nil
 }
@@ -61,7 +72,7 @@ func NewScenarioTLS(aURL, bURL, workspace, caCertPath string, insecure bool) (*S
 // NewScenario creates a new test scenario with default HTTPS clients.
 // Deprecated: use NewScenarioTLS for explicit TLS configuration.
 func NewScenario(aURL, bURL, workspace string) *Scenario {
-	s, _ := NewScenarioTLS(aURL, bURL, workspace, "", false)
+	s, _ := NewScenarioTLS(aURL, bURL, "", workspace, "", false)
 	return s
 }
 
@@ -98,13 +109,14 @@ func (s *Scenario) Run(ctx context.Context) error {
 	log.Printf("    ✓ Assertions: %d", len(env.Assertions))
 
 	// Step 3: Submit to Agent B (pre-flight handshake).
-	log.Println("[3/7] Submit envelope (pre-flight handshake)...")
-	leaseResp, err := s.aClient.SubmitEnvelope(ctx, envJSON)
+	// The envelope is submitted TO the executor (agent-b), not the emitter (agent-a).
+	log.Println("[3/7] Submit envelope to executor (pre-flight handshake)...")
+	leaseResp, err := s.bClient.SubmitEnvelope(ctx, envJSON)
 	if err != nil {
-		return fmt.Errorf("submit: %w", err)
+		return fmt.Errorf("submit to executor: %w", err)
 	}
 	if !leaseResp.Accepted {
-		return fmt.Errorf("lease rejected: %s", leaseResp.Error)
+		return fmt.Errorf("lease rejected by executor: %s", leaseResp.Error)
 	}
 	log.Printf("    ✓ Lease: id=%s", leaseResp.LeaseID)
 
@@ -140,13 +152,35 @@ func (s *Scenario) Run(ctx context.Context) error {
 	}
 	log.Printf("    ✓ Chain length: %d", len(chain.Receipts))
 
-	// Verify prev_hash = SHA-256(executor_signature).
-	if rec.PreviousReceiptHash != "" {
-		h := sha256.Sum256([]byte(rec.ExecutorSignature))
-		expected := hex.EncodeToString(h[:])
-		if rec.PreviousReceiptHash != expected {
-			return fmt.Errorf("prev_hash mismatch: %s vs %s", rec.PreviousReceiptHash, expected)
+	// Verify chain link: prev_hash == SHA-256(prev_receipt.ExecutorSignature).
+	// Chain entries are ordered by executor_signed_at ASC.
+	if len(chain.Receipts) >= 2 {
+		prev := chain.Receipts[len(chain.Receipts)-2]
+		curr := chain.Receipts[len(chain.Receipts)-1]
+		if curr.ReceiptID != rec.ReceiptID {
+			return fmt.Errorf("last receipt in chain (%s) != settled receipt (%s)",
+				curr.ReceiptID, rec.ReceiptID)
 		}
+		if prev.ExecutorSignature == "" {
+			return fmt.Errorf("previous receipt has no executor signature")
+		}
+		h := sha256.Sum256([]byte(prev.ExecutorSignature))
+		expected := hex.EncodeToString(h[:])
+		if curr.PreviousReceiptHash != expected {
+			return fmt.Errorf("chain link broken: got prev_hash=%s, want SHA-256(prev.sig)=%s",
+				curr.PreviousReceiptHash, expected)
+		}
+		shortHash := expected
+		if len(shortHash) > 12 {
+			shortHash = shortHash[:12] + "..."
+		}
+		log.Printf("    ✓ Chain link verified: SHA-256(prev.ExecutorSignature) = %s", shortHash)
+	} else if len(chain.Receipts) == 1 {
+		if chain.Receipts[0].PreviousReceiptHash != "" {
+			return fmt.Errorf("first receipt should have empty prev_hash, got %s",
+				chain.Receipts[0].PreviousReceiptHash)
+		}
+		log.Printf("    ✓ First receipt: empty prev_hash (correct)")
 	}
 
 	log.Println()

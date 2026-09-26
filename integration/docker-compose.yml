@@ -1,25 +1,25 @@
-# docker-compose.yml — RFC-002 Integration Test Environment (TLS/HTTPS)
+# docker-compose.yml — RFC-002 Distributed Integration Test Environment (TLS/HTTPS)
 # Usage: docker compose up --build
 #
 # Services:
-#   agent-a  — Emitter (A): creates and sends CognitiveTaskEnvelope over HTTPS
+#   agent-a  — Emitter (A): creates CognitiveTaskEnvelope, sends over HTTPS
 #   agent-b  — Executor (B): receives, executes, settles over HTTPS
-#   integration-test — Orchestrates full scenario over HTTPS
+#   agent-c  — Second Executor (C): fan-out test with multiple executors
+#   integration-test — Orchestrates full scenario, validates receipts and chain
 #
 # Network: gentle-mesh-net (isolated bridge)
 #
 # Volumes:
-#   certs            — Shared TLS certificates (CA, server, client)
-#   agent-b-workspace — Persisted workspace with git repo and calculator.py
-#   agent-b-chain    — Persisted SQLite receipt chain for B
-#   agent-a-chain    — Persisted SQLite receipt chain for A (audit)
+#   agent-b-workspace — Git repo and calculator.py (workspace for executor B)
+#   agent-c-workspace — Workspace for executor C (fan-out test)
+#   agent-b-chain    — SQLite receipt chain for B
+#   agent-c-chain    — SQLite receipt chain for C
 #
-# TLS Setup:
-#   - Self-signed CA (ca.crt) is generated at first run via gen-certs.sh
-#   - Server certs are signed by the development CA
-#   - The integration test uses the CA cert to verify server certificates
-#   - In production, replace with ACME/Let's Encrypt or corporate PKI
+# Certificates are mounted as a bind mount from the host:
+#   ${CERTS_HOST_DIR:-/tmp/rfc002-certs}:/certs:ro
 #
+# The Go test harness generates certs on the host before docker compose up.
+
 version: "3.9"
 
 networks:
@@ -28,87 +28,65 @@ networks:
     driver: bridge
 
 volumes:
-  certs:
   agent-b-workspace:
+  agent-c-workspace:
   agent-b-chain:
-  agent-a-chain:
+  agent-c-chain:
 
 services:
   # ─────────────────────────────────────────────────────────────────
-  # Certificate generation (runs once on startup)
-  # ─────────────────────────────────────────────────────────────────
-  certs-init:
-    image: alpine:3.19
-    container_name: certs-init
-    volumes:
-      - certs:/certs
-    command: |
-      sh -c '
-        if [ ! -f /certs/ca.crt ]; then
-          echo "[certs] Generating development TLS certificates..."
-          apk add --no-cache openssl
-          /gen-certs.sh /certs
-          chmod 644 /certs/ca.crt /certs/server.crt /certs/client.crt
-          chmod 600 /certs/ca.key /certs/server.key /certs/client.key
-          echo "[certs] Done."
-        else
-          echo "[certs] Certificates already exist, skipping generation."
-        fi
-      '
-    entrypoint: ["/bin/sh", "-c"]
-
-  # ─────────────────────────────────────────────────────────────────
   # Agent A — Emitter
-  # Creates the CognitiveTaskEnvelope and sends it to B over HTTPS.
+  # Creates the CognitiveTaskEnvelope and sends it to executors over HTTPS.
   # ─────────────────────────────────────────────────────────────────
   agent-a:
     build:
-      context: ../..
+      context: ..
       dockerfile: integration/Dockerfile.agent
+    image: gentle-mesh-agent-a:latest
     container_name: agent-a
     hostname: agent-a
     networks:
       - gentle-mesh-net
+    ports:
+      - "18443:8443"
     volumes:
-      - certs:/certs:ro
-      - agent-a-chain:/data
+      - ${CERTS_HOST_DIR:-/tmp/rfc002-certs}:/certs:ro
+      - agent-b-chain:/data   # A keeps its own audit copy of the chain
     environment:
       AGENT_ID: "agent-a"
       AGENT_ROLE: "emitter"
       CHAIN_DB_PATH: "/data/chain.db"
-      # PEER_URL uses HTTPS (agent-b is on port 8443)
-      PEER_URL: "https://agent-b:8443"
     command: >
       serve
       --agent-id agent-a
       --role emitter
       --port 8443
       --tls-cert /certs/server.crt
-      --tls-key /certs/server.key
+      --tls-key  /certs/server.key
     healthcheck:
       test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://localhost:8443/health"]
       interval: 5s
       timeout: 3s
       retries: 5
-      start_period: 3s
-    depends_on:
-      certs-init:
-        condition: service_started
+      start_period: 5s
 
   # ─────────────────────────────────────────────────────────────────
-  # Agent B — Executor
-  # Receives the envelope, executes the task, settles with assertions over HTTPS.
+  # Agent B — Executor (primary)
+  # Receives the envelope, executes the task, settles with assertions.
   # ─────────────────────────────────────────────────────────────────
   agent-b:
     build:
-      context: ../..
+      context: ..
       dockerfile: integration/Dockerfile.agent
+    image: gentle-mesh-agent-b:latest
     container_name: agent-b
     hostname: agent-b
     networks:
       - gentle-mesh-net
+    ports:
+      - "28443:8443"
     volumes:
-      - certs:/certs:ro
+      - ${CERTS_HOST_DIR:-/tmp/rfc002-certs}:/certs:ro
       - agent-b-workspace:/srv/workspace
       - agent-b-chain:/data
     environment:
@@ -116,7 +94,6 @@ services:
       AGENT_ROLE: "executor"
       CHAIN_DB_PATH: "/data/chain.db"
       WORKSPACE_DIR: "/srv/workspace"
-      EVAL_TIMEOUT: "30s"
       MAX_REMEDIATIONS: "1"
     command: >
       serve
@@ -124,16 +101,52 @@ services:
       --role executor
       --port 8443
       --tls-cert /certs/server.crt
-      --tls-key /certs/server.key
+      --tls-key  /certs/server.key
     healthcheck:
       test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://localhost:8443/health"]
       interval: 5s
       timeout: 3s
       retries: 5
-      start_period: 3s
-    depends_on:
-      certs-init:
-        condition: service_started
+      start_period: 5s
+
+  # ─────────────────────────────────────────────────────────────────
+  # Agent C — Executor (fan-out target)
+  # Separate executor for multi-destination fan-out test.
+  # ─────────────────────────────────────────────────────────────────
+  agent-c:
+    build:
+      context: ..
+      dockerfile: integration/Dockerfile.agent
+    image: gentle-mesh-agent-c:latest
+    container_name: agent-c
+    hostname: agent-c
+    networks:
+      - gentle-mesh-net
+    ports:
+      - "38443:8443"
+    volumes:
+      - ${CERTS_HOST_DIR:-/tmp/rfc002-certs}:/certs:ro
+      - agent-c-workspace:/srv/workspace
+      - agent-c-chain:/data
+    environment:
+      AGENT_ID: "agent-c"
+      AGENT_ROLE: "executor"
+      CHAIN_DB_PATH: "/data/chain.db"
+      WORKSPACE_DIR: "/srv/workspace"
+      MAX_REMEDIATIONS: "1"
+    command: >
+      serve
+      --agent-id agent-c
+      --role executor
+      --port 8443
+      --tls-cert /certs/server.crt
+      --tls-key  /certs/server.key
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://localhost:8443/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
   # ─────────────────────────────────────────────────────────────────
   # Integration test runner
@@ -141,8 +154,9 @@ services:
   # ─────────────────────────────────────────────────────────────────
   integration-test:
     build:
-      context: ../..
+      context: ..
       dockerfile: integration/Dockerfile.agent
+    image: gentle-mesh-agent-test:latest
     container_name: integration-test
     hostname: integration-test
     networks:
@@ -152,19 +166,23 @@ services:
         condition: service_healthy
       agent-b:
         condition: service_healthy
+      agent-c:
+        condition: service_healthy
     volumes:
-      - certs:/certs:ro
+      - ${CERTS_HOST_DIR:-/tmp/rfc002-certs}:/certs:ro
       - agent-b-workspace:/srv/workspace
       - agent-b-chain:/data/agent-b
-      - agent-a-chain:/data/agent-a
+      - agent-c-chain:/data/agent-c
     environment:
-      # Default to HTTPS; skip cert verification for self-signed dev certs
       AGENT_A_URL: "https://agent-a:8443"
       AGENT_B_URL: "https://agent-b:8443"
+      AGENT_C_URL: "https://agent-c:8443"
       WORKSPACE_DIR: "/srv/workspace"
-    command: [
-      "test-scenario",
-      "--ca-cert", "/certs/ca.crt",
-      "--insecure"
-    ]
+    command: >
+      test-scenario
+      --agent-a https://agent-a:8443
+      --agent-b https://agent-b:8443
+      --agent-c https://agent-c:8443
+      --ca-cert /certs/ca.crt
+      --insecure
     entrypoint: ["/usr/local/bin/agent"]
