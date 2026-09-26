@@ -240,6 +240,7 @@ func (eng *Engine) convertResults(results []*AssertionResult) []receipt.Assertio
 		}
 		if r.Evidence.ActualHash != "" {
 			ev.ActualSHA256 = r.Evidence.ActualHash
+			ev.ExpectedSHA256 = r.Evidence.ExpectedHash
 		}
 		// Output contains check.
 		if strings.Contains(r.Evidence.Stdout, "") {

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
 	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
@@ -328,6 +329,438 @@ func TestSettle_AssertionError_VerdictFailed(t *testing.T) {
 
 	if out.Receipt.Verdict != receipt.VerdictFailed {
 		t.Errorf("Verdict = %v, want VERDICT_FAILED", out.Receipt.Verdict)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Negative tests — failure and remediation
+// ─────────────────────────────────────────────────────────────────
+
+// TestSettle_ExitCodeMismatch verifies that when the command exits with
+// a different code than expected, the assertion fails and verdict is FAILED.
+func TestSettle_ExitCodeMismatch(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create envelope that expects exit code 0, but command exits with 1.
+	env := &envelope.CognitiveTaskEnvelope{
+		EnvelopeID:   "contract-exit-mismatch",
+		EnvelopeHash: "hash123",
+		Territory: envelope.Territory{
+			WorkspacePath: dir,
+		},
+		Assertions: []envelope.Assertion{
+			{
+				ID:   "exit-1",
+				Type: envelope.AssertionCommandExitCode,
+				Params: envelope.AssertionParams{
+					Command:          "sh -c 'exit 1'",
+					ExpectedExitCode: 0,
+				},
+			},
+		},
+	}
+
+	db, _ := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
+	cs := receipt.NewChainStore(db)
+	cs.InitSchema(context.Background())
+	ev := NewEvaluator(dir)
+	signer, _ := signing.GenerateSigner("agent-b")
+	eng, _ := NewEngine(EngineConfig{
+		Evaluator:       ev,
+		ChainStore:     cs,
+		ExecutorSigner: signer,
+	})
+	defer db.Close()
+
+	out, err := eng.Settle(context.Background(), SettlementInput{
+		Envelope:        env,
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+	})
+	if err != nil {
+		t.Fatalf("Settle error: %v", err)
+	}
+
+	if out.Receipt.Verdict != receipt.VerdictFailed {
+		t.Errorf("Verdict = %v, want SETTLEMENT_FAILED", out.Receipt.Verdict)
+	}
+	if len(out.Receipt.Assertions) != 1 {
+		t.Fatalf("Assertions length = %d, want 1", len(out.Receipt.Assertions))
+	}
+	if out.Receipt.Assertions[0].Result != receipt.ResultFail {
+		t.Errorf("Assertion result = %v, want FAIL", out.Receipt.Assertions[0].Result)
+	}
+	if out.Receipt.Assertions[0].Evidence.ExitCode != 1 {
+		t.Errorf("ExitCode = %d, want 1", out.Receipt.Assertions[0].Evidence.ExitCode)
+	}
+}
+
+// TestSettle_FileHashMismatch verifies that when the file's SHA-256 does not
+// match the expected hash, the assertion fails.
+func TestSettle_FileHashMismatch(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "data.txt")
+	os.WriteFile(f, []byte("actual content"), 0644)
+
+	// Envelope expects a WRONG hash — the assertion must fail.
+	env := &envelope.CognitiveTaskEnvelope{
+		EnvelopeID:   "contract-hash-mismatch",
+		EnvelopeHash: "hash456",
+		Territory: envelope.Territory{
+			WorkspacePath: dir,
+		},
+		Assertions: []envelope.Assertion{
+			{
+				ID:   "hash-check",
+				Type: envelope.AssertionFileHashEquals,
+				Params: envelope.AssertionParams{
+					FilePath:       "data.txt",
+					ExpectedSHA256: "a948904f2f0f479b8f8564cbf12dae62c683b2a5f1677e1af51a92d4ed30a89f", // wrong hash
+				},
+			},
+		},
+	}
+
+	db, _ := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
+	cs := receipt.NewChainStore(db)
+	cs.InitSchema(context.Background())
+	ev := NewEvaluator(dir)
+	signer, _ := signing.GenerateSigner("agent-b")
+	eng, _ := NewEngine(EngineConfig{
+		Evaluator:       ev,
+		ChainStore:     cs,
+		ExecutorSigner: signer,
+	})
+	defer db.Close()
+
+	out, err := eng.Settle(context.Background(), SettlementInput{
+		Envelope:        env,
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+	})
+	if err != nil {
+		t.Fatalf("Settle error: %v", err)
+	}
+
+	if out.Receipt.Verdict != receipt.VerdictFailed {
+		t.Errorf("Verdict = %v, want SETTLEMENT_FAILED", out.Receipt.Verdict)
+	}
+	if len(out.Receipt.Assertions) != 1 {
+		t.Fatalf("Assertions length = %d, want 1", len(out.Receipt.Assertions))
+	}
+	if out.Receipt.Assertions[0].Result != receipt.ResultFail {
+		t.Errorf("Assertion result = %v, want FAIL", out.Receipt.Assertions[0].Result)
+	}
+	// Actual hash should be populated.
+	if out.Receipt.Assertions[0].Evidence.ActualSHA256 == "" {
+		t.Error("ActualSHA256 should be populated")
+	}
+	// Expected hash should match the wrong value we sent.
+	if out.Receipt.Assertions[0].Evidence.ExpectedSHA256 != "a948904f2f0f479b8f8564cbf12dae62c683b2a5f1677e1af51a92d4ed30a89f" {
+		t.Errorf("ExpectedSHA256 mismatch")
+	}
+}
+
+// TestSettle_AssertionTimeout verifies that an assertion that times out
+// produces a SKIP result and the verdict is FAILED.
+func TestSettle_AssertionTimeout(t *testing.T) {
+	dir := t.TempDir()
+
+	// Envelope with a command that sleeps longer than its timeout.
+	env := &envelope.CognitiveTaskEnvelope{
+		EnvelopeID:   "contract-timeout",
+		EnvelopeHash: "hash789",
+		Territory: envelope.Territory{
+			WorkspacePath: dir,
+		},
+		Assertions: []envelope.Assertion{
+			{
+				ID:   "sleepy",
+				Type: envelope.AssertionCommandExitCode,
+				Params: envelope.AssertionParams{
+					Command:          "sleep 5",
+					ExpectedExitCode: 0,
+					TimeoutSeconds:   1, // times out after 1 second
+				},
+			},
+		},
+	}
+
+	db, _ := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
+	cs := receipt.NewChainStore(db)
+	cs.InitSchema(context.Background())
+	ev := NewEvaluator(dir)
+	signer, _ := signing.GenerateSigner("agent-b")
+	eng, _ := NewEngine(EngineConfig{
+		Evaluator:       ev,
+		ChainStore:     cs,
+		ExecutorSigner: signer,
+	})
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, err := eng.Settle(ctx, SettlementInput{
+		Envelope:        env,
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+	})
+	if err != nil {
+		t.Fatalf("Settle error: %v", err)
+	}
+
+	if out.Receipt.Verdict != receipt.VerdictFailed {
+		t.Errorf("Verdict = %v, want SETTLEMENT_FAILED (timeout)", out.Receipt.Verdict)
+	}
+	if len(out.Receipt.Assertions) != 1 {
+		t.Fatalf("Assertions length = %d, want 1", len(out.Receipt.Assertions))
+	}
+	// A timeout should produce a SKIP result (or FAIL depending on implementation).
+	result := out.Receipt.Assertions[0].Result
+	if result != receipt.ResultSkip && result != receipt.ResultFail {
+		t.Errorf("Assertion result = %v, want SKIP or FAIL", result)
+	}
+}
+
+// TestSettle_RemediationMaxReached verifies that when all remediation
+// attempts are exhausted without passing assertions, verdict is FAILED.
+func TestSettle_RemediationMaxReached(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create envelope that always fails (exit code 1).
+	env := &envelope.CognitiveTaskEnvelope{
+		EnvelopeID:   "contract-remed-fail",
+		EnvelopeHash: "hash-fail",
+		Territory: envelope.Territory{
+			WorkspacePath: dir,
+		},
+		Assertions: []envelope.Assertion{
+			{
+				ID:   "always-fail",
+				Type: envelope.AssertionCommandExitCode,
+				Params: envelope.AssertionParams{
+					Command:          "sh -c 'exit 1'",
+					ExpectedExitCode: 0,
+				},
+			},
+		},
+	}
+
+	db, _ := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
+	cs := receipt.NewChainStore(db)
+	cs.InitSchema(context.Background())
+	ev := NewEvaluator(dir)
+	signer, _ := signing.GenerateSigner("agent-b")
+	eng, _ := NewEngine(EngineConfig{
+		Evaluator:       ev,
+		ChainStore:     cs,
+		ExecutorSigner: signer,
+		RemediationMax: 2, // try up to 2 times
+	})
+	defer db.Close()
+
+	out, err := eng.Settle(context.Background(), SettlementInput{
+		Envelope:        env,
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+	})
+	if err != nil {
+		t.Fatalf("Settle error: %v", err)
+	}
+
+	if out.Receipt.Verdict != receipt.VerdictFailed {
+		t.Errorf("Verdict = %v, want SETTLEMENT_FAILED", out.Receipt.Verdict)
+	}
+	// With remMax=2, the engine tries 2 remediation cycles.
+	if out.RemediationUsed != 2 {
+		t.Errorf("RemediationUsed = %d, want 2", out.RemediationUsed)
+	}
+}
+
+// TestSettle_ErrorRemediation verifies that command errors trigger
+// the remediation loop (just like failures) and exhaust all attempts.
+func TestSettle_ErrorRemediation(t *testing.T) {
+	dir := t.TempDir()
+
+	env := &envelope.CognitiveTaskEnvelope{
+		EnvelopeID:   "contract-error",
+		EnvelopeHash: "hash-error",
+		Territory: envelope.Territory{
+			WorkspacePath: dir,
+		},
+		Assertions: []envelope.Assertion{
+			{
+				ID:   "bad-command",
+				Type: envelope.AssertionCommandExitCode,
+				Params: envelope.AssertionParams{
+					Command:          "/nonexistent-binary-xyz-123",
+					ExpectedExitCode: 0,
+				},
+			},
+		},
+	}
+
+	db, _ := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
+	cs := receipt.NewChainStore(db)
+	cs.InitSchema(context.Background())
+	ev := NewEvaluator(dir)
+	signer, _ := signing.GenerateSigner("agent-b")
+	eng, _ := NewEngine(EngineConfig{
+		Evaluator:       ev,
+		ChainStore:     cs,
+		ExecutorSigner: signer,
+		RemediationMax: 2,
+	})
+	defer db.Close()
+
+	out, err := eng.Settle(context.Background(), SettlementInput{
+		Envelope:        env,
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+	})
+	if err != nil {
+		t.Fatalf("Settle error: %v", err)
+	}
+
+	if out.Receipt.Verdict != receipt.VerdictFailed {
+		t.Errorf("Verdict = %v, want SETTLEMENT_FAILED", out.Receipt.Verdict)
+	}
+	// Errors trigger remediation just like failures.
+	if out.RemediationUsed != 2 {
+		t.Errorf("RemediationUsed = %d, want 2 (errors trigger remediation)", out.RemediationUsed)
+	}
+}
+
+// TestSettle_AllAssertionsFail verifies that when multiple assertions fail,
+// the verdict is FAILED and all results are recorded.
+func TestSettle_AllAssertionsFail(t *testing.T) {
+	dir := t.TempDir()
+
+	env := &envelope.CognitiveTaskEnvelope{
+		EnvelopeID:   "contract-multi-fail",
+		EnvelopeHash: "hash-multi",
+		Territory: envelope.Territory{
+			WorkspacePath: dir,
+		},
+		Assertions: []envelope.Assertion{
+			{
+				ID:   "fail-1",
+				Type: envelope.AssertionCommandExitCode,
+				Params: envelope.AssertionParams{
+					Command:          "sh -c 'exit 1'",
+					ExpectedExitCode: 0,
+				},
+			},
+			{
+				ID:   "fail-2",
+				Type: envelope.AssertionCommandExitCode,
+				Params: envelope.AssertionParams{
+					Command:          "sh -c 'exit 2'",
+					ExpectedExitCode: 0,
+				},
+			},
+		},
+	}
+
+	db, _ := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
+	cs := receipt.NewChainStore(db)
+	cs.InitSchema(context.Background())
+	ev := NewEvaluator(dir)
+	signer, _ := signing.GenerateSigner("agent-b")
+	eng, _ := NewEngine(EngineConfig{
+		Evaluator:       ev,
+		ChainStore:     cs,
+		ExecutorSigner: signer,
+	})
+	defer db.Close()
+
+	out, err := eng.Settle(context.Background(), SettlementInput{
+		Envelope:        env,
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+	})
+	if err != nil {
+		t.Fatalf("Settle error: %v", err)
+	}
+
+	if out.Receipt.Verdict != receipt.VerdictFailed {
+		t.Errorf("Verdict = %v, want SETTLEMENT_FAILED", out.Receipt.Verdict)
+	}
+	if len(out.Receipt.Assertions) != 2 {
+		t.Fatalf("Assertions length = %d, want 2", len(out.Receipt.Assertions))
+	}
+	for i, a := range out.Receipt.Assertions {
+		if a.Result != receipt.ResultFail {
+			t.Errorf("Assertions[%d] result = %v, want FAIL", i, a.Result)
+		}
+	}
+}
+
+// TestSettle_MixedResults verifies that when some assertions pass and some
+// fail, the overall verdict is FAILED.
+func TestSettle_MixedResults(t *testing.T) {
+	dir := t.TempDir()
+
+	env := &envelope.CognitiveTaskEnvelope{
+		EnvelopeID:   "contract-mixed",
+		EnvelopeHash: "hash-mixed",
+		Territory: envelope.Territory{
+			WorkspacePath: dir,
+		},
+		Assertions: []envelope.Assertion{
+			{
+				ID:   "pass-test",
+				Type: envelope.AssertionCommandExitCode,
+				Params: envelope.AssertionParams{
+					Command:          "true",
+					ExpectedExitCode: 0,
+				},
+			},
+			{
+				ID:   "fail-test",
+				Type: envelope.AssertionCommandExitCode,
+				Params: envelope.AssertionParams{
+					Command:          "sh -c 'exit 3'",
+					ExpectedExitCode: 0,
+				},
+			},
+		},
+	}
+
+	db, _ := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
+	cs := receipt.NewChainStore(db)
+	cs.InitSchema(context.Background())
+	ev := NewEvaluator(dir)
+	signer, _ := signing.GenerateSigner("agent-b")
+	eng, _ := NewEngine(EngineConfig{
+		Evaluator:       ev,
+		ChainStore:     cs,
+		ExecutorSigner: signer,
+	})
+	defer db.Close()
+
+	out, err := eng.Settle(context.Background(), SettlementInput{
+		Envelope:        env,
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+	})
+	if err != nil {
+		t.Fatalf("Settle error: %v", err)
+	}
+
+	if out.Receipt.Verdict != receipt.VerdictFailed {
+		t.Errorf("Verdict = %v, want SETTLEMENT_FAILED", out.Receipt.Verdict)
+	}
+	if len(out.Receipt.Assertions) != 2 {
+		t.Fatalf("Assertions length = %d, want 2", len(out.Receipt.Assertions))
+	}
+	// First passes, second fails.
+	if out.Receipt.Assertions[0].Result != receipt.ResultPass {
+		t.Errorf("Assertions[0] = %v, want PASS", out.Receipt.Assertions[0].Result)
+	}
+	if out.Receipt.Assertions[1].Result != receipt.ResultFail {
+		t.Errorf("Assertions[1] = %v, want FAIL", out.Receipt.Assertions[1].Result)
 	}
 }
 

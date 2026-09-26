@@ -34,8 +34,9 @@ type Evidence struct {
 	Stdout     string `json:"stdout,omitempty"`
 	Stderr     string `json:"stderr,omitempty"`
 	// For file assertions.
-	ActualHash string `json:"actual_hash,omitempty"`
-	FileExists bool   `json:"file_exists,omitempty"`
+	ActualHash   string `json:"actual_hash,omitempty"`
+	ExpectedHash string `json:"expected_hash,omitempty"`
+	FileExists  bool   `json:"file_exists,omitempty"`
 	// For git assertions.
 	GitStatus string `json:"git_status,omitempty"`
 	// For port assertions.
@@ -176,6 +177,7 @@ func (e *Evaluator) evalFileHashEquals(ctx context.Context, result *AssertionRes
 	hash := sha256.Sum256(data)
 	actualHash := hex.EncodeToString(hash[:])
 	result.Evidence.ActualHash = actualHash
+	result.Evidence.ExpectedHash = expectedHash
 	result.Evidence.FileExists = true
 
 	if !strings.EqualFold(actualHash, expectedHash) {
