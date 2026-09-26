@@ -66,20 +66,64 @@ func (cs *ChainStore) InitSchema(ctx context.Context) error {
 // SaveReceipt persists a receipt to the chain.
 // If this is not the first receipt, it verifies that previous_receipt_hash
 // equals SHA-256(executor_signature of the previous receipt).
+//
+// Concurrent safety: uses a SQLite transaction to atomize read-validate-insert.
+// If the chain was modified between read and insert (concurrent save),
+// detects the broken chain and retries up to maxRetries times.
+const maxSaveRetries = 3
+
 func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) error {
 	if r == nil {
 		return ErrInvalidReceipt
 	}
 
-	// Verify chain continuity for non-first receipts.
+	var lastErr error
+	for attempt := 0; attempt < maxSaveRetries; attempt++ {
+		err := cs.saveReceiptOnce(ctx, r)
+		if err == nil {
+			return nil
+		}
+		// Only retry on chain-broken (concurrent modification detected).
+		if !errors.Is(err, ErrChainBroken) {
+			return err
+		}
+		lastErr = err
+		// Brief pause before retry to let competing transaction settle.
+		if attempt < maxSaveRetries-1 {
+			time.Sleep(time.Millisecond * 10 * time.Duration(attempt+1))
+		}
+	}
+	return fmt.Errorf("save receipt after %d retries: %w", maxSaveRetries, lastErr)
+}
+
+// saveReceiptOnce executes one read-validate-insert attempt inside a transaction.
+func (cs *ChainStore) saveReceiptOnce(ctx context.Context, r *SettlementReceipt) error {
+	// Serialize the full receipt for the data column.
+	data, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("marshal receipt: %w", err)
+	}
+
+	// Use a transaction to atomize read-validate-insert.
+	tx, err := cs.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Validate chain continuity within the transaction.
 	if r.PreviousReceiptHash != "" {
-		prevSig, err := cs.lastExecutorSignatureRaw(ctx, r.EmitterAgentID, r.ExecutorAgentID)
-		if err != nil && !errors.Is(err, ErrReceiptNotFound) {
+		var prevSig string
+		err := tx.QueryRowContext(ctx,
+			`SELECT executor_signature FROM receipts
+			 WHERE emitter_agent_id = ? AND executor_agent_id = ?
+			 ORDER BY executor_signed_at DESC LIMIT 1`,
+			r.EmitterAgentID, r.ExecutorAgentID).Scan(&prevSig)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("get previous signature: %w", err)
 		}
 
 		if prevSig != "" {
-			// Compute SHA-256 of the previous executor signature (as base64url bytes).
 			h := sha256.Sum256([]byte(prevSig))
 			hash := hex.EncodeToString(h[:])
 			if hash != r.PreviousReceiptHash {
@@ -87,12 +131,6 @@ func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) err
 					ErrChainBroken, hash, r.PreviousReceiptHash)
 			}
 		}
-	}
-
-	// Serialize the full receipt for the data column.
-	data, err := json.Marshal(r)
-	if err != nil {
-		return fmt.Errorf("marshal receipt: %w", err)
 	}
 
 	query := `
@@ -110,7 +148,7 @@ func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) err
 		acceptanceAt = &s
 	}
 
-	_, err = cs.db.ExecContext(ctx, query,
+	_, err = tx.ExecContext(ctx, query,
 		r.ReceiptID, r.ContractID, r.EnvelopeHash,
 		r.EmitterAgentID, r.ExecutorAgentID, string(r.Verdict),
 		nullable(r.PreviousReceiptHash), r.ExecutorSignature,
@@ -121,7 +159,11 @@ func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) err
 		nullable(r.DisputeReason),
 		string(data),
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("insert receipt: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 // nullable returns a pointer to the string, or nil if empty.

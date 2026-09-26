@@ -55,12 +55,13 @@ func TestWU13_FanOutOneToThree(t *testing.T) {
 
 	// 3 concurrent legs: agent-a → b, agent-a → c, agent-a → (re-use b for 3rd)
 	executors := []struct {
-		id    string
+		execID string // ExecutorAgentID in the envelope
+		container string // Docker container name for exec commands
 		client *agent.HTTPClient
 	}{
-		{"agent-b", bClient},
-		{"agent-c", cClient},
-		{"agent-b-again", bClient}, // 3rd leg to B, creates second receipt on B
+		{"agent-b", "agent-b", bClient},
+		{"agent-c", "agent-c", cClient},
+		{"agent-b", "agent-b", bClient}, // 3rd leg to B, creates second receipt on B
 	}
 
 	results := make([]legResult, len(executors))
@@ -68,13 +69,14 @@ func TestWU13_FanOutOneToThree(t *testing.T) {
 	for i, exec := range executors {
 		wg.Add(1)
 		go func(idx int, e struct {
-			id    string
-			client *agent.HTTPClient
+			execID   string
+			container string
+			client   *agent.HTTPClient
 		}) {
 			defer wg.Done()
-			rec, err := fanDispatchLeg(ctx, aClient, e.client, aSigner, e.id,
+			rec, err := fanDispatchLeg(ctx, aClient, e.client, aSigner, e.execID, e.container,
 				fmt.Sprintf("wu13-file-%d", idx))
-			results[idx] = legResult{executorID: e.id, receipt: rec, err: err}
+			results[idx] = legResult{executorID: e.execID, receipt: rec, err: err}
 		}(i, exec)
 	}
 	wg.Wait()
@@ -148,8 +150,9 @@ func TestWU13_FanOutOneToThree(t *testing.T) {
 }
 
 // fanDispatchLeg runs one leg of the fan-out: create file → sign envelope → submit → settle.
+// executorAgentID is the agent ID in the envelope; containerName is the Docker container name.
 func fanDispatchLeg(ctx context.Context, aClient, executorClient *agent.HTTPClient,
-	aSigner *signing.BasicSigner, executorID, fileName string) (*receipt.SettlementReceipt, error) {
+	aSigner *signing.BasicSigner, executorAgentID, containerName, fileName string) (*receipt.SettlementReceipt, error) {
 
 	workspace := "/srv/workspace"
 	filePath := filepath.Join(workspace, fileName)
@@ -168,7 +171,7 @@ func fanDispatchLeg(ctx context.Context, aClient, executorClient *agent.HTTPClie
 	}
 
 	// Get baseline hash.
-	cmd := exec.Command("docker", "exec", executorID, "sh", "-c",
+	cmd := exec.Command("docker", "exec", containerName, "sh", "-c",
 		fmt.Sprintf("sha256sum %s | cut -d' ' -f1", filePath))
 	out, err := cmd.Output()
 	if err != nil {
@@ -180,7 +183,7 @@ func fanDispatchLeg(ctx context.Context, aClient, executorClient *agent.HTTPClie
 	env := &envelope.CognitiveTaskEnvelope{
 		EnvelopeID:      newUUIDv7(),
 		EmitterAgentID:  "agent-a",
-		ExecutorAgentID: executorID,
+		ExecutorAgentID: executorAgentID,
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
 			Branch:       "main",
