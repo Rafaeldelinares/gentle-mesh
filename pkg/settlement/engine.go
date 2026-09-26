@@ -79,12 +79,8 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 		return nil, errors.New("emitter agent ID is required")
 	}
 
-	// 1. Get previous receipt for chain linkage.
-	lastReceipt, _ := eng.chainStore.GetLastReceipt(ctx, in.EmitterAgentID, in.ExecutorAgentID)
-	var prevHash string
-	if lastReceipt != nil {
-		prevHash = lastReceipt.ExecutorSignature
-	}
+	// 1. prev_hash is computed inside ChainStore.SaveReceipt (under mutex) to ensure
+	// correct chain linkage even when concurrent Settle() calls race.
 
 	// 2. Convert envelope assertions to settlement assertions.
 	settAssertions := eng.convertAssertions(in.Envelope.Assertions)
@@ -101,18 +97,18 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 		verdict, remediationUsed, results = eng.runRemediation(ctx, in, failedCount)
 	}
 
-	// 6. Build receipt.
+	// 6. Build receipt. Leave PreviousReceiptHash empty; SaveReceipt computes it
+	// atomically under mutex to ensure correct chain linkage under concurrent load.
 	r := &receipt.SettlementReceipt{
-		ReceiptID:            generateReceiptID(),
-		ContractID:           in.Envelope.EnvelopeID,
-		EnvelopeHash:         in.Envelope.EnvelopeHash,
-		EmitterAgentID:       in.EmitterAgentID,
-		ExecutorAgentID:      in.ExecutorAgentID,
-		Verdict:              verdict,
-		PreviousReceiptHash:   computePrevHash(prevHash),
-		Territory:            eng.convertTerritory(in.Envelope.Territory),
-		Assertions:           eng.convertResults(results),
-		ExecutorSignedAt:     time.Time{},
+		ReceiptID:        generateReceiptID(),
+		ContractID:       in.Envelope.EnvelopeID,
+		EnvelopeHash:     in.Envelope.EnvelopeHash,
+		EmitterAgentID:   in.EmitterAgentID,
+		ExecutorAgentID:  in.ExecutorAgentID,
+		Verdict:          verdict,
+		Territory:        eng.convertTerritory(in.Envelope.Territory),
+		Assertions:       eng.convertResults(results),
+		ExecutorSignedAt: time.Time{},
 	}
 
 	// 7. Sign.
@@ -282,15 +278,6 @@ func (eng *Engine) convertTerritory(t envelope.Territory) receipt.Territory {
 		Branch:       t.Branch,
 		WorkspacePath: t.WorkspacePath,
 	}
-}
-
-// computePrevHash returns SHA-256(prevExecutorSignature) or empty string.
-func computePrevHash(prevSig string) string {
-	if prevSig == "" {
-		return ""
-	}
-	h := sha256.Sum256([]byte(prevSig))
-	return hex.EncodeToString(h[:])
 }
 
 // generateReceiptID generates a unique receipt ID using timestamp + hash.
