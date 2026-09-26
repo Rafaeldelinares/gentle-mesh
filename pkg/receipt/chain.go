@@ -2,7 +2,9 @@ package receipt
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,10 +80,8 @@ func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) err
 
 		if prevSig != "" {
 			// Compute SHA-256 of the previous executor signature (as base64url bytes).
-			hash, err := jcs.HashHex([]byte(prevSig))
-			if err != nil {
-				return fmt.Errorf("compute previous hash: %w", err)
-			}
+			h := sha256.Sum256([]byte(prevSig))
+			hash := hex.EncodeToString(h[:])
 			if hash != r.PreviousReceiptHash {
 				return fmt.Errorf("%w: expected %s, got %s",
 					ErrChainBroken, hash, r.PreviousReceiptHash)
@@ -235,7 +235,8 @@ func (cs *ChainStore) VerifyChain(
 			}
 		} else {
 			prevSig := chain[i-1].ExecutorSignature
-			hash, _ := jcs.HashHex([]byte(prevSig))
+			h := sha256.Sum256([]byte(prevSig))
+			hash := hex.EncodeToString(h[:])
 			result.PreviousHashValid = (hash == r.PreviousReceiptHash)
 			if !result.PreviousHashValid {
 				result.Error = fmt.Sprintf("chain broken: expected SHA-256(prev_sig)=%s, got %s",

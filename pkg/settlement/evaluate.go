@@ -28,13 +28,14 @@ const (
 
 // Evidence captures the observable output of an assertion.
 type Evidence struct {
-	// For file assertions.
-	ActualHash string `json:"actual_hash,omitempty"`
-	FileExists bool   `json:"file_exists,omitempty"`
 	// For command assertions.
+	Command   string `json:"command,omitempty"`
 	ExitCode   int    `json:"exit_code,omitempty"`
 	Stdout     string `json:"stdout,omitempty"`
 	Stderr     string `json:"stderr,omitempty"`
+	// For file assertions.
+	ActualHash string `json:"actual_hash,omitempty"`
+	FileExists bool   `json:"file_exists,omitempty"`
 	// For git assertions.
 	GitStatus string `json:"git_status,omitempty"`
 	// For port assertions.
@@ -196,6 +197,7 @@ func (e *Evaluator) evalCommandExitCode(ctx context.Context, result *AssertionRe
 	}
 
 	exitCode, stdout, stderr, err := e.runCommand(ctx, cmdStr)
+	result.Evidence.Command = cmdStr
 	result.Evidence.ExitCode = exitCode
 	result.Evidence.Stdout = truncateOutput(stdout)
 	result.Evidence.Stderr = truncateOutput(stderr)
@@ -230,6 +232,7 @@ func (e *Evaluator) evalCommandOutputContains(ctx context.Context, result *Asser
 	contains := fmt.Sprintf("%v", a.Params["contains"])
 
 	exitCode, stdout, stderr, err := e.runCommand(ctx, cmdStr)
+	result.Evidence.Command = cmdStr
 	result.Evidence.ExitCode = exitCode
 	result.Evidence.Stdout = truncateOutput(stdout)
 	result.Evidence.Stderr = truncateOutput(stderr)
@@ -306,6 +309,7 @@ func (e *Evaluator) evalNoRegression(ctx context.Context, result *AssertionResul
 	cmdStr := fmt.Sprintf("%v", a.Params["command"])
 
 	exitCode, stdout, stderr, err := e.runCommand(ctx, cmdStr)
+	result.Evidence.Command = cmdStr
 	result.Evidence.ExitCode = exitCode
 	result.Evidence.Stdout = truncateOutput(stdout)
 	result.Evidence.Stderr = truncateOutput(stderr)

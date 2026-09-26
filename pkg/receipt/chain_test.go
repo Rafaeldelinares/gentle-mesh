@@ -2,12 +2,13 @@ package receipt
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
 	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
 
 	_ "modernc.org/sqlite"
@@ -91,7 +92,8 @@ func TestSaveReceipt_ChainLink(t *testing.T) {
 	}
 
 	// Compute chain link for second receipt.
-	hash2, _ := jcs.HashHex([]byte(r1.ExecutorSignature))
+	hash2Raw := sha256.Sum256([]byte(r1.ExecutorSignature))
+	hash2 := hex.EncodeToString(hash2Raw[:])
 
 	// Second receipt (with previous hash).
 	r2 := validReceipt()
@@ -165,8 +167,8 @@ func TestGetChain_Order(t *testing.T) {
 		r.ReceiptID = "receipt-00" + string(rune('0'+i))
 		if i > 1 {
 			prev, _ := cs.GetLastReceipt(context.Background(), r.EmitterAgentID, r.ExecutorAgentID)
-			h, _ := jcs.HashHex([]byte(prev.ExecutorSignature))
-			r.PreviousReceiptHash = h
+			h := sha256.Sum256([]byte(prev.ExecutorSignature))
+			r.PreviousReceiptHash = hex.EncodeToString(h[:])
 		} else {
 			r.PreviousReceiptHash = ""
 		}
@@ -216,8 +218,8 @@ func TestGetLastReceipt(t *testing.T) {
 	r2 := validReceipt()
 	r2.ReceiptID = "second"
 	r2.ContractID = "contract-second"
-	h, _ := jcs.HashHex([]byte(r1.ExecutorSignature))
-	r2.PreviousReceiptHash = h
+	h := sha256.Sum256([]byte(r1.ExecutorSignature))
+	r2.PreviousReceiptHash = hex.EncodeToString(h[:])
 	cs.SaveReceipt(context.Background(), r2)
 
 	last, err := cs.GetLastReceipt(context.Background(), "agent-a", "agent-b")
@@ -353,11 +355,11 @@ func TestVerifyChain_Valid(t *testing.T) {
 	signReceipt(r1, executor)
 	cs.SaveReceipt(context.Background(), r1)
 
-	h2, _ := jcs.HashHex([]byte(r1.ExecutorSignature))
+	h2 := sha256.Sum256([]byte(r1.ExecutorSignature))
 	r2 := validReceipt()
 	r2.ReceiptID = "vr-002"
 	r2.ContractID = "contract-vr-002"
-	r2.PreviousReceiptHash = h2
+	r2.PreviousReceiptHash = hex.EncodeToString(h2[:])
 	signReceipt(r2, executor)
 	cs.SaveReceipt(context.Background(), r2)
 
