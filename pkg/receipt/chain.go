@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
@@ -24,8 +25,13 @@ var (
 
 // ChainStore manages the receipt chain for an agent pair.
 // It handles persistence and cryptographic chain verification.
+//
+// Concurrent safety: SaveReceipt is serialized with a mutex so that
+// concurrent goroutines never compute the same prev_hash. The mutex
+// is per ChainStore instance; multiple instances can be used in parallel.
 type ChainStore struct {
 	db *sql.DB
+	mu sync.Mutex
 }
 
 // NewChainStore creates a ChainStore backed by the given SQLite database.
@@ -75,6 +81,10 @@ func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) err
 	if r == nil {
 		return ErrInvalidReceipt
 	}
+	// Serialize writes so that concurrent goroutines compute distinct prev_hash values.
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
 	var lastErr error
 	for attempt := 0; attempt < maxSaveRetries; attempt++ {
 		err := cs.saveReceiptOnce(ctx, r)
