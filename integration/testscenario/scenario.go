@@ -24,20 +24,45 @@ import (
 
 // Scenario orchestrates the RFC-002 integration test.
 type Scenario struct {
-	aClient  *agent.HTTPClient // Agent A (emitter)
-	bClient  *agent.HTTPClient // Agent B (executor)
-	aSigner  *signing.BasicSigner
-	bSigner  *signing.BasicSigner
+	aClient   *agent.HTTPClient // Agent A (emitter)
+	bClient   *agent.HTTPClient // Agent B (executor)
+	aSigner   *signing.BasicSigner
+	bSigner   *signing.BasicSigner
 	workspace string
 }
 
-// NewScenario creates a new test scenario with HTTP clients.
-func NewScenario(aURL, bURL, workspace string) *Scenario {
-	return &Scenario{
-		aClient:  agent.NewHTTPClient(aURL),
-		bClient:  agent.NewHTTPClient(bURL),
-		workspace: workspace,
+// NewScenario creates a new test scenario with TLS-aware HTTPS clients.
+// It uses the provided CA certificate to verify server certificates.
+// Pass insecure=true only for local development with self-signed certs.
+func NewScenarioTLS(aURL, bURL, workspace, caCertPath string, insecure bool) (*Scenario, error) {
+	opts := []agent.TLSClientOption{}
+	if caCertPath != "" {
+		opts = append(opts, agent.WithCACert(caCertPath))
 	}
+	if insecure {
+		opts = append(opts, agent.WithInsecureSkipVerify())
+		log.Printf("[WARN] TLS verification DISABLED — development only")
+	}
+	aClient, err := agent.NewHTTPClientTLS(aURL, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("create TLS client for agent-a: %w", err)
+	}
+	bClient, err := agent.NewHTTPClientTLS(bURL, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("create TLS client for agent-b: %w", err)
+	}
+	return &Scenario{
+		aClient:   aClient,
+		bClient:   bClient,
+		workspace: workspace,
+	}, nil
+}
+
+// NewScenario creates a new test scenario with default HTTPS clients.
+// Deprecated: use NewScenarioTLS for explicit TLS configuration.
+func NewScenario(aURL, bURL, workspace string) *Scenario {
+	s, _ := NewScenarioTLS(aURL, bURL, workspace, "", false)
+	return s
 }
 
 // Run executes the full integration test scenario over HTTP.

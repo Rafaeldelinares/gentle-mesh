@@ -64,12 +64,21 @@ func runServe(args []string) {
 	evalTimeout := fs.Duration("eval-timeout", 30*time.Second, "Evaluation timeout")
 	maxRemed := fs.Int("max-remediations", 1, "Max remediation attempts")
 
+	// TLS flags.
+	tlsCert := fs.String("tls-cert", "", "TLS certificate file (enables HTTPS)")
+	tlsKey := fs.String("tls-key", "", "TLS private key file")
+	clientCA := fs.String("client-ca", "", "Client CA file for mTLS (optional)")
+
 	if err := fs.Parse(args); err != nil {
 		log.Fatal(err)
 	}
 
 	if *agentID == "" {
 		log.Fatal("--agent-id is required")
+	}
+
+	if (*tlsCert != "") != (*tlsKey != "") {
+		log.Fatal("--tls-cert and --tls-key must both be set or both be empty")
 	}
 
 	cfg := agent.Config{
@@ -79,6 +88,9 @@ func runServe(args []string) {
 		WorkspaceDir: *workspace,
 		EvalTimeout: *evalTimeout,
 		MaxRemed:   *maxRemed,
+		TLSCertFile: *tlsCert,
+		TLSKeyFile:  *tlsKey,
+		ClientCAFile: *clientCA,
 	}
 
 	srv, err := agent.NewServer(cfg)
@@ -114,21 +126,24 @@ func runServe(args []string) {
 
 func runScenario(args []string) {
 	fs := flag.NewFlagSet("test-scenario", flag.ContinueOnError)
-	aURL := fs.String("agent-a", "http://agent-a:8080", "Agent A URL")
-	bURL := fs.String("agent-b", "http://agent-b:8080", "Agent B URL")
+	aURL := fs.String("agent-a", "https://agent-a:8443", "Agent A URL (default: https://agent-a:8443)")
+	bURL := fs.String("agent-b", "https://agent-b:8443", "Agent B URL (default: https://agent-b:8443)")
 	workspace := fs.String("workspace", "/srv/workspace", "Workspace directory")
+	caCert := fs.String("ca-cert", "/certs/ca.crt", "Root CA certificate for TLS verification")
+	insecure := fs.Bool("insecure", false, "Skip TLS certificate verification (development only)")
 
 	if err := fs.Parse(args); err != nil {
 		log.Fatal(err)
 	}
 
-	// If both URLs are empty, run in-process.
-	// Otherwise, run over HTTP against the specified agents.
 	if *aURL == "" && *bURL == "" {
 		log.Fatal("either --agent-a and --agent-b are required, or run in-process")
 	}
 
-	scenario := testscenario.NewScenario(*aURL, *bURL, *workspace)
+	scenario, err := testscenario.NewScenarioTLS(*aURL, *bURL, *workspace, *caCert, *insecure)
+	if err != nil {
+		log.Fatalf("create scenario: %v", err)
+	}
 	if err := scenario.Run(context.Background()); err != nil {
 		log.Fatalf("scenario failed: %v", err)
 	}

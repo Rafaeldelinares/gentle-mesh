@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 go build \
     ./cmd/test-harness
 
 # ─────────────────────────────────────────────────────────────────
-// Runtime stage: minimal Alpine image with the binary.
+// Runtime stage: minimal Alpine image with the binary and TLS certs.
 // ─────────────────────────────────────────────────────────────────
 FROM --platform=linux/amd64 alpine:3.19 AS runtime
 
@@ -24,21 +24,27 @@ RUN apk add --no-cache \
     git \
     bash \
     ca-certificates \
+    openssl \
     python3 \
     py3-pip \
     && pip install --no-cache-dir pytest --break-system-packages \
     && rm -rf /var/cache/apk/* /tmp/pip-*
 
-# Create workspace directory.
-RUN mkdir -p /srv/workspace && chown -R nobody:nobody /srv/workspace
+# Create directories.
+RUN mkdir -p /srv/workspace /data /certs && \
+    chown -R nobody:nobody /srv/workspace /data /certs
 WORKDIR /srv/workspace
 
 # Copy the compiled binary from the builder stage.
 COPY --from=builder /agent-binary /usr/local/bin/agent
 
+# Copy TLS certificate generation script (for development bootstrapping).
+COPY integration/certs/gen-certs.sh /usr/local/bin/gen-certs.sh
+RUN chmod +x /usr/local/bin/gen-certs.sh
+
 # Non-root user for safety.
 USER nobody
 
-# Default command: run the agent server.
+# Default command: run the agent server with TLS.
 ENTRYPOINT ["/usr/local/bin/agent"]
-CMD ["serve", "--port", "8080"]
+CMD ["serve", "--port", "8443"]

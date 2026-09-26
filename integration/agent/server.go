@@ -4,6 +4,8 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -104,9 +106,93 @@ func NewServer(cfg Config) (*Server, error) {
 }
 
 // Run starts the HTTP server on the given port.
+// If TLSCertFile and TLSKeyFile are configured, it runs HTTPS.
 func (s *Server) Run(port int) error {
-	mux := http.NewServeMux()
+	if s.config.TLSCertFile != "" && s.config.TLSKeyFile != "" {
+		return s.runTLS(port)
+	}
+	return s.runHTTP(port)
+}
 
+// runHTTP starts a plain HTTP server.
+func (s *Server) runHTTP(port int) error {
+	mux := http.NewServeMux()
+	s.registerHandlers(mux)
+
+	s.httpServer = &http.Server{
+		Addr:         fmt.Sprintf(":%d", port),
+		Handler:      mux,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	log.Printf("[%s] HTTP server starting on :%d (role=%s)", s.config.AgentID, port, s.config.Role)
+	return s.httpServer.ListenAndServe()
+}
+
+// runTLS starts a TLS/HTTPS server.
+// If ClientCAFile is set, it enables mutual TLS (mTLS).
+func (s *Server) runTLS(port int) error {
+	mux := http.NewServeMux()
+	s.registerHandlers(mux)
+
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		CurvePreferences: []tls.CurveID{
+			tls.CurveP256,
+			tls.X25519,
+		},
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		},
+	}
+
+	// Load server certificate.
+	tlsConfig.Certificates = make([]tls.Certificate, 1)
+	var err error
+	tlsConfig.Certificates[0], err = tls.LoadX509KeyPair(s.config.TLSCertFile, s.config.TLSKeyFile)
+	if err != nil {
+		return fmt.Errorf("load TLS certificate: %w", err)
+	}
+
+	// Load CA cert for mTLS client certificate verification.
+	if s.config.ClientCAFile != "" {
+		caPEM, err := os.ReadFile(s.config.ClientCAFile)
+		if err != nil {
+			return fmt.Errorf("read client CA: %w", err)
+		}
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caPEM) {
+			return fmt.Errorf("failed to parse client CA certificate")
+		}
+		tlsConfig.ClientCAs = caCertPool
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		log.Printf("[%s] mTLS enabled: client certificates required (CA=%s)",
+			s.config.AgentID, s.config.ClientCAFile)
+	}
+
+	s.httpServer = &http.Server{
+		Addr:         fmt.Sprintf(":%d", port),
+		Handler:      mux,
+		TLSConfig:   tlsConfig,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	log.Printf("[%s] HTTPS server starting on :%d (role=%s, cert=%s)",
+		s.config.AgentID, port, s.config.Role, s.config.TLSCertFile)
+	return s.httpServer.ListenAndServeTLS("", "") // certs come from TLSConfig
+}
+
+// registerHandlers registers all HTTP handlers on the given mux.
+func (s *Server) registerHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/status", s.handleStatus)
 
@@ -122,17 +208,6 @@ func (s *Server) Run(port int) error {
 	// Shared.
 	mux.HandleFunc("GET /receipts/", s.handleGetReceipt)
 	mux.HandleFunc("GET /chain", s.handleGetChain)
-
-	s.httpServer = &http.Server{
-		Addr:         fmt.Sprintf(":%d", port),
-		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 60 * time.Second,
-		IdleTimeout:  120 * time.Second,
-	}
-
-	log.Printf("[%s] Server starting on :%d (role=%s)", s.config.AgentID, port, s.config.Role)
-	return s.httpServer.ListenAndServe()
 }
 
 // Shutdown gracefully shuts down the server.

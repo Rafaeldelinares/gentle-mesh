@@ -18,13 +18,21 @@ const (
 
 // Config holds the runtime configuration for an agent instance.
 type Config struct {
-	AgentID      string
-	Role         Role
-	ChainDBPath  string
-	WorkspaceDir  string
-	EvalTimeout  time.Duration
-	MaxRemed     int
-	Signer       Signer // Ed25519 signing capability
+	AgentID     string
+	Role        Role
+	ChainDBPath string
+	WorkspaceDir string
+	EvalTimeout time.Duration
+	MaxRemed   int
+	Signer     Signer // Ed25519 signing capability
+
+	// TLS configuration. If CertFile and KeyFile are set, the server
+	// runs HTTPS instead of HTTP.
+	TLSCertFile string
+	TLSKeyFile  string
+	// ClientCAFile enables mutual TLS (mTLS). If set, the server requires
+	// a valid client certificate signed by this CA.
+	ClientCAFile string
 }
 
 // Signer abstracts Ed25519 signing for test harness flexibility.

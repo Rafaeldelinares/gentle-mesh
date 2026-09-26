@@ -4,10 +4,13 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -18,6 +21,7 @@ type HTTPClient struct {
 }
 
 // NewHTTPClient creates a new HTTP client for an agent at the given base URL.
+// The client does NOT verify server certificates (for development only).
 func NewHTTPClient(baseURL string) *HTTPClient {
 	return &HTTPClient{
 		baseURL: baseURL,
@@ -25,6 +29,68 @@ func NewHTTPClient(baseURL string) *HTTPClient {
 			Timeout: 60 * time.Second,
 		},
 	}
+}
+
+// TLSClientOption configures TLS settings for NewHTTPClientTLS.
+type TLSClientOption func(*tls.Config)
+
+// WithCACert adds a root CA certificate for server verification.
+// Use this in production or when using self-signed certificates.
+func WithCACert(caCertPath string) TLSClientOption {
+	return func(cfg *tls.Config) {
+		caPEM, err := os.ReadFile(caCertPath)
+		if err != nil {
+			return // Let caller handle the error at dial time
+		}
+		pool := x509.NewCertPool()
+		if pool.AppendCertsFromPEM(caPEM) {
+			cfg.RootCAs = pool
+		}
+	}
+}
+
+// WithClientCert adds a client certificate for mTLS.
+func WithClientCert(certFile, keyFile string) TLSClientOption {
+	return func(cfg *tls.Config) {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err == nil {
+			cfg.Certificates = []tls.Certificate{cert}
+		}
+	}
+}
+
+// WithInsecureSkipVerify disables server certificate verification.
+// WARNING: Use only for local development with self-signed certificates.
+// Never use in production.
+func WithInsecureSkipVerify() TLSClientOption {
+	return func(cfg *tls.Config) {
+		cfg.InsecureSkipVerify = true
+	}
+}
+
+// NewHTTPClientTLS creates an HTTPS client with TLS configuration.
+// Pass TLS options like WithCACert, WithClientCert, or WithInsecureSkipVerify.
+// In production, always use WithCACert to verify the server certificate.
+func NewHTTPClientTLS(baseURL string, opts ...TLSClientOption) (*HTTPClient, error) {
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+	for _, opt := range opts {
+		opt(tlsConfig)
+	}
+
+	transport := &http.Transport{
+		TLSClientConfig: tlsConfig,
+		Proxy:           http.ProxyFromEnvironment,
+	}
+
+	return &HTTPClient{
+		baseURL: baseURL,
+		client: &http.Client{
+			Timeout:   60 * time.Second,
+			Transport: transport,
+		},
+	}, nil
 }
 
 // BaseURL returns the agent's base URL.
