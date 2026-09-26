@@ -81,9 +81,23 @@ func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) err
 	if r == nil {
 		return ErrInvalidReceipt
 	}
-	// Serialize writes so that concurrent goroutines compute distinct prev_hash values.
+
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
+
+	// If prev_hash is empty, compute it from the last receipt inside the critical
+	// section. This ensures that concurrent goroutines each see the correct
+	// previous receipt and compute distinct prev_hash values.
+	if r.PreviousReceiptHash == "" {
+		last, err := cs.getLastReceiptUnlocked(ctx, r.EmitterAgentID, r.ExecutorAgentID)
+		if err != nil && !errors.Is(err, ErrReceiptNotFound) {
+			return fmt.Errorf("get last receipt: %w", err)
+		}
+		if last != nil {
+			h := sha256.Sum256([]byte(last.ExecutorSignature))
+			r.PreviousReceiptHash = hex.EncodeToString(h[:])
+		}
+	}
 
 	var lastErr error
 	for attempt := 0; attempt < maxSaveRetries; attempt++ {
@@ -97,6 +111,27 @@ func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) err
 		}
 	}
 	return fmt.Errorf("save receipt after %d attempts: %w", maxSaveRetries, lastErr)
+}
+
+// getLastReceiptUnlocked returns the last receipt for a pair. Caller must hold mu.
+func (cs *ChainStore) getLastReceiptUnlocked(ctx context.Context, emitterID, executorID string) (*SettlementReceipt, error) {
+	var data string
+	err := cs.db.QueryRowContext(ctx,
+		`SELECT data FROM receipts
+		 WHERE emitter_agent_id = ? AND executor_agent_id = ?
+		 ORDER BY executor_signed_at DESC LIMIT 1`,
+		emitterID, executorID).Scan(&data)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrReceiptNotFound
+		}
+		return nil, fmt.Errorf("query last receipt: %w", err)
+	}
+	var r SettlementReceipt
+	if err := json.Unmarshal([]byte(data), &r); err != nil {
+		return nil, fmt.Errorf("unmarshal receipt: %w", err)
+	}
+	return &r, nil
 }
 
 // saveReceiptOnce inserts a receipt inside a transaction (no prev_hash validation).
