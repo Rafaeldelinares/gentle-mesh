@@ -191,3 +191,25 @@ func VerifyEnvelopeHash(publicKey []byte, hashHex string, signatureB64 string) e
 func hexToBytes(hexStr string) ([]byte, error) {
 	return hex.DecodeString(hexStr)
 }
+
+// PublicKeyToHex encodes a public key as a hex string.
+func PublicKeyToHex(key ed25519.PublicKey) string {
+	return fmt.Sprintf("%x", key)
+}
+
+// HexToPublicKey decodes a hex-encoded public key.
+func HexToPublicKey(hexStr string) (ed25519.PublicKey, error) {
+	b, err := hexToBytes(hexStr)
+	if err != nil {
+		return nil, fmt.Errorf("hex decode: %w", err)
+	}
+	if len(b) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("public key: invalid size %d, want %d", len(b), ed25519.PublicKeySize)
+	}
+	return ed25519.PublicKey(b), nil
+}
+
+// Base64Encode encodes bytes to base64url (no padding).
+func Base64Encode(data []byte) string {
+	return base64.RawURLEncoding.EncodeToString(data)
+}
