@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1
+# Build stage: compile the Go binary with CGO disabled.
+FROM --platform=linux/amd64 golang:1.22-alpine AS builder
+
+WORKDIR /src
+
+# Copy go mod files first for better layer caching.
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source and build.
+COPY . .
+RUN CGO_ENABLED=0 go build \
+    -ldflags="-s -w" \
+    -o /agent-binary \
+    ./cmd/test-harness
+
+# ─────────────────────────────────────────────────────────────────
+// Runtime stage: minimal Alpine image with the binary.
+// ─────────────────────────────────────────────────────────────────
+FROM --platform=linux/amd64 alpine:3.19 AS runtime
+
+RUN apk add --no-cache \
+    git \
+    bash \
+    ca-certificates \
+    python3 \
+    py3-pip \
+    && pip install --no-cache-dir pytest --break-system-packages \
+    && rm -rf /var/cache/apk/* /tmp/pip-*
+
+# Create workspace directory.
+RUN mkdir -p /srv/workspace && chown -R nobody:nobody /srv/workspace
+WORKDIR /srv/workspace
+
+# Copy the compiled binary from the builder stage.
+COPY --from=builder /agent-binary /usr/local/bin/agent
+
+# Non-root user for safety.
+USER nobody
+
+# Default command: run the agent server.
+ENTRYPOINT ["/usr/local/bin/agent"]
+CMD ["serve", "--port", "8080"]

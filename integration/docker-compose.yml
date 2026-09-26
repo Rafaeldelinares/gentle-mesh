@@ -1,0 +1,113 @@
+# docker-compose.yml — Integration test environment for RFC-002
+# Usage: docker compose up --build
+#
+# Services:
+#   agent-a  — Emitter (A): creates and sends CognitiveTaskEnvelope
+#   agent-b  — Executor (B): receives, executes, settles
+#
+# Network: gentle-mesh-net (isolated bridge)
+#
+# Volumes:
+#   agent-b-workspace — persisted workspace with git repo and calculator.py
+#   agent-b-chain     — persisted SQLite receipt chain for B
+#   agent-a-chain     — persisted SQLite receipt chain for A (audit)
+#
+version: "3.9"
+
+networks:
+  gentle-mesh-net:
+    name: gentle-mesh-net
+    driver: bridge
+
+volumes:
+  agent-b-workspace:
+  agent-b-chain:
+  agent-a-chain:
+
+services:
+  # ─────────────────────────────────────────────────────────────────
+  # Agent A — Emitter
+  # Creates the CognitiveTaskEnvelope and sends it to B.
+  # ─────────────────────────────────────────────────────────────────
+  agent-a:
+    build:
+      context: ../..
+      dockerfile: integration/Dockerfile.agent
+    container_name: agent-a
+    hostname: agent-a
+    networks:
+      - gentle-mesh-net
+    volumes:
+      - agent-a-chain:/data
+    environment:
+      AGENT_ID: "agent-a"
+      AGENT_ROLE: "emitter"
+      CHAIN_DB_PATH: "/data/chain.db"
+      PEER_URL: "http://agent-b:8080"
+    command: >
+      serve --port 8080
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+
+  # ─────────────────────────────────────────────────────────────────
+  # Agent B — Executor
+  # Receives the envelope, executes the task, settles with assertions.
+  # ─────────────────────────────────────────────────────────────────
+  agent-b:
+    build:
+      context: ../..
+      dockerfile: integration/Dockerfile.agent
+    container_name: agent-b
+    hostname: agent-b
+    networks:
+      - gentle-mesh-net
+    volumes:
+      - agent-b-workspace:/srv/workspace
+      - agent-b-chain:/data
+    environment:
+      AGENT_ID: "agent-b"
+      AGENT_ROLE: "executor"
+      CHAIN_DB_PATH: "/data/chain.db"
+      WORKSPACE_DIR: "/srv/workspace"
+      EVAL_TIMEOUT: "30s"
+      MAX_REMEDIATIONS: "1"
+    command: >
+      serve --port 8080
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 3s
+
+  # ─────────────────────────────────────────────────────────────────
+  # Integration test runner
+  # Orchestrates the full scenario and validates results.
+  # ─────────────────────────────────────────────────────────────────
+  integration-test:
+    build:
+      context: ../..
+      dockerfile: integration/Dockerfile.agent
+    container_name: integration-test
+    hostname: integration-test
+    networks:
+      - gentle-mesh-net
+    depends_on:
+      agent-a:
+        condition: service_healthy
+      agent-b:
+        condition: service_healthy
+    volumes:
+      - agent-b-workspace:/srv/workspace
+      - agent-b-chain:/data/agent-b
+      - agent-a-chain:/data/agent-a
+    environment:
+      AGENT_A_URL: "http://agent-a:8080"
+      AGENT_B_URL: "http://agent-b:8080"
+      WORKSPACE_DIR: "/srv/workspace"
+    command: ["test-scenario"]
+    entrypoint: ["/usr/local/bin/agent"]
