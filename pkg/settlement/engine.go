@@ -2,6 +2,7 @@ package settlement
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -280,11 +281,18 @@ func (eng *Engine) convertTerritory(t envelope.Territory) receipt.Territory {
 	}
 }
 
-// generateReceiptID generates a unique receipt ID using timestamp + hash.
+// generateReceiptID generates a unique receipt ID using crypto/rand.
+// Uses 16 random bytes (128 bits) encoded as hex — safe for concurrent calls.
 func generateReceiptID() string {
-	ts := time.Now().UTC().UnixNano()
-	h := sha256.Sum256([]byte(fmt.Sprintf("%d-%x", ts, ts)))
-	return hex.EncodeToString(h[:16])
+	b := make([]byte, 16)
+	// crypto/rand.Read never fails in practice; in the extremely rare case it does,
+	// fall back to nanosecond timestamp to avoid blocking.
+	if _, err := rand.Read(b); err != nil {
+		ts := time.Now().UTC().UnixNano()
+		h := sha256.Sum256([]byte(fmt.Sprintf("%d-%x", ts, ts)))
+		return hex.EncodeToString(h[:16])
+	}
+	return hex.EncodeToString(b)
 }
 
 // VerifyReceipt verifies a receipt's executor signature.

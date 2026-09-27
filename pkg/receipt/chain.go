@@ -43,7 +43,7 @@ func NewChainStore(db *sql.DB) *ChainStore {
 func (cs *ChainStore) InitSchema(ctx context.Context) error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS receipts (
-		receipt_id             TEXT PRIMARY KEY,
+			receipt_id             TEXT NOT NULL,
 		contract_id            TEXT NOT NULL,
 		envelope_hash          TEXT NOT NULL,
 		emitter_agent_id       TEXT NOT NULL,
