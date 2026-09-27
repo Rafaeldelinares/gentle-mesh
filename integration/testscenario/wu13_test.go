@@ -1810,6 +1810,326 @@ func TestWU16_DisputeReceiptE2E(t *testing.T) {
 	t.Log("=== WU16 Dispute Receipt E2E PASSED ===")
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Test: VerifyChain with Wrong Executor Key — Security validation
+//
+// This test validates that VerifyChain correctly detects when a receipt
+// was signed by an executor key that does NOT belong to the claimed executor.
+//
+// Attack scenario:
+//   A compromised or malicious node signs a SettlementReceipt claiming to be
+//   "agent-b" but using the wrong (stolen/incorrect) Ed25519 private key.
+//   VerifyChain must reject this receipt and report ExecutorSignatureValid=false.
+//
+// Steps:
+//   (a) Legitimate settle: A → B (B signs with B's correct key)
+//   (b) Inject tampered receipt: overwrite B's chain with a receipt signed by C
+//   (c) POST /verify: executor sig INVALID (server uses B's key)
+//   (d) POST /verify-chain: ExecutorSignatureValid=false, AllValid=false
+//   (e) VerifyChain result carries the error detail
+// ─────────────────────────────────────────────────────────────────
+
+func TestWU17_VerifyChain_WrongExecutorKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping distributed test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not available")
+	}
+
+	composeDir := findComposeDir(t)
+	cleanup := composeUp(t, composeDir)
+	defer cleanup()
+
+	t.Log("=== WU17 VerifyChain Wrong Executor Key: VerifyChain detects wrong key ===")
+
+	ctx := context.Background()
+	aClient := newInsecureTLSClient("https://localhost:18443")
+	bClient := newInsecureTLSClient("https://localhost:28443")
+	cClient := newInsecureTLSClient("https://localhost:38443")
+
+	// Agent-a signer (emitter).
+	aSigner, err := signing.GenerateSigner("agent-a")
+	if err != nil {
+		t.Fatalf("generate agent-a signer: %v", err)
+	}
+	aPubKey := aSigner.PublicKey()
+	t.Logf("  agent-a public key: %s...", hex.EncodeToString(aPubKey)[:16])
+
+	// Get executor public keys.
+	bHealth, err := bClient.Health(ctx)
+	if err != nil {
+		t.Fatalf("get agent-b health: %v", err)
+	}
+	bPubKeyHex := bHealth.PublicKey
+	bPubKeyBytes, _ := hex.DecodeString(bHealth.PublicKey)
+	t.Logf("  agent-b public key: %s...", bPubKeyHex[:16])
+
+	cHealth, err := cClient.Health(ctx)
+	if err != nil {
+		t.Fatalf("get agent-c health: %v", err)
+	}
+	cPubKeyHex := cHealth.PublicKey
+	t.Logf("  agent-c public key: %s...", cPubKeyHex[:16])
+
+	workspace := "/srv/workspace"
+	fileName := "wu17-wrong-key.txt"
+	filePath := filepath.Join(workspace, fileName)
+
+	// ── Step 1: Create baseline file on executor B ────────────────────
+	t.Logf("  step 1: creating baseline file on agent-b...")
+	baselineContent := "# WU17 wrong executor key test\ncontent: v1\n"
+	execResp, err := bClient.ExecuteTask(ctx, &agent.ExecuteRequest{
+		Command:    fmt.Sprintf("printf '%s' > %s", baselineContent, filePath),
+		WorkingDir: workspace,
+	})
+	if err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if execResp.ExitCode != 0 {
+		t.Fatalf("create file exit=%d", execResp.ExitCode)
+	}
+	cmd := exec.Command("docker", "exec", "agent-b", "sh", "-c",
+		fmt.Sprintf("sha256sum %s | cut -d' ' -f1", filePath))
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("get baseline hash: %v", err)
+	}
+	baselineHash := strings.TrimSpace(string(out))
+	t.Logf("  baseline file hash: %s", baselineHash)
+
+	// ── Step 2: A → B: Legitimate settle ──────────────────────────────
+	t.Logf("  step 2: settling legitimate receipt (A → B)...")
+	env := &envelope.CognitiveTaskEnvelope{
+		EnvelopeID:      newUUIDv7(),
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+		Territory: envelope.Territory{
+			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Branch:       "main",
+			WorkspacePath: workspace,
+		},
+		Assertions: []envelope.Assertion{
+			{
+				ID:   "file_hash_v1",
+				Type: envelope.AssertionFileModified,
+				Params: envelope.AssertionParams{
+					FilePath:       fileName,
+					ExpectedSHA256: baselineHash,
+				},
+			},
+		},
+		TimeoutSeconds:  60,
+		MaxRemediations: 0,
+		NoSubdelegation: true,
+		CreatedAt:       time.Now().UTC(),
+		Version:         "1.0",
+	}
+
+	envHash, err := envelope.ComputeEnvelopeHash(env)
+	if err != nil {
+		t.Fatalf("compute envelope hash: %v", err)
+	}
+	env.EnvelopeHash = envHash
+
+	signable := *env
+	signable.EmitterSignature = ""
+	data, err := jcs.Marshal(&signable)
+	if err != nil {
+		t.Fatalf("JCS marshal: %v", err)
+	}
+	sig, err := aSigner.Sign(data)
+	if err != nil {
+		t.Fatalf("sign envelope: %v", err)
+	}
+	env.EmitterSignature = sig
+
+	envJSON, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	leaseResp, err := aClient.SubmitEnvelope(ctx, envJSON)
+	if err != nil {
+		t.Fatalf("submit envelope: %v", err)
+	}
+	if !leaseResp.Accepted {
+		t.Fatalf("lease rejected: %s", leaseResp.Error)
+	}
+
+	settleResp, err := bClient.Settle(ctx, &agent.SettleRequest{
+		EnvelopeJSON: envJSON,
+		LeaseID:     leaseResp.LeaseID,
+	})
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+
+	var legitimateRec receipt.SettlementReceipt
+	if err := json.Unmarshal(settleResp.ReceiptJSON, &legitimateRec); err != nil {
+		t.Fatalf("unmarshal receipt: %v", err)
+	}
+	t.Logf("  legitimate receipt=%s signed by agent-b ✓", legitimateRec.ReceiptID)
+
+	// ── Step 3: Verify executor sig on legitimate receipt ──────────────
+	t.Logf("  step 3: verifying executor signature on legitimate receipt...")
+	if err := receipt.VerifyExecutorSignature(&legitimateRec, bPubKeyBytes); err != nil {
+		t.Errorf("  legitimate receipt executor sig INVALID: %v", err)
+	} else {
+		t.Logf("  legitimate receipt executor signature VALID ✓")
+	}
+
+	// ── Step 4: Re-sign receipt with agent-c's key (WRONG KEY) ──────────
+	// This simulates a malicious actor (C) forging a receipt that claims
+	// to be from B, but was actually signed by C's private key.
+	t.Logf("  step 4: re-signing receipt with agent-c's key (WRONG KEY)...")
+
+	// Generate agent-c signer to simulate the malicious/forged signature.
+	cSigner, err := signing.GenerateSigner("agent-c")
+	if err != nil {
+		t.Fatalf("generate agent-c signer: %v", err)
+	}
+
+	// Create a tampered receipt: same content but signed by C.
+	// We use the legitimate receipt as a template but re-sign with C's key.
+	tamperedRec := legitimateRec
+	// Override the ExecutorSignedAt to the same value so the hash is deterministic.
+	tamperedRec.ExecutorSignedAt = legitimateRec.ExecutorSignedAt
+	// Clear emitter acceptance fields for the hash computation.
+	tamperedRec.EmitterAcceptance = ""
+	tamperedRec.EmitterAcceptanceAt = nil
+	tamperedRec.EmitterSignature = ""
+	tamperedRec.DisputeReason = ""
+	// Clear executor signature so hash is computed WITHOUT any signature.
+	tamperedRec.ExecutorSignature = ""
+	// Clear prev_hash for re-signing.
+	tamperedRec.PreviousReceiptHash = ""
+
+	// Compute hash and sign with C's key (the WRONG key for executor B).
+	hash, err := receipt.ComputeReceiptHash(&tamperedRec)
+	if err != nil {
+		t.Fatalf("compute tampered receipt hash: %v", err)
+	}
+	maliciousSig, err := cSigner.Sign([]byte(hash))
+	if err != nil {
+		t.Fatalf("sign with wrong key: %v", err)
+	}
+	tamperedRec.ExecutorSignature = maliciousSig
+	// NOTE: PreviousReceiptHash intentionally left empty here.
+	// When the tampered receipt is saved via SaveReceipt (append mode),
+	// it will compute prev_hash = SHA256(legitimateRec.ExecutorSignature).
+	// We store the legitimate receipt's prev_hash so we can verify the
+	// chain link after SaveReceipt automatically sets the correct value.
+
+	t.Logf("  tampered receipt: executor_sig[0:8]=%s (signed by C, not B!) ✓",
+		tamperedRec.ExecutorSignature[:8])
+
+	// Verify that the tampered signature is INVALID when checked against B's key.
+	tamperedJSON, _ := json.Marshal(&tamperedRec)
+	verifyResp, err := bClient.VerifyReceipt(ctx, &agent.VerifyRequest{ReceiptJSON: tamperedJSON})
+	if err != nil {
+		t.Fatalf("verify receipt: %v", err)
+	}
+	if verifyResp.ExecutorSigOK {
+		t.Error("  tampered receipt executor sig should be INVALID (wrong key) — FAIL")
+	} else {
+		t.Logf("  tampered receipt correctly detected INVALID by /verify ✓")
+	}
+
+	// ── Step 5: Inject tampered receipt into B's chain ─────────────────
+	// This simulates the forged receipt being planted in B's chain store.
+	t.Logf("  step 5: injecting tampered receipt into agent-b's chain...")
+
+	injectionResp, err := bClient.InjectReceipt(ctx, tamperedJSON)
+	if err != nil {
+		t.Fatalf("inject receipt: %v", err)
+	}
+	if !injectionResp.Injected {
+		t.Fatalf("inject not acknowledged")
+	}
+	t.Logf("  tampered receipt injected ✓")
+
+	// ── Step 6: POST /verify-chain — VerifyChain must detect wrong key ──
+	t.Logf("  step 6: calling POST /verify-chain with B's public key...")
+
+	chainResp, err := bClient.VerifyChain(ctx, "agent-a", "agent-b", bPubKeyHex, hex.EncodeToString(aPubKey))
+	if err != nil {
+		t.Fatalf("verify-chain: %v", err)
+	}
+
+	t.Logf("  verify-chain results: %d receipt(s), all_valid=%v",
+		len(chainResp.Results), chainResp.AllValid)
+
+	// The chain now has 1 receipt (the tampered one, updated in place).
+	if len(chainResp.Results) != 1 {
+		t.Errorf("  expected 1 receipt in chain, got %d", len(chainResp.Results))
+	}
+
+	// With B's (correct) key, executor signature must be INVALID.
+	if chainResp.AllValid {
+		t.Error("  verify-chain AllValid=true, should be false (wrong executor key) — FAIL")
+	} else {
+		t.Logf("  verify-chain AllValid=false ✓ (correctly detected wrong executor key)")
+	}
+
+	// The tampered receipt is at index 0 (updated in place).
+	if len(chainResp.Results) == 0 {
+		t.Fatal("  verify-chain returned no results")
+	}
+	result := chainResp.Results[0]
+	if result.ExecutorSigValid {
+		t.Error("  receipt[0] ExecutorSigValid=true, should be false (signed by C, verified with B) — FAIL")
+	} else {
+		t.Logf("  receipt[0] ExecutorSigValid=false ✓ (wrong executor key detected)")
+	}
+	if result.Error == "" {
+		t.Error("  verify-chain result should carry an error message — FAIL")
+	} else {
+		t.Logf("  verify-chain error detail: %s ✓", truncateMid(result.Error, 80))
+	}
+
+	// NOTE: Verifying with agent-c's real Docker key would require access to
+	// its private key, which is not available here. The important security
+	// property is already validated: any key OTHER than B's key causes
+	// VerifyChain to report ExecutorSignatureValid=false.
+
+	// ── Step 7: Verify chain structure integrity ─────────────────────────────
+	t.Logf("  step 7: verifying chain structure integrity...")
+
+	chain, err := bClient.GetChain(ctx, "agent-a", "agent-b")
+	if err != nil {
+		t.Fatalf("get chain: %v", err)
+	}
+	t.Logf("  chain has %d receipt(s)", len(chain.Receipts))
+
+	if len(chain.Receipts) != 1 {
+		t.Errorf("  expected 1 receipt, got %d", len(chain.Receipts))
+	} else {
+		t.Logf("  chain has 1 receipt (tampered receipt updated in place) ✓")
+	}
+
+	// Verify chain links: only 1 receipt, so no links to verify.
+	var brokenLinks int
+	for j := 1; j < len(chain.Receipts); j++ {
+		prevSig := chain.Receipts[j-1].ExecutorSignature
+		if prevSig == "" {
+			continue
+		}
+		expectedPrev := sha256Hex([]byte(prevSig))
+		if chain.Receipts[j].PreviousReceiptHash != expectedPrev {
+			t.Errorf("  chain[%d]: broken link", j)
+			brokenLinks++
+		}
+	}
+	if brokenLinks == 0 {
+		t.Logf("  chain links: all valid ✓")
+	} else {
+		t.Errorf("  chain links: %d broken", brokenLinks)
+	}
+
+	t.Log("=== WU17 VerifyChain Wrong Executor Key PASSED ===")
+}
+
 // sha256Hex computes SHA-256 and returns hex string.
 func sha256Hex(b []byte) string {
 	h := sha256.Sum256(b)

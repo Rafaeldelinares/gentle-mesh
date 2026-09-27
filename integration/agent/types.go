@@ -148,6 +148,43 @@ type DisputeResponse struct {
 	Error       string `json:"error,omitempty"`
 }
 
+// InjectReceiptRequest is the POST /inject-receipt request body.
+// Intended ONLY for testing and security validation.
+type InjectReceiptRequest struct {
+	ReceiptJSON []byte `json:"receipt_json"`
+}
+
+// InjectReceiptResponse is the POST /inject-receipt response body.
+type InjectReceiptResponse struct {
+	ReceiptID string `json:"receipt_id,omitempty"`
+	Injected  bool   `json:"injected"`
+	Error     string `json:"error,omitempty"`
+}
+
+// VerifyChainRequest is the POST /verify-chain request body.
+type VerifyChainRequest struct {
+	EmitterID   string `json:"emitter_id"`
+	ExecutorID  string `json:"executor_id"`
+	ExecutorKey string `json:"executor_key"` // hex-encoded Ed25519 public key
+	EmitterKey  string `json:"emitter_key"`  // hex-encoded Ed25519 public key
+}
+
+// VerifyChainResult is a single receipt verification result.
+type VerifyChainResult struct {
+	ReceiptID             string `json:"receipt_id"`
+	ExecutorSigValid      bool   `json:"executor_sig_valid"`
+	EmitterSigValid       bool   `json:"emitter_sig_valid"`
+	PreviousHashValid     bool   `json:"previous_hash_valid"`
+	Error                 string `json:"error,omitempty"`
+}
+
+// VerifyChainResponse is the POST /verify-chain response body.
+type VerifyChainResponse struct {
+	Results []VerifyChainResult `json:"results"`
+	AllValid bool              `json:"all_valid"`
+	Error    string            `json:"error,omitempty"`
+}
+
 // HealthResponse is the GET /health response body.
 type HealthResponse struct {
 	Status    string    `json:"status"`

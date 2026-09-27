@@ -257,6 +257,60 @@ func (cs *ChainStore) UpdateReceipt(ctx context.Context, r *SettlementReceipt) e
 	return nil
 }
 
+// InjectReceipt inserts or replaces a receipt in the chain store, bypassing the
+// normal settlement flow. This is intended ONLY for testing and security validation
+// scenarios (e.g., injecting a receipt with an invalid signature to verify that
+// VerifyChain correctly detects it).
+//
+// Unlike SaveReceipt, this uses INSERT OR REPLACE so it can overwrite an existing
+// receipt with the same receipt_id. The prev_hash must be provided explicitly;
+// it is NOT computed automatically.
+func (cs *ChainStore) InjectReceipt(ctx context.Context, r *SettlementReceipt) error {
+	if r == nil {
+		return ErrInvalidReceipt
+	}
+	data, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("marshal receipt: %w", err)
+	}
+
+	tx, err := cs.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	query := `
+	INSERT OR REPLACE INTO receipts (
+		receipt_id, contract_id, envelope_hash,
+		emitter_agent_id, executor_agent_id, verdict,
+		previous_receipt_hash, executor_signature, executor_signed_at,
+		emitter_acceptance, emitter_acceptance_at, emitter_signature,
+		dispute_reason, data
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+	var acceptanceAt *string
+	if r.EmitterAcceptanceAt != nil {
+		s := r.EmitterAcceptanceAt.Format(time.RFC3339)
+		acceptanceAt = &s
+	}
+	_, err = tx.ExecContext(ctx, query,
+		r.ReceiptID, r.ContractID, r.EnvelopeHash,
+		r.EmitterAgentID, r.ExecutorAgentID, string(r.Verdict),
+		nullable(r.PreviousReceiptHash), r.ExecutorSignature,
+		nullable(r.ExecutorSignedAt.Format(time.RFC3339Nano)),
+		nullable(string(r.EmitterAcceptance)),
+		acceptanceAt,
+		nullable(r.EmitterSignature),
+		nullable(r.DisputeReason),
+		string(data),
+	)
+	if err != nil {
+		return fmt.Errorf("inject receipt: %w", err)
+	}
+	return tx.Commit()
+}
+
 // GetLastReceipt returns the most recent receipt for an agent pair.
 func (cs *ChainStore) GetLastReceipt(ctx context.Context, emitterID, executorID string) (*SettlementReceipt, error) {
 	var data string

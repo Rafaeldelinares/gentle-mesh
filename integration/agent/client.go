@@ -331,6 +331,74 @@ func (c *HTTPClient) Accept(ctx context.Context, req *AcceptRequest) (*AcceptRes
 	return &result, nil
 }
 
+// InjectReceipt injects a receipt directly into the agent's chain store,
+// bypassing the normal settlement flow. Intended ONLY for testing and
+// security validation (e.g., injecting a receipt with the wrong executor
+// signature to verify that VerifyChain detects it).
+func (c *HTTPClient) InjectReceipt(ctx context.Context, receiptJSON []byte) (*InjectReceiptResponse, error) {
+	body, err := json.Marshal(&InjectReceiptRequest{ReceiptJSON: receiptJSON})
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/inject-receipt", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("do: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.readErrorWithBody(resp)
+	}
+
+	var result InjectReceiptResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	return &result, nil
+}
+
+// VerifyChain verifies the full receipt chain using ChainStore.VerifyChain.
+func (c *HTTPClient) VerifyChain(ctx context.Context, emitterID, executorID, executorKey, emitterKey string) (*VerifyChainResponse, error) {
+	body, err := json.Marshal(&VerifyChainRequest{
+		EmitterID:  emitterID,
+		ExecutorID: executorID,
+		ExecutorKey: executorKey,
+		EmitterKey:  emitterKey,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/verify-chain", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("do: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.readErrorWithBody(resp)
+	}
+
+	var result VerifyChainResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	return &result, nil
+}
+
 // Health checks agent health.
 func (c *HTTPClient) Health(ctx context.Context) (*HealthResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)

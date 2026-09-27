@@ -206,6 +206,8 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /settle", s.handleSettle)
 	mux.HandleFunc("POST /accept", s.handleAccept)
 	mux.HandleFunc("POST /dispute", s.handleDispute)
+	mux.HandleFunc("POST /inject-receipt", s.handleInjectReceipt)
+	mux.HandleFunc("POST /verify-chain", s.handleVerifyChain)
 
 	// Shared.
 	mux.HandleFunc("GET /receipts/", s.handleGetReceipt)
@@ -652,6 +654,114 @@ func (s *Server) handleDispute(w http.ResponseWriter, r *http.Request) {
 		ReceiptJSON: updatedJSON,
 		ReceiptID:   stored.ReceiptID,
 		Disputed:    true,
+	})
+}
+
+// handleInjectReceipt handles POST /inject-receipt — injects a receipt directly into
+// the chain store, bypassing the normal settlement flow. Intended ONLY for testing
+// and security validation (e.g., injecting a receipt signed by the wrong executor
+// key to verify that VerifyChain correctly detects the signature mismatch).
+func (s *Server) handleInjectReceipt(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	defer r.Body.Close()
+
+	var req InjectReceiptRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "decode: "+err.Error())
+		return
+	}
+	if len(req.ReceiptJSON) == 0 {
+		writeError(w, http.StatusBadRequest, "receipt_json required")
+		return
+	}
+
+	var rec receipt.SettlementReceipt
+	if err := json.Unmarshal(req.ReceiptJSON, &rec); err != nil {
+		writeError(w, http.StatusBadRequest, "parse receipt: "+err.Error())
+		return
+	}
+
+	ctx := context.Background()
+	// Use UpdateReceipt to replace the existing receipt with the tampered one.
+	// This simulates the receipt in the chain being tampered with (e.g., by a
+	// compromised executor or MITM attack). UpdateReceipt preserves the chain
+	// position (prev_hash from the original receipt remains intact).
+	if err := s.chainStore.UpdateReceipt(ctx, &rec); err != nil {
+		writeError(w, http.StatusInternalServerError, "update: "+err.Error())
+		return
+	}
+
+	log.Printf("[%s] InjectReceipt: receipt=%s executor=%s",
+		s.config.AgentID, rec.ReceiptID, rec.ExecutorAgentID)
+
+	writeJSON(w, http.StatusOK, &InjectReceiptResponse{
+		ReceiptID: rec.ReceiptID,
+		Injected:  true,
+	})
+}
+
+// handleVerifyChain handles POST /verify-chain — verifies the full receipt chain
+// using ChainStore.VerifyChain with the provided public keys.
+func (s *Server) handleVerifyChain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	defer r.Body.Close()
+
+	var req VerifyChainRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "decode: "+err.Error())
+		return
+	}
+	if req.EmitterID == "" || req.ExecutorID == "" {
+		writeError(w, http.StatusBadRequest, "emitter_id and executor_id required")
+		return
+	}
+
+	executorKey, err := hex.DecodeString(req.ExecutorKey)
+	if err != nil || len(executorKey) != 32 {
+		writeError(w, http.StatusBadRequest, "invalid executor_key")
+		return
+	}
+	emitterKey, err := hex.DecodeString(req.EmitterKey)
+	if err != nil || len(emitterKey) != 32 {
+		writeError(w, http.StatusBadRequest, "invalid emitter_key")
+		return
+	}
+
+	ctx := context.Background()
+	chainResults, err := s.chainStore.VerifyChain(ctx, req.EmitterID, req.ExecutorID, executorKey, emitterKey)
+	if err != nil {
+		if errors.Is(err, receipt.ErrReceiptNotFound) {
+			writeError(w, http.StatusNotFound, "chain not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	results := make([]VerifyChainResult, len(chainResults))
+	allValid := true
+	for i, cr := range chainResults {
+		results[i] = VerifyChainResult{
+			ReceiptID:         cr.ReceiptID,
+			ExecutorSigValid:  cr.ExecutorSignatureValid,
+			EmitterSigValid:   cr.EmitterSignatureValid,
+			PreviousHashValid: cr.PreviousHashValid,
+			Error:             cr.Error,
+		}
+		if !cr.ExecutorSignatureValid || !cr.PreviousHashValid {
+			allValid = false
+		}
+	}
+
+	writeJSON(w, http.StatusOK, &VerifyChainResponse{
+		Results:  results,
+		AllValid: allValid,
 	})
 }
 
