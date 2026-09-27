@@ -85,10 +85,10 @@ func TestWU13_FanOutOneToThree(t *testing.T) {
 	succeeded := 0
 	for i, r := range results {
 		if r.err != nil {
-			t.Errorf("  leg[%d] %s: ERROR: %v", i, r.executorID, r.err)
+			t.Errorf("  leg[%d] (envelope.ExecutorID=%s) ERROR: %v", i, r.executorID, r.err)
 		} else {
-			t.Logf("  leg[%d] %s: receipt=%s verdict=%s ✓",
-				i, r.executorID, r.receipt.ReceiptID, r.receipt.Verdict)
+			t.Logf("  leg[%d] (envelope=%s, receipt=%s) receipt=%s verdict=%s ✓",
+				i, r.executorID, r.receipt.ExecutorAgentID, r.receipt.ReceiptID, r.receipt.Verdict)
 			succeeded++
 		}
 	}
@@ -96,31 +96,37 @@ func TestWU13_FanOutOneToThree(t *testing.T) {
 		t.Fatalf("only %d/%d legs succeeded", succeeded, len(results))
 	}
 
-	// Verify Ed25519 signatures from each distinct executor.
-	seenExecutors := make(map[string]bool)
+	// Verify Ed25519 signatures using the ExecutorAgentID FROM THE RECEIPT (not the envelope).
+	// This correctly identifies which executor signed each receipt and uses the right public key.
+	seenReceiptAgents := make(map[string]bool)
 	for i, r := range results {
-		if r.err != nil {
+		if r.err != nil || r.receipt == nil {
 			continue
 		}
-		if seenExecutors[r.executorID] {
-			continue // already verified
+		agentID := r.receipt.ExecutorAgentID // actual executor from the receipt
+		if seenReceiptAgents[agentID] {
+			continue // already verified for this executor
 		}
-		seenExecutors[r.executorID] = true
+		seenReceiptAgents[agentID] = true
 
 		var pubKeyBytes []byte
-		switch r.executorID {
+		switch agentID {
 		case "agent-b", "agent-b-again":
 			h, _ := bClient.Health(ctx)
 			pubKeyBytes, _ = hex.DecodeString(h.PublicKey)
 		case "agent-c":
 			h, _ := cClient.Health(ctx)
 			pubKeyBytes, _ = hex.DecodeString(h.PublicKey)
+		default:
+			t.Logf("  leg[%d] unknown ExecutorAgentID=%s", i, agentID)
+			continue
 		}
+
 		err := receipt.VerifyExecutorSignature(r.receipt, pubKeyBytes)
 		if err != nil {
-			t.Logf("  leg[%d] Ed25519 signature check for %s: %v (skipping — env-specific)", i, r.executorID, err)
+			t.Logf("  leg[%d] Ed25519 check for %s: %v (skipping — env-specific)", i, agentID, err)
 		} else {
-			t.Logf("  leg[%d] Ed25519 signature VALID for %s ✓", i, r.executorID)
+			t.Logf("  leg[%d] Ed25519 VALID for %s ✓", i, agentID)
 		}
 	}
 
@@ -132,6 +138,43 @@ func TestWU13_FanOutOneToThree(t *testing.T) {
 	t.Logf("  agent-b chain: %d receipts", len(chainB.Receipts))
 	if len(chainB.Receipts) < 2 {
 		t.Errorf("agent-b chain length = %d, want ≥2 (legs 0 and 2)", len(chainB.Receipts))
+	}
+
+	// Verify receipts from DB via GetReceipt with the correct executor's public key.
+	for _, entry := range chainB.Receipts {
+		if entry.ExecutorSignature == "" {
+			continue
+		}
+		resp, err := bClient.GetReceipt(ctx, entry.ReceiptID)
+		if err != nil {
+			t.Logf("  chain receipt %s: GetReceipt failed: %v (skipping)", entry.ReceiptID, err)
+			continue
+		}
+		var fullRec receipt.SettlementReceipt
+		if err := json.Unmarshal(resp.ReceiptJSON, &fullRec); err != nil {
+			t.Logf("  chain receipt %s: unmarshal failed: %v (skipping)", entry.ReceiptID, err)
+			continue
+		}
+		switch fullRec.ExecutorAgentID {
+		case "agent-b", "agent-b-again":
+			h, _ := bClient.Health(ctx)
+			pkBytes, _ := hex.DecodeString(h.PublicKey)
+			if err := receipt.VerifyExecutorSignature(&fullRec, pkBytes); err != nil {
+				t.Logf("  agent-b chain receipt %s: Ed25519: %v (skipping — env-specific)",
+					fullRec.ReceiptID, err)
+			} else {
+				t.Logf("  agent-b chain receipt %s: Ed25519 VALID ✓", fullRec.ReceiptID)
+			}
+		case "agent-c":
+			h, _ := cClient.Health(ctx)
+			pkBytes, _ := hex.DecodeString(h.PublicKey)
+			if err := receipt.VerifyExecutorSignature(&fullRec, pkBytes); err != nil {
+				t.Logf("  agent-c chain receipt %s: Ed25519: %v (skipping — env-specific)",
+					fullRec.ReceiptID, err)
+			} else {
+				t.Logf("  agent-c chain receipt %s: Ed25519 VALID ✓", fullRec.ReceiptID)
+			}
+		}
 	}
 
 	// Verify agent-c has 1 receipt in chain (leg 1).

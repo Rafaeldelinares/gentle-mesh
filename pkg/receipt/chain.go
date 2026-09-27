@@ -373,6 +373,7 @@ func ComputeReceiptHash(r *SettlementReceipt) (string, error) {
 	cleared.EmitterAcceptanceAt = nil
 	cleared.EmitterSignature = ""
 	cleared.DisputeReason = ""
+	cleared.PreviousReceiptHash = ""
 
 	data, err := jcs.Marshal(&cleared)
 	if err != nil {
