@@ -17,6 +17,7 @@ Resuelve tres problemas críticos en la colaboración autónoma entre agentes:
 
 ## Documentación Canónica
 
+* 🎯 **[Objetivos y No-Objetivos (Criterio de Decisión)](docs/rfcs/002-objectives-and-non-goals.md)**
 * 📄 **[Especificación Técnica RFC-002](docs/rfcs/002-cognitive-agent-network.md)**
 * 📋 **[Informe de Asesoría Técnica para Terceros](docs/architecture/informe-asesoria-red-cognitiva.md)**
 * 🌐 **[Informe Interactivo HTML](docs/architecture/informe-asesoria-red-cognitiva.html)**
