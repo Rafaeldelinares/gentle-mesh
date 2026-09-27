@@ -108,6 +108,7 @@ EMITTED → ACCEPTED (inmutable)
 | 14 | `accept-e2e` | POST /accept, AcceptReceipt, full cryptographic loop | `f23b342` |
 | 15 | `fanout-e2e` | Fan-out E2E: parallel dispatch + accept to multiple executors | `5ec8dd8` |
 | 16 | `dispute-e2e` | POST /dispute, DisputeReceipt, duplicate-conflict protection | `9d8c6a0` |
+| 17 | `verify-chain-wrong-key` | POST /verify-chain, InjectReceipt, wrong executor key detection | `a2d4756` |
 
 ---
 
@@ -129,4 +130,4 @@ EMITTED → ACCEPTED (inmutable)
 - [x] Work unit 12: TLS/HTTPS transport (`3c5b7de`) — mTLS, strong cipher suites, HTTP API
 - [x] Work unit 13: Distributed Docker fan-out tests (`4ca8b9a`+`065b023`) — 5 tests, Bug #45 fixed
 - [x] Work unit 14: E2E AcceptReceipt test (`f23b342`) — POST /accept endpoint, full cryptographic loop
-- [x] Work unit 16: DisputeReceipt E2E test (`9d8c6a0`) — POST /dispute endpoint, 409 Conflict on duplicate dispute, chain integrity preserved
+- [x] Work unit 17: VerifyChain wrong executor key (`a2d4756`) — POST /verify-chain, InjectReceipt, security validation test, 7 steps
