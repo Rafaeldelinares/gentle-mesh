@@ -1169,6 +1169,327 @@ func TestWU14_AcceptReceiptE2E(t *testing.T) {
 	t.Log("=== WU14 Accept Receipt E2E PASSED ===")
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Test: Fan-out E2E — 1 Emitter A → Multiple Executors with Full Acceptance
+//
+// This test combines the fan-out dispatch (parallel envelope submission to
+// multiple executors) with the complete acceptance cycle for each leg.
+// It validates:
+//   (a) Parallel envelope dispatch and settlement
+//   (b) Concurrent acceptance signature generation
+//   (c) Independent chain isolation (B's chain ≠ C's chain)
+//   (d) Both executor and emitter signatures verified on each chain
+// ─────────────────────────────────────────────────────────────────
+
+func TestWU15_FanOutE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping distributed test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not available")
+	}
+
+	composeDir := findComposeDir(t)
+	cleanup := composeUp(t, composeDir)
+	defer cleanup()
+
+	t.Log("=== WU15 Fan-out E2E: A → B + C (parallel dispatch + accept on each) ===")
+
+	ctx := context.Background()
+	aClient := newInsecureTLSClient("https://localhost:18443")
+	bClient := newInsecureTLSClient("https://localhost:28443")
+	cClient := newInsecureTLSClient("https://localhost:38443")
+
+	aSigner, err := signing.GenerateSigner("agent-a")
+	if err != nil {
+		t.Fatalf("generate agent-a signer: %v", err)
+	}
+	aPubKey := aSigner.PublicKey()
+	t.Logf("  agent-a public key: %s...", hex.EncodeToString(aPubKey)[:16])
+
+	bHealth, err := bClient.Health(ctx)
+	if err != nil {
+		t.Fatalf("get agent-b health: %v", err)
+	}
+	bPubKeyBytes, _ := hex.DecodeString(bHealth.PublicKey)
+	t.Logf("  agent-b public key: %s...", bHealth.PublicKey[:16])
+
+	cHealth, err := cClient.Health(ctx)
+	if err != nil {
+		t.Fatalf("get agent-c health: %v", err)
+	}
+	cPubKeyBytes, _ := hex.DecodeString(cHealth.PublicKey)
+	t.Logf("  agent-c public key: %s...", cHealth.PublicKey[:16])
+
+	// ── Phase A: Dispatch to B and C in parallel using fanDispatchLeg ─────
+	// fanDispatchLeg handles: create file → sign envelope → submit → settle → return receipt.
+	t.Logf("  phase A: dispatching to B and C in parallel...")
+
+	type legOutcome struct {
+		name         string
+		executorID   string
+		client       *agent.HTTPClient
+		receipt     *receipt.SettlementReceipt
+		receiptJSON []byte
+		err         error
+	}
+
+	var phaseAWg sync.WaitGroup
+	outcomes := make([]legOutcome, 2)
+
+	// Leg 0 → B.
+	phaseAWg.Add(1)
+	go func() {
+		defer phaseAWg.Done()
+		rec, err := fanDispatchLeg(ctx, aClient, bClient, aSigner, "agent-b", "agent-b", "wu15-b.txt")
+		if err != nil {
+			outcomes[0] = legOutcome{name: "B", executorID: "agent-b", client: bClient, err: err}
+			return
+		}
+		receiptJSON, _ := json.Marshal(rec)
+		outcomes[0] = legOutcome{name: "B", executorID: "agent-b", client: bClient, receipt: rec, receiptJSON: receiptJSON}
+	}()
+
+	// Leg 1 → C.
+	phaseAWg.Add(1)
+	go func() {
+		defer phaseAWg.Done()
+		rec, err := fanDispatchLeg(ctx, aClient, cClient, aSigner, "agent-c", "agent-c", "wu15-c.txt")
+		if err != nil {
+			outcomes[1] = legOutcome{name: "C", executorID: "agent-c", client: cClient, err: err}
+			return
+		}
+		receiptJSON, _ := json.Marshal(rec)
+		outcomes[1] = legOutcome{name: "C", executorID: "agent-c", client: cClient, receipt: rec, receiptJSON: receiptJSON}
+	}()
+
+	phaseAWg.Wait()
+
+	// Aggregate results.
+	for _, r := range outcomes {
+		if r.err != nil {
+			t.Errorf("  leg[%s] dispatch ERROR: %v", r.name, r.err)
+		} else {
+			t.Logf("  leg[%s]: settled receipt=%s verdict=%s ✓",
+				r.name, r.receipt.ReceiptID, r.receipt.Verdict)
+		}
+	}
+	if outcomes[0].err != nil || outcomes[1].err != nil {
+		t.Fatal("one or more legs failed to dispatch")
+	}
+
+	// ── Phase B: Verify executor signatures ──────────────────────────────────
+	t.Logf("  phase B: verifying executor signatures...")
+	for _, r := range outcomes {
+		pubKey := bPubKeyBytes
+		if r.name == "C" {
+			pubKey = cPubKeyBytes
+		}
+		if err := receipt.VerifyExecutorSignature(r.receipt, pubKey); err != nil {
+			t.Errorf("  leg[%s] executor signature INVALID: %v", r.name, err)
+		} else {
+			t.Logf("  leg[%s] executor signature VALID ✓", r.name)
+		}
+	}
+
+	// ── Phase C: Concurrent acceptance ───────────────────────────────────────
+	t.Logf("  phase C: computing and sending acceptance signatures concurrently...")
+
+	var phaseCWg sync.WaitGroup
+	acceptOutcomes := make([]legOutcome, 2)
+
+	for i, outcome := range outcomes {
+		phaseCWg.Add(1)
+		go func(idx int, o legOutcome) {
+			defer phaseCWg.Done()
+
+			// Compute acceptance signature locally (A's signer).
+			recCopy := *o.receipt
+			executorSignedAt := o.receipt.ExecutorSignedAt
+			if err := receipt.AcceptReceipt(&recCopy, aSigner, executorSignedAt); err != nil {
+				acceptOutcomes[idx] = legOutcome{name: o.name, executorID: o.executorID, client: o.client, err: fmt.Errorf("AcceptReceipt: %w", err)}
+			return
+			}
+
+			if recCopy.EmitterSignature == "" {
+				acceptOutcomes[idx] = legOutcome{name: o.name, executorID: o.executorID, client: o.client, err: fmt.Errorf("EmitterSignature empty after AcceptReceipt")}
+			return
+			}
+			t.Logf("  leg[%s] local acceptance: emitter_sig[0:8]=%s ✓",
+				o.name, recCopy.EmitterSignature[:8])
+
+			// Self-verify emitter signature.
+			if err := receipt.VerifyEmitterSignature(&recCopy, aPubKey); err != nil {
+				t.Errorf("  leg[%s] local emitter signature INVALID: %v", o.name, err)
+			} else {
+				t.Logf("  leg[%s] local emitter signature VALID (self-check) ✓", o.name)
+			}
+
+			// Send acceptance to executor.
+			acceptResp, err := o.client.Accept(ctx, &agent.AcceptRequest{
+				ReceiptJSON:         o.receiptJSON,
+				ExecutorSignedAtRFC: o.receipt.ExecutorSignedAt.Format(time.RFC3339Nano),
+				EmitterSignature:    recCopy.EmitterSignature,
+			})
+			if err != nil {
+				acceptOutcomes[idx] = legOutcome{name: o.name, executorID: o.executorID, client: o.client, err: fmt.Errorf("accept: %w", err)}
+				return
+			}
+			t.Logf("  leg[%s] accept acknowledged: %s ✓", o.name, acceptResp.ReceiptID)
+			acceptOutcomes[idx] = legOutcome{name: o.name, executorID: o.executorID, client: o.client, receipt: o.receipt, receiptJSON: o.receiptJSON}
+		}(i, outcome)
+	}
+	phaseCWg.Wait()
+
+	for _, r := range acceptOutcomes {
+		if r.err != nil {
+			t.Errorf("  leg[%s] accept ERROR: %v", r.name, r.err)
+		}
+	}
+	if acceptOutcomes[0].err != nil || acceptOutcomes[1].err != nil {
+		t.Fatal("one or more legs failed to accept")
+	}
+
+	// ── Phase D: Verify both chains independently ───────────────────────────
+	t.Logf("  phase D: verifying accepted receipts and chain integrity...")
+
+	for _, r := range acceptOutcomes {
+		pubKeyBytes := bPubKeyBytes
+		executorName := "agent-b"
+		chainName := "B"
+		if r.name == "C" {
+			pubKeyBytes = cPubKeyBytes
+			executorName = "agent-c"
+			chainName = "C"
+		}
+
+		// Retrieve accepted receipt from executor's chain.
+		resp, err := r.client.GetReceipt(ctx, r.receipt.ReceiptID)
+		if err != nil {
+			t.Fatalf("  leg[%s] get accepted receipt: %v", r.name, err)
+		}
+		var acceptedRec receipt.SettlementReceipt
+		if err := json.Unmarshal(resp.ReceiptJSON, &acceptedRec); err != nil {
+			t.Fatalf("  leg[%s] unmarshal accepted receipt: %v", r.name, err)
+		}
+
+		// Verify executor signature.
+		if err := receipt.VerifyExecutorSignature(&acceptedRec, pubKeyBytes); err != nil {
+			t.Errorf("  leg[%s] executor signature on accepted receipt INVALID: %v", r.name, err)
+		} else {
+			t.Logf("  leg[%s] executor signature on accepted receipt VALID ✓", r.name)
+		}
+
+		// Verify emitter signature.
+		if err := receipt.VerifyEmitterSignature(&acceptedRec, aPubKey); err != nil {
+			t.Errorf("  leg[%s] emitter signature on accepted receipt INVALID: %v", r.name, err)
+		} else {
+			t.Logf("  leg[%s] emitter signature on accepted receipt VALID ✓", r.name)
+		}
+
+		// Verify acceptance fields.
+		if acceptedRec.EmitterAcceptance != receipt.AcceptanceAccepted {
+			t.Errorf("  leg[%s] EmitterAcceptance=%s, want ACCEPTED", r.name, acceptedRec.EmitterAcceptance)
+		} else {
+			t.Logf("  leg[%s] EmitterAcceptance=ACCEPTED ✓", r.name)
+		}
+		if acceptedRec.EmitterAcceptanceAt == nil {
+			t.Errorf("  leg[%s] EmitterAcceptanceAt is nil", r.name)
+		} else {
+			t.Logf("  leg[%s] EmitterAcceptanceAt=%s ✓",
+				r.name, acceptedRec.EmitterAcceptanceAt.Format(time.RFC3339Nano))
+		}
+
+		// Verify chain.
+		chain, err := r.client.GetChain(ctx, "agent-a", executorName)
+		if err != nil {
+			t.Fatalf("  leg[%s] get chain: %v", r.name, err)
+		}
+		t.Logf("  agent-%s chain: %d receipts", strings.ToLower(chainName), len(chain.Receipts))
+
+		lastEntry := chain.Receipts[len(chain.Receipts)-1]
+		if lastEntry.EmitterAcceptance != string(receipt.AcceptanceAccepted) {
+			t.Errorf("  agent-%s chain last entry EmitterAcceptance=%s, want ACCEPTED",
+				strings.ToLower(chainName), lastEntry.EmitterAcceptance)
+		} else {
+			t.Logf("  agent-%s chain last entry EmitterAcceptance=ACCEPTED ✓", strings.ToLower(chainName))
+		}
+
+		var brokenLinks int
+		for j := 1; j < len(chain.Receipts); j++ {
+			prevSig := chain.Receipts[j-1].ExecutorSignature
+			if prevSig == "" {
+				continue
+			}
+			expectedPrev := sha256Hex([]byte(prevSig))
+			if chain.Receipts[j].PreviousReceiptHash != expectedPrev {
+				t.Errorf("  agent-%s chain[%d]: broken link", strings.ToLower(chainName), j)
+				brokenLinks++
+			}
+		}
+		if brokenLinks == 0 {
+			t.Logf("  agent-%s chain links: all valid ✓", strings.ToLower(chainName))
+		} else {
+			t.Errorf("  agent-%s chain: %d broken links", strings.ToLower(chainName), brokenLinks)
+		}
+	}
+
+	// ── Phase E: Verify chain isolation ─────────────────────────────────────────
+	t.Logf("  phase E: verifying chain isolation (B ≠ C)...")
+
+	chainB, err := bClient.GetChain(ctx, "agent-a", "agent-b")
+	if err != nil {
+		t.Fatalf("get agent-b chain: %v", err)
+	}
+	chainC, err := cClient.GetChain(ctx, "agent-a", "agent-c")
+	if err != nil {
+		t.Fatalf("get agent-c chain: %v", err)
+	}
+
+	if len(chainB.Receipts) != 1 {
+		t.Errorf("agent-b chain length=%d, want 1", len(chainB.Receipts))
+	} else {
+		t.Logf("agent-b chain: exactly 1 receipt ✓")
+	}
+	if len(chainC.Receipts) != 1 {
+		t.Errorf("agent-c chain length=%d, want 1", len(chainC.Receipts))
+	} else {
+		t.Logf("agent-c chain: exactly 1 receipt ✓")
+	}
+
+	if len(chainB.Receipts) > 0 && len(chainC.Receipts) > 0 {
+		bID := chainB.Receipts[0].ReceiptID
+		cID := chainC.Receipts[0].ReceiptID
+		if bID == cID {
+			t.Error("  chain isolation: B and C share the same receipt ID — FAIL")
+		} else {
+			t.Logf("  chain isolation: receipt IDs differ (B=%s, C=%s) ✓", bID[:8], cID[:8])
+		}
+
+		bSig := chainB.Receipts[0].ExecutorSignature
+		cSig := chainC.Receipts[0].ExecutorSignature
+		if bSig == cSig {
+			t.Error("  chain isolation: B and C have the same executor signature — FAIL")
+		} else {
+			t.Logf("  chain isolation: executor signatures differ ✓")
+		}
+
+		bPrev := chainB.Receipts[0].PreviousReceiptHash
+		cPrev := chainC.Receipts[0].PreviousReceiptHash
+		if bPrev != "" {
+			t.Errorf("  agent-b first receipt has prev_hash=%q, want empty", bPrev)
+		}
+		if cPrev != "" {
+			t.Errorf("  agent-c first receipt has prev_hash=%q, want empty", cPrev)
+		}
+		if bPrev == "" && cPrev == "" {
+			t.Logf("  chain isolation: both first receipts have empty prev_hash ✓")
+		}
+	}
+
+	t.Log("=== WU15 Fan-out E2E PASSED ===")
+}
+
 // sha256Hex computes SHA-256 and returns hex string.
 func sha256Hex(b []byte) string {
 	h := sha256.Sum256(b)
