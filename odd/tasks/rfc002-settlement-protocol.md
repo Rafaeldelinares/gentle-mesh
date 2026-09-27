@@ -104,7 +104,9 @@ EMITTED → ACCEPTED (inmutable)
 | 10 | `handshake` | Pre-flight validation de precondiciones | ¿? |
 | 11 | `executor-a2a` | Receive envelope, decide, ejecutar, liquidar | ¿? |
 | 12 | `api-settlement` | Endpoints HTTP: POST /contracts, GET /receipts, etc. | ¿? |
-| 13 | `integration-tests` | Tests end-to-end del flujo completo | ¿? |
+| 13 | `integration-tests` | Tests end-to-end del flujo completo | `4ca8b9a` |
+| 14 | `accept-e2e` | POST /accept, AcceptReceipt, full cryptographic loop | `f23b342` |
+| 15 | `fanout-e2e` | Fan-out E2E: parallel dispatch + accept to multiple executors | `5ec8dd8` |
 
 ---
 
@@ -120,8 +122,10 @@ EMITTED → ACCEPTED (inmutable)
 - [x] Work unit 6: Receipt chain (`66fd60f`) — chain linkage, verification, SQLite persistence
 - [x] Work unit 7: Receipt signing (`4866053`) — SignReceipt, AcceptReceipt, DisputeReceipt, verification
 - [x] Work unit 8: Settlement DSL (`ba8fe52`) — 7 assertion types, parser, evaluator, 83.3% coverage
-- [ ] Work unit 9: Settlement engine
-- [ ] Work unit 10: Handshake
-- [ ] Work unit 11: Executor A2A
-- [ ] Work unit 12: API settlement
-- [ ] Work unit 13: Integration tests
+- [x] Work unit 9: Settlement engine (`8396a3a`) — execute assertions, emit verdict, 85.3% coverage
+- [x] Work unit 10: Integration test infrastructure (`979d60b`) — cmd/test-harness, formal spec
+- [x] Work unit 11: Phases 1-4 negative/chain/fuzz tests (`fa79975`) — chain tampering, parser fuzzing
+- [x] Work unit 12: TLS/HTTPS transport (`3c5b7de`) — mTLS, strong cipher suites, HTTP API
+- [x] Work unit 13: Distributed Docker fan-out tests (`4ca8b9a`+`065b023`) — 5 tests, Bug #45 fixed
+- [x] Work unit 14: E2E AcceptReceipt test (`f23b342`) — POST /accept endpoint, full cryptographic loop
+- [x] Work unit 15: Fan-out E2E with acceptance (`5ec8dd8`) — parallel dispatch + accept to B and C, chain isolation
