@@ -230,6 +230,33 @@ func (cs *ChainStore) GetChain(ctx context.Context, emitterID, executorID string
 	return receipts, rows.Err()
 }
 
+// UpdateReceipt updates a receipt in the chain store.
+// It replaces the receipt JSON while preserving the existing chain position
+// (prev_hash is not recalculated for an update).
+func (cs *ChainStore) UpdateReceipt(ctx context.Context, r *SettlementReceipt) error {
+	if r == nil {
+		return errors.New("receipt is nil")
+	}
+	data, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("marshal receipt: %w", err)
+	}
+	result, err := cs.db.ExecContext(ctx,
+		`UPDATE receipts SET data = ? WHERE receipt_id = ?`,
+		data, r.ReceiptID)
+	if err != nil {
+		return fmt.Errorf("update: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if rows == 0 {
+		return ErrReceiptNotFound
+	}
+	return nil
+}
+
 // GetLastReceipt returns the most recent receipt for an agent pair.
 func (cs *ChainStore) GetLastReceipt(ctx context.Context, emitterID, executorID string) (*SettlementReceipt, error) {
 	var data string

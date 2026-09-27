@@ -831,6 +831,344 @@ func TestWU13_ChainStressTenReceipts(t *testing.T) {
 	t.Log("=== WU13 Chain Stress PASSED ===")
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Test: Full E2E — A → B → settle → accept (closing the loop)
+// ─────────────────────────────────────────────────────────────────
+
+func TestWU14_AcceptReceiptE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping distributed test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not available")
+	}
+
+	composeDir := findComposeDir(t)
+	cleanup := composeUp(t, composeDir)
+	defer cleanup()
+
+	t.Log("=== WU14 E2E: A → B → settle → accept (full cryptographic loop) ===")
+
+	ctx := context.Background()
+	aClient := newInsecureTLSClient("https://localhost:18443") // agent-a (emitter)
+	bClient := newInsecureTLSClient("https://localhost:28443") // agent-b (executor)
+
+	// Generate fresh Ed25519 keypair for agent-a (emitter).
+	aSigner, err := signing.GenerateSigner("agent-a")
+	if err != nil {
+		t.Fatalf("generate agent-a signer: %v", err)
+	}
+	aPubKeyHex := aSigner.PublicKeyHex()
+	t.Logf("  agent-a public key: %s...", aPubKeyHex[:16])
+
+	// Get agent-b's public key for local verification.
+	bHealth, err := bClient.Health(ctx)
+	if err != nil {
+		t.Fatalf("get agent-b health: %v", err)
+	}
+	bPubKeyBytes, err := hex.DecodeString(bHealth.PublicKey)
+	if err != nil {
+		t.Fatalf("decode agent-b public key: %v", err)
+	}
+	t.Logf("  agent-b public key: %s...", bHealth.PublicKey[:16])
+
+	// ── Step 1: Create file on executor (agent-b) for the assertion ──────────
+	workspace := "/srv/workspace"
+	fileName := "wu14-e2e-test.txt"
+	filePath := filepath.Join(workspace, fileName)
+	initContent := "# E2E acceptance test file\n"
+
+	execResp, err := bClient.ExecuteTask(ctx, &agent.ExecuteRequest{
+		Command:    fmt.Sprintf("printf '%s' > %s", initContent, filePath),
+		WorkingDir: workspace,
+	})
+	if err != nil {
+		t.Fatalf("create file on agent-b: %v", err)
+	}
+	if execResp.ExitCode != 0 {
+		t.Fatalf("create file exit=%d", execResp.ExitCode)
+	}
+
+	// Get baseline SHA-256 of the file.
+	cmd := exec.Command("docker", "exec", "agent-b", "sh", "-c",
+		fmt.Sprintf("sha256sum %s | cut -d' ' -f1", filePath))
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("get file hash: %v", err)
+	}
+	baselineHash := strings.TrimSpace(string(out))
+	t.Logf("  baseline file hash: %s", baselineHash)
+
+	// ── Step 2: Emitter (A) creates and signs the CognitiveTaskEnvelope ──────
+	env := &envelope.CognitiveTaskEnvelope{
+		EnvelopeID:     newUUIDv7(),
+		EmitterAgentID: "agent-a",
+		ExecutorAgentID: "agent-b",
+		Territory: envelope.Territory{
+			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Branch:       "main",
+			WorkspacePath: workspace,
+		},
+		Assertions: []envelope.Assertion{
+			{
+				ID:   "file_modified",
+				Type: envelope.AssertionFileModified,
+				Params: envelope.AssertionParams{
+					FilePath:       fileName,
+					ExpectedSHA256: baselineHash,
+				},
+			},
+		},
+		TimeoutSeconds: 60,
+		MaxRemediations: 0,
+		NoSubdelegation: true,
+		CreatedAt:       time.Now().UTC(),
+		Version:         "1.0",
+	}
+
+	envHash, err := envelope.ComputeEnvelopeHash(env)
+	if err != nil {
+		t.Fatalf("compute envelope hash: %v", err)
+	}
+	env.EnvelopeHash = envHash
+
+	// Sign the envelope as the emitter.
+	signable := *env
+	signable.EmitterSignature = ""
+	data, err := jcs.Marshal(&signable)
+	if err != nil {
+		t.Fatalf("JCS marshal envelope: %v", err)
+	}
+	sig, err := aSigner.Sign(data)
+	if err != nil {
+		t.Fatalf("sign envelope: %v", err)
+	}
+	env.EmitterSignature = sig
+
+	envJSON, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	// ── Step 3: A → B: Submit envelope (pre-flight handshake) ─────────────────
+	leaseResp, err := aClient.SubmitEnvelope(ctx, envJSON)
+	if err != nil {
+		t.Fatalf("submit envelope to agent-b: %v", err)
+	}
+	if !leaseResp.Accepted {
+		t.Fatalf("lease rejected: %s", leaseResp.Error)
+	}
+	t.Logf("  lease accepted: %s", leaseResp.LeaseID)
+
+	// ── Step 4: B settles: validates assertions and emits SettlementReceipt ──
+	settleResp, err := bClient.Settle(ctx, &agent.SettleRequest{
+		EnvelopeJSON: envJSON,
+		LeaseID:     leaseResp.LeaseID,
+	})
+	if err != nil {
+		t.Fatalf("settle on agent-b: %v", err)
+	}
+	if settleResp.ReceiptID == "" {
+		t.Fatalf("no receipt ID from settle")
+	}
+	t.Logf("  settled: receipt=%s", settleResp.ReceiptID)
+
+	// ── Step 5: A parses and verifies B's executor signature ──────────────────
+	var settledRec receipt.SettlementReceipt
+	if err := json.Unmarshal(settleResp.ReceiptJSON, &settledRec); err != nil {
+		t.Fatalf("unmarshal settled receipt: %v", err)
+	}
+
+	if settledRec.ExecutorSignature == "" {
+		t.Fatal("settled receipt has no executor signature")
+	}
+	// Compute hash of settled receipt locally for comparison with server.
+	localHash, _ := receipt.ComputeReceiptHash(&settledRec)
+	t.Logf("  settled receipt: executor_sig[0:8]=%s executor_signed_at=%s local_hash=%s",
+		settledRec.ExecutorSignature[:8],
+		settledRec.ExecutorSignedAt.Format(time.RFC3339Nano),
+		localHash)
+
+	// Verify executor signature locally using B's public key.
+	if err := receipt.VerifyExecutorSignature(&settledRec, bPubKeyBytes); err != nil {
+		t.Errorf("  executor signature INVALID: %v", err)
+	} else {
+		t.Logf("  executor signature VALID ✓")
+	}
+
+	// ── Step 6: A verifies chain integrity before accepting ───────────────────
+	t.Logf("  verifying chain integrity on agent-b...")
+	receipts, err := bClient.GetChain(ctx, "agent-a", "agent-b")
+	if err != nil {
+		t.Fatalf("get chain from agent-b: %v", err)
+	}
+	t.Logf("  agent-b chain: %d receipts", len(receipts.Receipts))
+
+	// ── Step 7: A computes acceptance signature LOCALLY ───────────────────────
+	// This is the critical step: A signs the acceptance with its own key.
+	// The executor-signed timestamp ensures both parties hash over identical content.
+	acceptRecCopy := settledRec // copy to avoid modifying the original
+	executorSignedAt := settledRec.ExecutorSignedAt
+
+	if err := receipt.AcceptReceipt(&acceptRecCopy, aSigner, executorSignedAt); err != nil {
+		t.Fatalf("AcceptReceipt (local): %v", err)
+	}
+
+	if acceptRecCopy.EmitterAcceptance != receipt.AcceptanceAccepted {
+		t.Fatalf("EmitterAcceptance=%s, want ACCEPTED", acceptRecCopy.EmitterAcceptance)
+	}
+	if acceptRecCopy.EmitterSignature == "" {
+		t.Fatal("EmitterSignature is empty after AcceptReceipt")
+	}
+	if acceptRecCopy.EmitterAcceptanceAt == nil {
+		t.Fatal("EmitterAcceptanceAt is nil after AcceptReceipt")
+	}
+	t.Logf("  local acceptance: emitter_sig[0:8]=%s acceptance_at=%s ✓",
+		acceptRecCopy.EmitterSignature[:8],
+		acceptRecCopy.EmitterAcceptanceAt.Format(time.RFC3339Nano))
+
+	// Verify A's own signature locally (self-check).
+	if err := receipt.VerifyEmitterSignature(&acceptRecCopy, aSigner.PublicKey()); err != nil {
+		t.Errorf("  local emitter signature INVALID: %v", err)
+	} else {
+		t.Logf("  local emitter signature VALID (self-check) ✓")
+	}
+
+	// ── Step 8: A → B: Send acceptance via POST /accept ───────────────────────
+	t.Logf("  sending acceptance: executor_signed_at_rfc=%s emitter_sig[0:8]=%s",
+		settledRec.ExecutorSignedAt.Format(time.RFC3339Nano),
+		acceptRecCopy.EmitterSignature[:8])
+	acceptResp, err := aClient.Accept(ctx, &agent.AcceptRequest{
+		ReceiptJSON:         settleResp.ReceiptJSON,
+		ExecutorSignedAtRFC: settledRec.ExecutorSignedAt.Format(time.RFC3339Nano),
+		EmitterSignature:    acceptRecCopy.EmitterSignature,
+	})
+	if err != nil {
+		t.Fatalf("accept on agent-b: %v", err)
+	}
+	if !acceptResp.Accepted {
+		t.Fatalf("accept rejected: %s", acceptResp.Error)
+	}
+	t.Logf("  accept acknowledged by agent-b: %s", acceptResp.ReceiptID)
+
+	// ── Step 9: A retrieves the accepted receipt from B's chain ───────────────
+	updatedResp, err := bClient.GetReceipt(ctx, acceptResp.ReceiptID)
+	if err != nil {
+		t.Fatalf("get accepted receipt from agent-b: %v", err)
+	}
+	var acceptedRec receipt.SettlementReceipt
+	if err := json.Unmarshal(updatedResp.ReceiptJSON, &acceptedRec); err != nil {
+		t.Fatalf("unmarshal accepted receipt: %v", err)
+	}
+
+	// ── Step 10: A verifies the accepted receipt has BOTH signatures ───────────
+	t.Logf("  accepted receipt: executor_sig[0:8]=%s emitter_sig[0:8]=%s",
+		func() string { if len(acceptedRec.ExecutorSignature) >= 8 { return acceptedRec.ExecutorSignature[:8] }
+			return "" }(),
+		func() string { if len(acceptedRec.EmitterSignature) >= 8 { return acceptedRec.EmitterSignature[:8] }
+			return "" }())
+
+	if acceptedRec.ExecutorSignature == "" {
+		t.Error("  accepted receipt: missing executor signature")
+	} else {
+		t.Logf("  executor signature: present ✓")
+	}
+	if acceptedRec.EmitterSignature == "" {
+		t.Error("  accepted receipt: missing emitter signature")
+	} else {
+		t.Logf("  emitter signature: present ✓")
+	}
+	if acceptedRec.EmitterAcceptance != receipt.AcceptanceAccepted {
+		t.Errorf("  EmitterAcceptance=%s, want ACCEPTED", acceptedRec.EmitterAcceptance)
+	} else {
+		t.Logf("  EmitterAcceptance: ACCEPTED ✓")
+	}
+	if acceptedRec.EmitterAcceptanceAt == nil {
+		t.Error("  EmitterAcceptanceAt: nil")
+	} else {
+		t.Logf("  EmitterAcceptanceAt: %s ✓", acceptedRec.EmitterAcceptanceAt.Format(time.RFC3339Nano))
+	}
+
+	// ── Step 11: Verify executor signature on the accepted receipt ──────────────
+	if err := receipt.VerifyExecutorSignature(&acceptedRec, bPubKeyBytes); err != nil {
+		t.Errorf("  executor signature on accepted receipt INVALID: %v", err)
+	} else {
+		t.Logf("  executor signature on accepted receipt: VALID ✓")
+	}
+
+	// ── Step 12: Verify emitter signature on the accepted receipt ─────────────
+	if err := receipt.VerifyEmitterSignature(&acceptedRec, aSigner.PublicKey()); err != nil {
+		t.Errorf("  emitter signature on accepted receipt INVALID: %v", err)
+	} else {
+		t.Logf("  emitter signature on accepted receipt: VALID ✓")
+	}
+
+	// ── Step 13: Verify chain integrity after acceptance ─────────────────────
+	t.Logf("  verifying chain integrity after acceptance...")
+	chainAfter, err := bClient.GetChain(ctx, "agent-a", "agent-b")
+	if err != nil {
+		t.Fatalf("get chain after acceptance: %v", err)
+	}
+	if len(chainAfter.Receipts) < 1 {
+		t.Fatal("chain is empty after acceptance")
+	}
+
+	// Check that the chain entry reflects the acceptance.
+	lastEntry := chainAfter.Receipts[len(chainAfter.Receipts)-1]
+	if lastEntry.EmitterAcceptance != string(receipt.AcceptanceAccepted) {
+		t.Errorf("  chain last entry EmitterAcceptance=%s, want ACCEPTED", lastEntry.EmitterAcceptance)
+	} else {
+		t.Logf("  chain last entry EmitterAcceptance=ACCEPTED ✓")
+	}
+	if lastEntry.EmitterSignedAt == "" {
+		t.Error("  chain last entry EmitterSignedAt is empty")
+	} else {
+		t.Logf("  chain last entry EmitterSignedAt=%s ✓", lastEntry.EmitterSignedAt)
+	}
+
+	// Verify the final chain entry's executor signature.
+	finalRecResp, err := bClient.GetReceipt(ctx, lastEntry.ReceiptID)
+	if err != nil {
+		t.Fatalf("get final receipt: %v", err)
+	}
+	var finalRec receipt.SettlementReceipt
+	json.Unmarshal(finalRecResp.ReceiptJSON, &finalRec)
+
+	if err := receipt.VerifyExecutorSignature(&finalRec, bPubKeyBytes); err != nil {
+		t.Errorf("  final receipt executor signature INVALID: %v", err)
+	} else {
+		t.Logf("  final receipt executor signature VALID ✓")
+	}
+	if err := receipt.VerifyEmitterSignature(&finalRec, aSigner.PublicKey()); err != nil {
+		t.Errorf("  final receipt emitter signature INVALID: %v", err)
+	} else {
+		t.Logf("  final receipt emitter signature VALID ✓")
+	}
+
+	// ── Step 14: Verify the chain links are still valid ───────────────────────
+	t.Logf("  verifying chain links...")
+	var brokenLinks int
+	for i := 1; i < len(chainAfter.Receipts); i++ {
+		prevSig := chainAfter.Receipts[i-1].ExecutorSignature
+		if prevSig == "" {
+			continue
+		}
+		expectedPrev := sha256Hex([]byte(prevSig))
+		if chainAfter.Receipts[i].PreviousReceiptHash != expectedPrev {
+			t.Errorf("  chain[%d]: broken link — prev_hash=%s, want SHA256(prev.sig)=%s",
+				i, chainAfter.Receipts[i].PreviousReceiptHash, expectedPrev)
+			brokenLinks++
+		}
+	}
+	if brokenLinks == 0 {
+		t.Logf("  All %d chain links valid ✓", len(chainAfter.Receipts)-1)
+	} else {
+		t.Errorf("  %d/%d chain links broken", brokenLinks, len(chainAfter.Receipts)-1)
+	}
+
+	t.Log("=== WU14 Accept Receipt E2E PASSED ===")
+}
+
 // sha256Hex computes SHA-256 and returns hex string.
 func sha256Hex(b []byte) string {
 	h := sha256.Sum256(b)

@@ -268,6 +268,38 @@ func (c *HTTPClient) VerifyReceipt(ctx context.Context, req *VerifyRequest) (*Ve
 	return &result, nil
 }
 
+
+// Accept sends the emitter's acceptance of a settled receipt to the executor.
+// The emitter must pre-sign the acceptance locally using receipt.AcceptReceipt.
+func (c *HTTPClient) Accept(ctx context.Context, req *AcceptRequest) (*AcceptResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/accept", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("do: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.readErrorWithBody(resp)
+	}
+
+	var result AcceptResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	return &result, nil
+}
+
 // Health checks agent health.
 func (c *HTTPClient) Health(ctx context.Context) (*HealthResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/health", nil)
@@ -306,6 +338,16 @@ func (c *HTTPClient) readError(resp *http.Response) error {
 	var errResp ErrorResponse
 	if json.Unmarshal(body, &errResp) == nil {
 		return fmt.Errorf("agent error: %s (code=%d)", errResp.Error, resp.StatusCode)
+	}
+	return fmt.Errorf("agent error: status=%d body=%s", resp.StatusCode, string(body))
+}
+
+// readErrorWithBody is like readError but always includes the response body.
+func (c *HTTPClient) readErrorWithBody(resp *http.Response) error {
+	body, _ := io.ReadAll(resp.Body)
+	var errResp ErrorResponse
+	if json.Unmarshal(body, &errResp) == nil {
+		return fmt.Errorf("agent error: %s (code=%d) body=%s", errResp.Error, resp.StatusCode, string(body))
 	}
 	return fmt.Errorf("agent error: status=%d body=%s", resp.StatusCode, string(body))
 }

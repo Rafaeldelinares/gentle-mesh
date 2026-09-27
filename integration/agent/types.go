@@ -111,6 +111,24 @@ type VerifyResponse struct {
 	EmitterSigOK   bool     `json:"emitter_sig_ok"`
 }
 
+// AcceptRequest is the POST /accept request body.
+// The emitter (A) sends this to the executor (B) to accept a settled receipt.
+// A must pre-sign the acceptance locally using AcceptReceipt and send the
+// pre-computed emitter_signature to avoid transmitting private keys.
+type AcceptRequest struct {
+	ReceiptJSON        []byte `json:"receipt_json"`
+	ExecutorSignedAtRFC string `json:"executor_signed_at_rfc"` // RFC3339Nano from the receipt
+	EmitterSignature    string `json:"emitter_signature"`     // Ed25519 sig from A (pre-computed locally)
+}
+
+// AcceptResponse is the POST /accept response body.
+type AcceptResponse struct {
+	ReceiptJSON []byte `json:"receipt_json"`
+	ReceiptID   string `json:"receipt_id,omitempty"`
+	Accepted    bool   `json:"accepted"`
+	Error       string `json:"error,omitempty"`
+}
+
 // HealthResponse is the GET /health response body.
 type HealthResponse struct {
 	Status    string    `json:"status"`
