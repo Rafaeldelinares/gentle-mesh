@@ -1,0 +1,46 @@
+# syntax=docker/dockerfile:1
+# Build stage: compile the Go binary with CGO disabled.
+FROM --platform=linux/amd64 golang:1.27-alpine AS builder
+
+WORKDIR /src
+
+# Copy go mod files first for better layer caching.
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source and build.
+COPY . .
+RUN CGO_ENABLED=0 go build \
+    -ldflags="-s -w" \
+    -o /agent-binary \
+    ./cmd/test-harness
+
+# ─────────────────────────────────────────────────────────────────
+# Runtime stage: minimal Alpine image with the binary and TLS certs.
+# ─────────────────────────────────────────────────────────────────
+FROM --platform=linux/amd64 alpine:3.20 AS runtime
+
+RUN apk add --no-cache \
+    git \
+    bash \
+    ca-certificates \
+    openssl \
+    python3 \
+    py3-pip \
+    && pip install --no-cache-dir pytest --break-system-packages \
+    && rm -rf /var/cache/apk/* /tmp/pip-*
+
+# Create directories.
+RUN mkdir -p /srv/workspace /data /certs
+WORKDIR /srv/workspace
+
+# Copy the compiled binary from the builder stage.
+COPY --from=builder /agent-binary /usr/local/bin/agent
+
+# Copy TLS certificate generation script (for development bootstrapping).
+COPY integration/certs/gen-certs.sh /usr/local/bin/gen-certs.sh
+RUN chmod +x /usr/local/bin/gen-certs.sh
+
+# Default command: run the agent server with TLS.
+ENTRYPOINT ["/usr/local/bin/agent"]
+CMD ["serve", "--port", "8443"]

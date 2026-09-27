@@ -1,6 +1,6 @@
 module github.com/gentleman-programming/gentle-mesh
 
-go 1.25.0
+go 1.26.7
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
