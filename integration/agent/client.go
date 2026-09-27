@@ -269,6 +269,37 @@ func (c *HTTPClient) VerifyReceipt(ctx context.Context, req *VerifyRequest) (*Ve
 }
 
 
+// Dispute sends the emitter's formal dispute of a settled receipt to the executor.
+// The emitter must pre-sign the dispute locally using receipt.DisputeReceipt.
+func (c *HTTPClient) Dispute(ctx context.Context, req *DisputeRequest) (*DisputeResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/dispute", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("do: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.readErrorWithBody(resp)
+	}
+
+	var result DisputeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	return &result, nil
+}
+
 // Accept sends the emitter's acceptance of a settled receipt to the executor.
 // The emitter must pre-sign the acceptance locally using receipt.AcceptReceipt.
 func (c *HTTPClient) Accept(ctx context.Context, req *AcceptRequest) (*AcceptResponse, error) {

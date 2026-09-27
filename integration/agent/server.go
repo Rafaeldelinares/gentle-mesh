@@ -205,6 +205,7 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /execute", s.handleExecute)
 	mux.HandleFunc("POST /settle", s.handleSettle)
 	mux.HandleFunc("POST /accept", s.handleAccept)
+	mux.HandleFunc("POST /dispute", s.handleDispute)
 
 	// Shared.
 	mux.HandleFunc("GET /receipts/", s.handleGetReceipt)
@@ -562,6 +563,95 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 		ReceiptJSON: updatedJSON,
 		ReceiptID:   stored.ReceiptID,
 		Accepted:    true,
+	})
+}
+
+// handleDispute handles POST /dispute — the emitter (A) formally disputes a settled receipt.
+// The executor (B) applies the dispute to the receipt in its chain store.
+//
+// Flow: A detects anomaly → calls DisputeReceipt locally → sends emitter_signature to B →
+// B verifies executor sig → applies dispute fields → stores on chain.
+func (s *Server) handleDispute(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	defer r.Body.Close()
+
+	var req DisputeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "decode: "+err.Error())
+		return
+	}
+	if len(req.ReceiptJSON) == 0 {
+		writeError(w, http.StatusBadRequest, "receipt_json required")
+		return
+	}
+	if req.ExecutorSignedAtRFC == "" {
+		writeError(w, http.StatusBadRequest, "executor_signed_at_rfc required")
+		return
+	}
+	if req.EmitterSignature == "" {
+		writeError(w, http.StatusBadRequest, "emitter_signature required")
+		return
+	}
+	if req.DisputeReason == "" {
+		writeError(w, http.StatusBadRequest, "dispute_reason required")
+		return
+	}
+
+	// Parse the receipt.
+	var rec receipt.SettlementReceipt
+	if err := json.Unmarshal(req.ReceiptJSON, &rec); err != nil {
+		writeError(w, http.StatusBadRequest, "parse receipt: "+err.Error())
+		return
+	}
+
+	// Get the receipt from the chain store.
+	ctx := context.Background()
+	stored, err := s.chainStore.GetReceipt(ctx, rec.ReceiptID)
+	if err != nil {
+		if errors.Is(err, receipt.ErrReceiptNotFound) {
+			writeError(w, http.StatusNotFound, "receipt not found: "+rec.ReceiptID)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Verify the receipt is not already accepted or disputed.
+	if stored.EmitterAcceptance == receipt.AcceptanceAccepted {
+		writeError(w, http.StatusConflict, "receipt already accepted")
+		return
+	}
+	if stored.EmitterAcceptance == receipt.AcceptanceDisputed {
+		writeError(w, http.StatusConflict, "receipt already disputed")
+		return
+	}
+
+	// Apply the dispute fields directly. A already computed EmitterSignature locally
+	// using DisputeReceipt; we just store the dispute on B's chain.
+	now := time.Now().UTC()
+	stored.EmitterAcceptance = receipt.AcceptanceDisputed
+	stored.EmitterAcceptanceAt = &now
+	stored.EmitterSignature = req.EmitterSignature
+	stored.DisputeReason = req.DisputeReason
+
+	// Update in chain store.
+	if err := s.chainStore.UpdateReceipt(ctx, stored); err != nil {
+		writeError(w, http.StatusInternalServerError, "update: "+err.Error())
+		return
+	}
+
+	// Return the updated receipt.
+	updatedJSON, _ := json.Marshal(stored)
+	log.Printf("[%s] Dispute: receipt=%s reason=%s",
+		s.config.AgentID, stored.ReceiptID, stored.DisputeReason)
+
+	writeJSON(w, http.StatusOK, &DisputeResponse{
+		ReceiptJSON: updatedJSON,
+		ReceiptID:   stored.ReceiptID,
+		Disputed:    true,
 	})
 }
 

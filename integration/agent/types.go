@@ -129,6 +129,25 @@ type AcceptResponse struct {
 	Error       string `json:"error,omitempty"`
 }
 
+// DisputeRequest is the POST /dispute request body.
+// The emitter (A) sends this to the executor (B) to formally dispute a settled receipt.
+// A must pre-sign the dispute locally using receipt.DisputeReceipt and send the
+// pre-computed emitter_signature to avoid transmitting private keys.
+type DisputeRequest struct {
+	ReceiptJSON         []byte `json:"receipt_json"`
+	ExecutorSignedAtRFC  string `json:"executor_signed_at_rfc"` // RFC3339Nano from the receipt
+	EmitterSignature     string `json:"emitter_signature"`     // Ed25519 sig from A (pre-computed locally)
+	DisputeReason       string `json:"dispute_reason"`       // Human-readable reason for the dispute
+}
+
+// DisputeResponse is the POST /dispute response body.
+type DisputeResponse struct {
+	ReceiptJSON []byte `json:"receipt_json"`
+	ReceiptID   string `json:"receipt_id,omitempty"`
+	Disputed    bool   `json:"disputed"`
+	Error       string `json:"error,omitempty"`
+}
+
 // HealthResponse is the GET /health response body.
 type HealthResponse struct {
 	Status    string    `json:"status"`

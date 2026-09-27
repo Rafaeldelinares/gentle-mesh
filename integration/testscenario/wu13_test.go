@@ -1490,6 +1490,326 @@ func TestWU15_FanOutE2E(t *testing.T) {
 	t.Log("=== WU15 Fan-out E2E PASSED ===")
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Test: Dispute Receipt E2E — Formal dispute with Ed25519 signature
+//
+// This test validates the complete dispute cycle:
+//   (a) Executor settles a receipt (SETTLED_CLEAN)
+//   (b) Emitter detects anomaly and calls DisputeReceipt locally
+//   (c) Emitter sends dispute to executor via POST /dispute
+//   (d) Executor applies dispute to chain store
+//   (e) Both executor and emitter signatures verified
+//   (f) Chain remains intact with dispute record
+// ─────────────────────────────────────────────────────────────────
+
+func TestWU16_DisputeReceiptE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping distributed test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not available")
+	}
+
+	composeDir := findComposeDir(t)
+	cleanup := composeUp(t, composeDir)
+	defer cleanup()
+
+	t.Log("=== WU16 Dispute Receipt E2E: A settles → disputes with reason ===")
+
+	ctx := context.Background()
+	aClient := newInsecureTLSClient("https://localhost:18443")
+	bClient := newInsecureTLSClient("https://localhost:28443")
+
+	// Generate Ed25519 keypair for agent-a (emitter).
+	aSigner, err := signing.GenerateSigner("agent-a")
+	if err != nil {
+		t.Fatalf("generate agent-a signer: %v", err)
+	}
+	aPubKey := aSigner.PublicKey()
+	t.Logf("  agent-a public key: %s...", hex.EncodeToString(aPubKey)[:16])
+
+	// Get executor public key.
+	bHealth, err := bClient.Health(ctx)
+	if err != nil {
+		t.Fatalf("get agent-b health: %v", err)
+	}
+	bPubKeyBytes, _ := hex.DecodeString(bHealth.PublicKey)
+	t.Logf("  agent-b public key: %s...", bHealth.PublicKey[:16])
+
+	workspace := "/srv/workspace"
+	fileName := "wu16-dispute-test.txt"
+	filePath := filepath.Join(workspace, fileName)
+
+	// ── Step 1: Create file on executor ─────────────────────────────────
+	// The emitter (A) instructs the executor to create a baseline file.
+	t.Logf("  step 1: creating baseline file on agent-b...")
+	baselineContent := "# WU16 dispute baseline\ncontent: v1\n"
+	execResp, err := bClient.ExecuteTask(ctx, &agent.ExecuteRequest{
+		Command:    fmt.Sprintf("printf '%s' > %s", baselineContent, filePath),
+		WorkingDir: workspace,
+	})
+	if err != nil {
+		t.Fatalf("create file: %v", err)
+	}
+	if execResp.ExitCode != 0 {
+		t.Fatalf("create file exit=%d", execResp.ExitCode)
+	}
+
+	// Get baseline SHA-256.
+	cmd := exec.Command("docker", "exec", "agent-b", "sh", "-c",
+		fmt.Sprintf("sha256sum %s | cut -d' ' -f1", filePath))
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("get baseline hash: %v", err)
+	}
+	baselineHash := strings.TrimSpace(string(out))
+	t.Logf("  baseline file hash: %s", baselineHash)
+
+	// ── Step 2: Emitter (A) creates and signs envelope ───────────────────
+	t.Logf("  step 2: creating and signing envelope...")
+	env := &envelope.CognitiveTaskEnvelope{
+		EnvelopeID:      newUUIDv7(),
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+		Territory: envelope.Territory{
+			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Branch:       "main",
+			WorkspacePath: workspace,
+		},
+		Assertions: []envelope.Assertion{
+			{
+				ID:   "file_hash_v1",
+				Type: envelope.AssertionFileModified,
+				Params: envelope.AssertionParams{
+					FilePath:       fileName,
+					ExpectedSHA256: baselineHash,
+				},
+			},
+		},
+		TimeoutSeconds:  60,
+		MaxRemediations: 0,
+		NoSubdelegation: true,
+		CreatedAt:       time.Now().UTC(),
+		Version:         "1.0",
+	}
+
+	envHash, err := envelope.ComputeEnvelopeHash(env)
+	if err != nil {
+		t.Fatalf("compute envelope hash: %v", err)
+	}
+	env.EnvelopeHash = envHash
+
+	signable := *env
+	signable.EmitterSignature = ""
+	data, err := jcs.Marshal(&signable)
+	if err != nil {
+		t.Fatalf("JCS marshal: %v", err)
+	}
+	sig, err := aSigner.Sign(data)
+	if err != nil {
+		t.Fatalf("sign envelope: %v", err)
+	}
+	env.EmitterSignature = sig
+
+	envJSON, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	// ── Step 3: A → B: Submit envelope (lease) ───────────────────────────
+	t.Logf("  step 3: submitting envelope to agent-b...")
+	leaseResp, err := aClient.SubmitEnvelope(ctx, envJSON)
+	if err != nil {
+		t.Fatalf("submit envelope: %v", err)
+	}
+	if !leaseResp.Accepted {
+		t.Fatalf("lease rejected: %s", leaseResp.Error)
+	}
+	t.Logf("  lease accepted: %s ✓", leaseResp.LeaseID)
+
+	// ── Step 4: Executor settles receipt ─────────────────────────────────
+	t.Logf("  step 4: executor settling receipt...")
+	settleResp, err := bClient.Settle(ctx, &agent.SettleRequest{
+		EnvelopeJSON: envJSON,
+		LeaseID:     leaseResp.LeaseID,
+	})
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+
+	var rec receipt.SettlementReceipt
+	if err := json.Unmarshal(settleResp.ReceiptJSON, &rec); err != nil {
+		t.Fatalf("unmarshal receipt: %v", err)
+	}
+	t.Logf("  settled receipt=%s verdict=%s ✓", rec.ReceiptID, rec.Verdict)
+
+	if rec.Verdict != receipt.VerdictSettledClean {
+		t.Fatalf("expected SETTLED_CLEAN, got %s", rec.Verdict)
+	}
+
+	// ── Step 5: A verifies executor signature ───────────────────────────
+	t.Logf("  step 5: verifying executor signature...")
+	if err := receipt.VerifyExecutorSignature(&rec, bPubKeyBytes); err != nil {
+		t.Errorf("  executor signature INVALID: %v", err)
+	} else {
+		t.Logf("  executor signature VALID ✓")
+	}
+
+	// ── Step 6: A verifies chain pre-dispute ────────────────────────────
+	t.Logf("  step 6: verifying chain integrity pre-dispute...")
+	chain, err := bClient.GetChain(ctx, "agent-a", "agent-b")
+	if err != nil {
+		t.Fatalf("get chain: %v", err)
+	}
+	t.Logf("  chain before dispute: %d receipts", len(chain.Receipts))
+
+	// ── Step 7: Emitter (A) generates DisputeReceipt locally ─────────────
+	// In a real scenario, A detected an anomaly (evidence mismatch, rule violation,
+	// or incorrect computation) and formally disputes the receipt.
+	t.Logf("  step 7: generating DisputeReceipt locally...")
+
+	disputeReason := "evidence_hash_mismatch: reported evidence sha256 does not match expected value; executor computed incorrect result for assertion 'file_hash_v1'"
+
+	recCopy := rec
+	executorSignedAt := rec.ExecutorSignedAt
+	if err := receipt.DisputeReceipt(&recCopy, aSigner, disputeReason, executorSignedAt); err != nil {
+		t.Fatalf("DisputeReceipt: %v", err)
+	}
+
+	if recCopy.EmitterSignature == "" {
+		t.Fatal("EmitterSignature empty after DisputeReceipt")
+	}
+	if recCopy.EmitterAcceptance != receipt.AcceptanceDisputed {
+		t.Fatalf("EmitterAcceptance=%s, want DISPUTED", recCopy.EmitterAcceptance)
+	}
+	if recCopy.DisputeReason != disputeReason {
+		t.Fatalf("DisputeReason mismatch")
+	}
+	t.Logf("  local dispute: emitter_sig[0:8]=%s reason=%q ✓",
+		recCopy.EmitterSignature[:8], truncateMid(disputeReason, 60))
+
+	// Self-verify: A verifies its own signature.
+	if err := receipt.VerifyEmitterSignature(&recCopy, aPubKey); err != nil {
+		t.Errorf("  emitter signature INVALID (self-check): %v", err)
+	} else {
+		t.Logf("  emitter signature VALID (self-check) ✓")
+	}
+
+	// ── Step 8: A → B: POST /dispute ────────────────────────────────────
+	t.Logf("  step 8: sending dispute to agent-b...")
+
+	// Store raw receipt JSON from settle response.
+	receiptJSON := settleResp.ReceiptJSON
+
+	disputeResp, err := bClient.Dispute(ctx, &agent.DisputeRequest{
+		ReceiptJSON:         receiptJSON,
+		ExecutorSignedAtRFC: rec.ExecutorSignedAt.Format(time.RFC3339Nano),
+		EmitterSignature:    recCopy.EmitterSignature,
+		DisputeReason:       disputeReason,
+	})
+	if err != nil {
+		t.Fatalf("dispute: %v", err)
+	}
+	if !disputeResp.Disputed {
+		t.Fatalf("dispute not accepted: %s", disputeResp.Error)
+	}
+	t.Logf("  dispute acknowledged: receipt=%s ✓", disputeResp.ReceiptID)
+
+	// ── Step 9: A retrieves disputed receipt and verifies ─────────────────
+	t.Logf("  step 9: retrieving and verifying disputed receipt...")
+	resp, err := bClient.GetReceipt(ctx, rec.ReceiptID)
+	if err != nil {
+		t.Fatalf("get disputed receipt: %v", err)
+	}
+	var disputedRec receipt.SettlementReceipt
+	if err := json.Unmarshal(resp.ReceiptJSON, &disputedRec); err != nil {
+		t.Fatalf("unmarshal disputed receipt: %v", err)
+	}
+
+	// Verify executor signature on disputed receipt.
+	if err := receipt.VerifyExecutorSignature(&disputedRec, bPubKeyBytes); err != nil {
+		t.Errorf("  executor signature on disputed receipt INVALID: %v", err)
+	} else {
+		t.Logf("  executor signature on disputed receipt VALID ✓")
+	}
+
+	// Verify emitter signature (dispute signature).
+	if err := receipt.VerifyEmitterSignature(&disputedRec, aPubKey); err != nil {
+		t.Errorf("  emitter signature on disputed receipt INVALID: %v", err)
+	} else {
+		t.Logf("  emitter signature on disputed receipt VALID ✓")
+	}
+
+	// Verify dispute fields.
+	if disputedRec.EmitterAcceptance != receipt.AcceptanceDisputed {
+		t.Errorf("  EmitterAcceptance=%s, want DISPUTED", disputedRec.EmitterAcceptance)
+	} else {
+		t.Logf("  EmitterAcceptance=DISPUTED ✓")
+	}
+	if disputedRec.EmitterAcceptanceAt == nil {
+		t.Error("  EmitterAcceptanceAt is nil")
+	} else {
+		t.Logf("  EmitterAcceptanceAt=%s ✓",
+			disputedRec.EmitterAcceptanceAt.Format(time.RFC3339Nano))
+	}
+	if disputedRec.DisputeReason != disputeReason {
+		t.Errorf("  DisputeReason=%q, want %q", disputedRec.DisputeReason, disputeReason)
+	} else {
+		t.Logf("  DisputeReason=%q ✓", truncateMid(disputeReason, 60))
+	}
+
+	// ── Step 10: Verify chain reflects the dispute ───────────────────────
+	t.Logf("  step 10: verifying chain reflects dispute...")
+	chainAfter, err := bClient.GetChain(ctx, "agent-a", "agent-b")
+	if err != nil {
+		t.Fatalf("get chain after dispute: %v", err)
+	}
+	t.Logf("  chain after dispute: %d receipts", len(chainAfter.Receipts))
+
+	lastEntry := chainAfter.Receipts[len(chainAfter.Receipts)-1]
+	if lastEntry.EmitterAcceptance != string(receipt.AcceptanceDisputed) {
+		t.Errorf("  chain last entry EmitterAcceptance=%s, want DISPUTED",
+			lastEntry.EmitterAcceptance)
+	} else {
+		t.Logf("  chain last entry EmitterAcceptance=DISPUTED ✓")
+	}
+
+	// Verify chain links still intact.
+	var brokenLinks int
+	for j := 1; j < len(chainAfter.Receipts); j++ {
+		prevSig := chainAfter.Receipts[j-1].ExecutorSignature
+		if prevSig == "" {
+			continue
+		}
+		expectedPrev := sha256Hex([]byte(prevSig))
+		if chainAfter.Receipts[j].PreviousReceiptHash != expectedPrev {
+			t.Errorf("  chain[%d]: broken link", j)
+			brokenLinks++
+		}
+	}
+	if brokenLinks == 0 {
+		t.Logf("  chain links after dispute: all valid ✓")
+	} else {
+		t.Errorf("  chain links: %d broken", brokenLinks)
+	}
+
+	// ── Step 11: Attempt second dispute (should be rejected) ─────────────
+	t.Logf("  step 11: attempting second dispute (expect conflict)...")
+	_, err = bClient.Dispute(ctx, &agent.DisputeRequest{
+		ReceiptJSON:         receiptJSON,
+		ExecutorSignedAtRFC: rec.ExecutorSignedAt.Format(time.RFC3339Nano),
+		EmitterSignature:    recCopy.EmitterSignature,
+		DisputeReason:       "duplicate dispute attempt",
+	})
+	if err == nil {
+		t.Error("  second dispute should have been rejected (409 Conflict)")
+	} else {
+		t.Logf("  second dispute correctly rejected: %v ✓", err)
+	}
+
+	t.Log("=== WU16 Dispute Receipt E2E PASSED ===")
+}
+
 // sha256Hex computes SHA-256 and returns hex string.
 func sha256Hex(b []byte) string {
 	h := sha256.Sum256(b)
