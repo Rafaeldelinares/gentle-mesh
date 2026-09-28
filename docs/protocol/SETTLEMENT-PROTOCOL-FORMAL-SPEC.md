@@ -589,6 +589,15 @@ operación correcta.
 3. Verify(sig, pubkey, hex_bytes) → bool
 ```
 
+### 7.5 Precisión Numérica y Claves Duplicadas (RFC 8785 & RFC 7493 I-JSON)
+
+De acuerdo con RFC 8785 (§3.2.2.3) y RFC 7493:
+- **Claves Duplicadas:** Quedan estrictamente prohibidas en cualquier nivel de anidamiento de objetos JSON. Cualquier documento con claves duplicadas es rechazado con error inmediato.
+- **Precisión de Enteros:** El modelo numérico de ECMAScript / RFC 8785 se basa en punto flotante IEEE 754 de doble precisión (64 bits). Los números enteros cuyo valor absoluto sea superior a **2^53** (`9,007,199,254,740,992`) pierden precisión al ser canonicalizados. Por tanto, en los contratos de RFC-002:
+  - Los campos enteros actuales (`timeout_seconds`, `max_remediations`, `expected_exit_code`, `port`, `assertion_index`, `attempt_index`, `exit_code`) operan dentro del rango de enteros estándar (<< 2^53).
+  - Si futuras extensiones del protocolo requieren identificadores de 64 bits o marcas temporales en nanosegundos como enteros de 64 bits, **deben ser codificados como cadenas de texto (`string`)** o formateados según RFC 3339 (como se hace con `created_at`, `executor_signed_at`).
+- **Codificación Unicode:** Las cadenas deben ser UTF-8 válido y no pueden contener sustitutos huérfanos (*lone surrogates*, `U+D800` a `U+DFFF`) ni caracteres de control sin escapar.
+
 ---
 
 ## 8. Estado del Contrato

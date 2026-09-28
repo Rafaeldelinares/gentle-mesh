@@ -223,3 +223,99 @@ func FuzzCanonicalize(f *testing.F) {
 		}
 	})
 }
+
+func TestRedTeam_DuplicateKeys(t *testing.T) {
+	// RFC 8785 mandates I-JSON (RFC 7493) compliance:
+	// Duplicate keys in objects MUST be rejected as an error.
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"root duplicate keys", `{"a":1,"a":2}`},
+		{"nested duplicate keys", `{"nested":{"x":10,"x":20}}`},
+		{"duplicate keys in array of objects", `[{"ok":1},{"dup":true,"dup":false}]`},
+		{"deeply nested duplicate keys", `{"a":[{"b":{"c":1,"c":2}}]}`},
+		{"duplicate keys with different spacing", `{"key": 1, "key" : 2}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Canonicalize([]byte(tc.input))
+			if err == nil {
+				t.Fatalf("SECURITY VULNERABILITY: Duplicate key accepted without error: input=%q got=%q", tc.input, string(got))
+			}
+		})
+	}
+
+	// Valid unique keys in different scopes must succeed
+	validCases := []string{
+		`{"a":{"x":1},"b":{"x":1}}`,
+		`[{"a":1},{"a":2}]`,
+		`{"a":1,"b":2}`,
+	}
+	for _, v := range validCases {
+		if _, err := Canonicalize([]byte(v)); err != nil {
+			t.Fatalf("Canonicalize rejected valid unique keys %q: %v", v, err)
+		}
+	}
+}
+
+func TestRedTeam_InvalidUnicodeAndLoneSurrogates(t *testing.T) {
+	// RFC 8785 §3.2.2.2 & RFC 7493 (I-JSON):
+	// Lone surrogates and invalid UTF-8 bytes must be rejected, not replaced with U+FFFD.
+	cases := []struct {
+		name  string
+		input []byte
+	}{
+		{"lone high surrogate", []byte(`{"k":"\ud800"}`)},
+		{"lone low surrogate", []byte(`{"k":"\udfff"}`)},
+		{"lone surrogate in key", []byte(`{"\ud800":1}`)},
+		{"lone surrogate at end of string", []byte(`{"k":"abc\ud83d"}`)},
+		{"raw invalid UTF-8 byte 0xFF", []byte("{\"k\":\"\xff\"}")},
+		{"raw invalid UTF-8 byte 0x80", []byte("{\"k\":\"\x80\"}")},
+		{"raw invalid UTF-8 in key", []byte("{\"\xff\":1}")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Canonicalize(tc.input)
+			if err == nil {
+				t.Fatalf("SECURITY VULNERABILITY: Invalid unicode or surrogate accepted without error: input=%q got=%q", string(tc.input), string(got))
+			}
+		})
+	}
+
+	// Valid surrogate pair must succeed (e.g. \uD83D\uDE00 -> 😀 U+1F600)
+	surrogatePair := []byte(`{"emoji":"\uD83D\uDE00"}`)
+	canonPair, err := Canonicalize(surrogatePair)
+	if err != nil {
+		t.Fatalf("Canonicalize failed on valid surrogate pair: %v", err)
+	}
+	if !bytes.Contains(canonPair, []byte("😀")) {
+		t.Fatalf("Canonicalize did not properly decode surrogate pair: got %s", string(canonPair))
+	}
+
+	// Legitimate U+FFFD (replacement character) in valid UTF-8 must succeed
+	validReplacement := []byte(`{"char":"\ufffd"}`)
+	if _, err := Canonicalize(validReplacement); err != nil {
+		t.Fatalf("Canonicalize rejected valid U+FFFD escape: %v", err)
+	}
+
+	// Test jcs.Marshal rejecting Go structs with invalid UTF-8 strings
+	type BadStruct struct {
+		Name string `json:"name"`
+	}
+	bad := BadStruct{Name: "bad\xffname"}
+	if _, err := Marshal(bad); err == nil {
+		t.Fatalf("SECURITY VULNERABILITY: jcs.Marshal accepted struct with invalid UTF-8 string without error")
+	}
+
+	type NestedBadStruct struct {
+		List []string `json:"list"`
+	}
+	badList := NestedBadStruct{List: []string{"ok", "bad\xfe"}}
+	if _, err := Marshal(badList); err == nil {
+		t.Fatalf("SECURITY VULNERABILITY: jcs.Marshal accepted nested struct with invalid UTF-8 string without error")
+	}
+}
+
