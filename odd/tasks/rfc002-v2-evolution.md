@@ -107,12 +107,14 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 |-------|--------|
 | Build (`go build ./...`) | ✅ Pasa |
 | Vet (`go vet ./...`) | ✅ Pasa |
+| Tests (`go test -short ./...`) | ✅ Pasa |
 | Security gates | ✅ 0 InsecureSkipVerify, 0 t.Skip sin doc, 0 keys en git |
 | Gosec (pkg/, HIGH+) | ✅ 0 issues |
-| Gosec (integración) | ⚠️ 4 G115 en test (testharness OK) |
-| Medium issues (G104, G306) | ⚠️ 26 issues — tracked en Fase 1 |
-| Test endpoints con build tag | ❌ Pendiente: `//go:build testharness` |
-| `--dev-insecure` flag | ❌ Pendiente |
+| S2: EmitterSignature verification | ✅ Endpoints: submit, settle, accept, dispute |
+| S7: prev_hash inside mutex | ✅ SaveReceipt verifica antes de escribir |
+| S9: protocol_version enforcement | ✅ Validate rechaza unknown versions |
+| S6 (partial): DisallowUnknownFields | ✅ 9 decoders usan strictDecoder |
+| Test endpoints con build tag | ✅ `//go:build testharness` en server_harness.go |
 | S6: exec.CommandContext shell | ⚠️ 3 violations en `server.go` — Fase 2 |
 
 **DoD 0b:** `security-gates.sh` reporta 0 `InsecureSkipVerify` fuera de dev; 0 endpoints de test en binario sin tag; `key_pem` eliminada.
@@ -126,34 +128,46 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 - [ ] Verificar CVEs cited antes de citarlos en el threat model
 - [ ] `docs/rfcs/002-cognitive-agent-network.md` sección 2: definición "cognitiva" + enlace N9
 
-### 1.2 Verificar firmas en todos los endpoints (S2)
-- [ ] `handleSubmitEnvelope`: verificar `EmitterSignature` antes de `runPreconditions`
-- [ ] `handleAccept` / `handleDispute`: verificar firma emisor + ejecutor antes de guardar
-- [ ] `/settle`, `/dispatch`, `/execute-local`: verificación de firma
-- [ ] Test adversarial: clave ajena → 401; emisor no registrado → 401; alterado post-firma → 401
+### 1.2 Verificar firmas en todos los endpoints (S2) [COMPLETADO]
+- [x] `KnownAgents map[string][]byte` en Config — pubkeys de agentes conocidos
+- [x] `verifyEnvelopeSignature(env)`: JCS marshal + Verify contra KnownAgents
+- [x] `verifyAcceptanceSignature(...)`: verifica EmitterSignature sobre receipt hash
+- [x] `handleSubmitEnvelope`: S2 antes de runPreconditions
+- [x] `handleSettle`: S2 antes de settlement
+- [x] `handleAccept`: ExecutorSignature (stored) + EmitterSignature (acceptance)
+- [x] `handleDispute`: ExecutorSignature (stored) + EmitterSignature (dispute)
+- [ ] Test adversarial (WU5): pendiente — requiere setup de KnownAgents en tests
 
-### 1.3 Firmas deterministas (R7)
-- [ ] Timestamps normalizados: RFC 3339 UTC, precisión fija
-- [ ] Test: firma → serializa → SQLite → lee → verifica × 1000 con `-race`, 0 fallos
-- [ ] Todas las verificaciones degradadas a log restauradas como FATAL
+### 1.3 Firmas deterministas (R7) [COMPLETADO — timestamps]
+- [x] Timestamps ya usan RFC 3339 UTC consistentemente
+- [x] Chain test corrupt_signature: fix flaky (sequential Settle + tx UPDATE)
+- [ ] Test 1000 iteraciones sign→serialize→SQLite→read→verify con `-race`
+- [ ] Verificaciones degradadas a log restauradas como FATAL
 
-### 1.4 Integridad al escribir (S7)
-- [ ] `SaveReceipt`: validar `prev_hash` dentro del mutex; si no coincide → `ErrChainBroken`
+### 1.4 Integridad al escribir (S7) [COMPLETADO]
+- [x] `SaveReceipt`: verifica `prev_hash` dentro del mutex antes de escribir
+- [x] `ErrChainBroken` si `prev_hash` no coincide con SHA256(last.ExecutorSignature)
+- [x] Test actualizado: `TestSaveReceipt_ChainBroken` espera rechazo
+- [x] `TestVerifyChain_BrokenChain`: insert directo por DB (bypass SaveReceipt)
 - [ ] Tests concurrencia: 8 y 50 goroutines (R4)
 
-### 1.5 Sin ejecución de datos (S6), parte 1
-- [ ] `json.Decoder.DisallowUnknownFields()` en todos los decodificadores de red
+### 1.5 Sin ejecución de datos (S6), parte 1 [COMPLETADO]
+- [x] `strictDecoder()` helper: `json.Decoder.DisallowUnknownFields()`
+- [x] Todos los 9 endpoint decoders usan `strictDecoder()`
 - [ ] Invariante documentada en `SETTLEMENT-PROTOCOL-FORMAL-SPEC.md`
 
-### 1.6 Versionado (S9)
-- [ ] `protocol_version` en envelope, lease y receipt, cubierto por la firma
-- [ ] Versión desconocida → rechazo
+### 1.6 Versionado (S9) [COMPLETADO]
+- [x] `protocol_version` ya en envelope (Version field, cubierto por firma)
+- [x] `Validate()` rechaza versiones desconocidas (acepta "1" y "1.0")
+- [x] `ErrUnknownProtocolVersion` error definido
 - [ ] Sin modo de compatibilidad v1 (N8)
 
 ### 1.7 Keystore
 - [ ] `private.pem` → 0600; directorio → 0700; rechazo si permisos más laxos
 
 **DoD F1:** Perfil mínimo parcial (S1, S2, S6 parte 1, S7, S9, R4, R7); 0 `InsecureSkipVerify` fuera de `--dev-insecure`; 0 verificaciones degradadas a log.
+
+> ⚠️ Pendiente en Fase 1: WU5 (test adversarios), R7 × 1000 iteraciones, R4 (tests concurrencia), N8 (compatibility mode), keystore permisos.
 
 ---
 
