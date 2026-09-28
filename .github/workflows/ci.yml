@@ -56,6 +56,9 @@ jobs:
           go install github.com/securego/gosec/v2/cmd/gosec@latest
 
       - name: Run gosec (pkg/, HIGH+, blocking)
+        # ÚNICA exclusión activa en gosec: G104 (Audit errors not checked).
+        # En el código base v1.0.1 existen retornos de error no comprobados (ej. closes/writes).
+        # Esta exclusión se audita y resuelve formalmente en el Milestone v1.0.3 (Issue #18).
         run: |
           gosec -severity high \
             -exclude=G104 \
