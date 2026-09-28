@@ -56,11 +56,9 @@ jobs:
           go install github.com/securego/gosec/v2/cmd/gosec@latest
 
       - name: Run gosec (pkg/, HIGH+, blocking)
-        # En main (v1.0.1) scheduler.go presenta G115 (int->int32) rastreado en Issue #13.
-        # Bloquea ante cualquier otra vulnerabilidad HIGH en pkg/.
         run: |
           gosec -severity high \
-            -exclude=G104,G115 \
+            -exclude=G104 \
             ./pkg/... || {
             echo "FAIL: HIGH issues in pkg/ — fix before merging"
             exit 1
