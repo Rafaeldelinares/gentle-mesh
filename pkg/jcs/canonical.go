@@ -515,6 +515,8 @@ func canonicalizeString(raw string, buf *bytes.Buffer) {
 	buf.WriteByte('"')
 	for _, r := range raw {
 		if r < 0x20 {
+			// #nosec G115 — r is from []byte (range 0-255); byte(r) always valid.
+			// gosec cannot trace the type constraint; verified by inspection.
 			buf.WriteString(escapeControl(byte(r)))
 		} else if r == '"' {
 			buf.WriteString(`\"`)
