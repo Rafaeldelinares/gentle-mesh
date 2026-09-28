@@ -64,14 +64,17 @@ Parámetros aplicados:
 
 ### 2.3 Protección de `main`
 ```bash
-gh api -X PUT repos/Rafaeldelinares/gentle-mesh/branches/main/protection --input /tmp/protection-main.json
+gh api -X PUT repos/Rafaeldelinares/gentle-mesh/branches/main/protection --input /tmp/main-protection-update.json
 ```
 Parámetros aplicados:
-- **Required status checks:** `null` (main aún no tiene el workflow de CI de `.github/workflows/ci.yml`; exigir checks bloquearía cualquier PR hacia main. Se añadirá en cuanto el CI llegue a main).
-- **Enforce admins:** `true`.
+- **Required status checks:** `Lint & Security`, `Unit Tests`, `Integration Tests (Docker)`.
+- **Strict status checks:** `true` (requiere estar al día con la rama base antes de mergear).
+- **Enforce admins:** `true` (las reglas aplican también a administradores).
 - **Pull request reviews:** `required_approving_review_count: 0`, `require_code_owner_reviews: false`.
 - **Force pushes:** `false` (bloqueados).
 - **Deletions:** `false` (bloqueadas).
+
+*Nota histórica:* Inicialmente los status checks estaban en `null` mientras `main` no tenía `.github/workflows/ci.yml`. Tras mergearse el PR #16 (Issue #10), se activaron formalmente los 3 checks obligatorios con `strict: true`.
 
 ---
 
@@ -148,6 +151,30 @@ Parámetros aplicados:
 ```json
 {
   "url": "https://api.github.com/repos/Rafaeldelinares/gentle-mesh/branches/main/protection",
+  "required_status_checks": {
+    "url": "https://api.github.com/repos/Rafaeldelinares/gentle-mesh/branches/main/protection/required_status_checks",
+    "strict": true,
+    "contexts": [
+      "Lint & Security",
+      "Unit Tests",
+      "Integration Tests (Docker)"
+    ],
+    "contexts_url": "https://api.github.com/repos/Rafaeldelinares/gentle-mesh/branches/main/protection/required_status_checks/contexts",
+    "checks": [
+      {
+        "context": "Lint & Security",
+        "app_id": 15368
+      },
+      {
+        "context": "Unit Tests",
+        "app_id": 15368
+      },
+      {
+        "context": "Integration Tests (Docker)",
+        "app_id": 15368
+      }
+    ]
+  },
   "required_pull_request_reviews": {
     "url": "https://api.github.com/repos/Rafaeldelinares/gentle-mesh/branches/main/protection/required_pull_request_reviews",
     "dismiss_stale_reviews": false,
@@ -197,8 +224,8 @@ Parámetros aplicados:
      - `required_approving_review_count: 1`
      - `require_code_owner_reviews: true`
 2. **Checks en `main`:**
-   - La rama `main` aún conserva el estado de la versión v1.0.1 y no contiene el directorio `.github/workflows/ci.yml`. Exigir los checks en `main` en este momento provocaría que cualquier PR legítimo hacia `main` quedase bloqueado indefinidamente.
-   - **Condición de endurecimiento:** Cuando se porte el CI a `main` (con la resolución del Issue #10: "ci: llevar el workflow de CI y los security gates a main"), se añadirán de inmediato los 3 checks requeridos con `strict: true`.
+   - Inicialmente la rama `main` no contenía el directorio `.github/workflows/ci.yml`.
+   - **Activación realizada:** Con la integración del PR #16 (Issue #10), el workflow de CI se incorporó a `main` y se activaron inmediatamente los tres status checks requeridos (`Lint & Security`, `Unit Tests`, `Integration Tests (Docker)`) con `strict: true`. Ambos branches (`main` y `feat/rfc-002-settlement`) comparten ahora la misma matriz de protección estricta.
 
 ---
 
@@ -238,4 +265,4 @@ error: falló el empuje de algunas referencias a 'https://github.com/Rafaeldelin
 
 - [ ] Crear identidad bot / GitHub App dedicada para el agente (sin permisos de administración).
 - [ ] Elevar `required_approving_review_count` a 1 y habilitar `require_code_owner_reviews`.
-- [ ] Añadir checks obligatorios de CI a `main` tras sincronizar `.github/workflows/ci.yml`.
+- [x] Añadir checks obligatorios de CI a `main` tras sincronizar `.github/workflows/ci.yml` (Completado vía PR #16).
