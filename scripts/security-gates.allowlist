@@ -8,8 +8,3 @@
 # ── Milestone v1.0.2 (S1): InsecureSkipVerify ───────────────────────────────
 cmd/gentle-mesh/main.go:InsecureSkipVerify       || v1.0.2 || flag TLSInsecureSkipVerify en cliente/servidor CLI
 pkg/client/bridge.go:InsecureSkipVerify           || v1.0.2 || bridge de cliente local sin verificación TLS estricta
-
-# ── Milestone v1.0.2: Base de datos versionada en git histórico de main ─────
-data/mesh.db:.*                                   || v1.0.2 || artefacto SQLite versionado en v1.0.1 de main; pendiente desindexar
-data/mesh.db-shm:.*                               || v1.0.2 || artefacto SQLite versionado en v1.0.1 de main; pendiente desindexar
-data/mesh.db-wal:.*                               || v1.0.2 || artefacto SQLite versionado en v1.0.1 de main; pendiente desindexar
