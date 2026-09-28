@@ -67,15 +67,19 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 - [ ] Build verificado en CI (pendiente: CI debe pasar primero)
 - [ ] Makefile, Dockerfile compilan con `-tags testharness` para tests
 
-### 0b.3 Claves privadas fuera del servidor [COMPLETADO]
+### 0b.3 Claves privadas fuera del servidor [COMPLETADO — bootstrap CSR diferido a Fase 1]
 - [x] `pkg/keystore/store.go`: genera clave local, solo `private.pem` en disco (0600)
 - [x] Nunca se transmite `key_pem` por la red
 - [x] `key_pem` NO está en el esquema SQLite
+
+**Pendiente de Fase 1 (diferido — requiere CSR enrollment bootstrapping):**
 - [ ] Nodo genera clave localmente, envía CSR al servidor
 - [ ] Servidor firma y devuelve solo certificado, nunca `key_pem`
-- [ ] Eliminar `key_pem` del esquema SQLite
 - [ ] Test: ninguna ruta del servidor recibe, guarda o devuelve clave privada
-- [ ] Migración que borre `key_pem` de DBs existentes
+
+> **Nota:** La sección 0b.3 original del plan incluía CSR enrollment y bootstrapping de claves.
+> Esto requiere diseño de PKI out-of-band y está fuera del alcance mínimo de Phase 0.
+> issue tracking: https://github.com/Rafaeldelinares/gentle-mesh/issues?q=label%3Aphase-1
 
 ### 0b.4 Codeowners y protección de rama [COMPLETADO]
 - [x] `CODEOWNERS`: `@Rafaeldelinares` en `pkg/signing/`, `pkg/keystore/`, `pkg/receipt/`, `pkg/envelope/`, `pkg/jcs/`, `.github/`

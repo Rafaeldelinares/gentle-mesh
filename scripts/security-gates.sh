@@ -142,13 +142,11 @@ echo ""
 total=0
 
 # S6: any shell exec outside testharness files
-# Check both phases: F2 (production code) and 0b (test infrastructure)
+# ALL sh -c exceptions are eliminated in Phase F2 (direct exec.Command replacement).
+# Each allowlist entry carries exactly one phase: the one that removes the violation.
 run_check "$SHELL_PATTERN" \
-    "S6: exec.Command(\"sh\" | \"bash\", \"-c\", ...) — Phase 2: replace with direct exec" \
+    "S6: exec.Command(\"sh\" | \"bash\", \"-c\", ...) — Phase F2: replace with direct exec" \
     "F2" || ((total+=$?))
-run_check "$SHELL_PATTERN" \
-    "S6: exec.Command(\"sh\" | \"bash\", \"-c\", ...) — Phase 0b: test infrastructure" \
-    "0b" || ((total+=$?))
 
 # S1: InsecureSkipVerify
 run_check "$INSECURE_PATTERN" \
