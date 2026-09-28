@@ -157,9 +157,17 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 - Test: firma con clave de C en `/dispute` → 401
 - Test: firma de A con clave de A → 200 (happy path)
 
+### 1.10 Posicionamiento frente a A2A — documento docs/rfcs/002-a2a-positioning.md
+**Precondición:** redactar y acordar ANTES de escribir código de transporte o descubrimiento nuevo en la Fase 1.
+- Leer directamente la especificación A2A v1.0.0: https://a2a-protocol.org/latest/specification/ (sobre todo extensiones, securitySchemes, Agent Card firmada con JWS y ciclo de vida de tareas).
+- Mapear qué cubre A2A (descubrimiento, autenticación, ciclo de tareas) y qué aporta gentle-mesh encima (capacidades y política, pre-flight con lease, recibos firmados y encadenados, liquidación).
+- Mapear estados: p. ej. REJECTED_CAPABILITY → REJECTED con motivo; SETTLED_CLEAN → COMPLETED + recibo como artefacto firmado.
+- Recomendación razonada: ¿la v2 se implementa como extensión A2A desde ya o en una fase posterior?
+- La decisión la toma el humano antes de implementar el resto de la Fase 1.
+
 **DoD F1:** Perfil mínimo parcial (S1, S2, S6 parte 1, S7, S9, R4, R7); 0 `InsecureSkipVerify` fuera de `--dev-insecure`; 0 verificaciones degradadas a log.
 
-> ⚠️ Pendiente en Fase 1: WU5 (test adversarios), R7 × 1000 iteraciones, N8 (compatibility mode), keystore permisos, 1.8 (seq INTEGER), 1.9 (test emitter sig).
+> ⚠️ Pendiente en Fase 1: WU5 (test adversarios), R7 × 1000 iteraciones, N8 (compatibility mode), keystore permisos, 1.8 (seq INTEGER), 1.9 (test emitter sig), 1.10 (A2A positioning).
 
 ---
 
