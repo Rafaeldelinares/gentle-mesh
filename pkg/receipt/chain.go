@@ -467,27 +467,6 @@ func ComputeReceiptHash(r *SettlementReceipt) (string, error) {
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────
 
-// lastExecutorSignatureRaw returns the base64url-encoded executor signature
-// of the most recent receipt in the pair's chain.
-func (cs *ChainStore) lastExecutorSignatureRaw(
-	ctx context.Context, emitterID, executorID string,
-) (string, error) {
-	var sig string
-	err := cs.db.QueryRowContext(ctx, `
-		SELECT executor_signature FROM receipts
-		WHERE emitter_agent_id = ? AND executor_agent_id = ?
-		ORDER BY executor_signed_at DESC
-		LIMIT 1
-	`, emitterID, executorID).Scan(&sig)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", ErrReceiptNotFound
-		}
-		return "", err
-	}
-	return sig, nil
-}
-
 // Count returns the total number of receipts for a pair.
 func (cs *ChainStore) Count(ctx context.Context, emitterID, executorID string) (int, error) {
 	var n int

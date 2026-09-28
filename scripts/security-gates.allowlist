@@ -1,0 +1,28 @@
+# security-gates.allowlist — RFC-002 v2
+# Format: path:grep_pattern || phase || reason
+# path         = directory prefix or file, matched by prefix
+# grep_pattern = ERE matched against file content with grep -E
+# phase        = single phase that eliminates this violation (0b or F2)
+# reason       = human-readable justification
+# Lines starting with # and blank lines are ignored.
+#
+# NOTE: Artifact problems (.db, .crt, .srl, .csr in git) are NOT allowlist
+# entries. They must be fixed at the source with git rm --cached and .gitignore.
+# The DB/artifact gate checks git ls-files --cached regardless of allowlist.
+
+# ── Phase F1 (S1): InsecureSkipVerify (eliminated when --dev-insecure gate is added) ──
+# All these files use self-signed certs, dev helpers, or are unused stubs.
+integration/testscenario/:InsecureSkipVerify           || F1 || test harness: self-signed certs
+integration/agent/client.go:InsecureSkipVerify        || F1 || WithInsecureSkipVerify dev helper
+integration/agent/tls_test.go:InsecureSkipVerify     || F1 || test verifies TLS 1.1 rejection (S9)
+pkg/shell/mesh.go:InsecureSkipVerify             || F1 || dev stub: file not imported in any binary
+cmd/gentle-mesh/main.go:InsecureSkipVerify       || F1 || dev flag: TLSInsecureSkipVerify config field
+pkg/client/bridge.go:InsecureSkipVerify           || F1 || dev bridge with TLSInsecureSkipVerify
+
+# ── Phase F2: exec sh -c (eliminated in F2 by direct exec.Command) ─────────────
+# All sh -c calls are replaced with direct exec.Command in Phase F2.
+# Phase 0b resolves this for test infrastructure by adding //go:build testharness,
+# but the sh -c pattern remains in source until F2 replaces it.
+pkg/shell/:exec.Command.*"sh".*"-c"               || F2 || stub package, direct exec in Phase 2
+integration/agent/server.go:exec.Command.*"sh".*"-c" || F2 || handleExecute + assertion evaluation
+integration/testscenario/:exec.Command.*"sh".*"-c"  || F2 || docker exec and fixture setup in tests

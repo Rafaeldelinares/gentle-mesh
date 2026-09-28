@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feat/rfc-002-settlement]
+  pull_request:
+    branches: [main, feat/rfc-002-settlement]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Static analysis ──────────────────────────────────────────────────────────
+  lint:
+    name: Lint & Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b  # v5.4.0
+        with:
+          go-version-file: go.mod
+
+      - name: Run go vet
+        run: go vet ./...
+
+      # ── security gates ─────────────────────────────────────────────────────────
+      - name: Run security gates
+        run: |
+          chmod +x scripts/security-gates.sh
+          ./scripts/security-gates.sh || {
+            echo "SECURITY GATE FAILED: fix violations before merging"
+            exit 1
+          }
+
+      - name: Download Go dependencies
+        run: go mod download
+
+      # ── staticcheck ──────────────────────────────────────────────────────────
+      - name: Set up staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+
+      - name: Run staticcheck
+        run: staticcheck ./...
+
+      # ── gosec: production packages (blocking) ───────────────────────────────
+      - name: Set up gosec
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run gosec (pkg/, HIGH+, blocking)
+        # Baseline (Phase 0a): 1 G115 false positive in pkg/jcs/canonical.go (suppressed).
+        # 0 HIGH issues in pkg/. Medium issues tracked for Phase 1.
+        run: |
+          gosec -severity high \
+            -exclude=G104 \
+            ./pkg/... || {
+            echo "FAIL: HIGH issues in pkg/ — fix before merging"
+            exit 1
+          }
+
+      # ── gosec: integration packages (non-blocking) ─────────────────────────
+      - name: Run gosec (integration/, all severities, report artifact)
+        # Baseline: 4 G115 (int64→uint16/uint64 cast) in test infrastructure.
+        # G104/G306 known, tracked for Phase 1.
+        # This step always passes; report is uploaded for visibility.
+        run: |
+          set +e
+          gosec -severity medium -fmt json -out gosec-integration-report.json ./integration/... ./cmd/...
+          exit 0
+
+      - name: Upload gosec integration report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: gosec-integration-report
+          path: gosec-integration-report.json
+          retention-days: 7
+
+      # ── govulncheck ────────────────────────────────────────────────────────
+      - name: Set up govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+  # ── Unit tests ───────────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b  # v5.4.0
+        with:
+          go-version-file: go.mod
+
+      - name: Download Go dependencies
+        run: go mod download
+
+      - name: Build (no testharness tag — endpoints /execute and /inject-receipt must NOT be registered)
+        run: go build ./...
+
+      - name: Test (with race detector)
+        run: go test -race -timeout 10m ./pkg/... ./cmd/... ./integration/agent/...
+
+  # ── Docker integration tests ──────────────────────────────────────────────────
+  integration:
+    name: Integration Tests (Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b  # v5.4.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install test dependencies (pytest)
+        run: sudo apt-get update -y && sudo apt-get install -y python3-pytest
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8026d2bc3645ea78b0d2544766a1225eb5691f89  # v3.7.0
+
+      - name: Generate TLS certificates for Docker tests
+        run: |
+          mkdir -p /tmp/rfc002-certs
+          bash integration/certs/gen-certs.sh /tmp/rfc002-certs
+          echo "Generated certs: $(ls /tmp/rfc002-certs)"
+
+      - name: Run distributed integration tests
+        run: |
+          go test -race -tags "docker testharness" \
+            -p 1 \
+            -timeout 20m \
+            ./integration/testscenario/...
+        env:
+          CERTS_HOST_DIR: /tmp/rfc002-certs

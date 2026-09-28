@@ -2,7 +2,6 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -72,8 +71,13 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("open chain db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure chain db pragmas: %w", err)
+	}
 	chainStore := receipt.NewChainStore(db)
 	if err := chainStore.InitSchema(context.Background()); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("init chain schema: %w", err)
 	}
 
@@ -202,16 +206,19 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 
 	// Agent B endpoints (executor).
 	mux.HandleFunc("POST /leases", s.handleCreateLease)
-	mux.HandleFunc("POST /execute", s.handleExecute)
 	mux.HandleFunc("POST /settle", s.handleSettle)
 	mux.HandleFunc("POST /accept", s.handleAccept)
 	mux.HandleFunc("POST /dispute", s.handleDispute)
-	mux.HandleFunc("POST /inject-receipt", s.handleInjectReceipt)
 	mux.HandleFunc("POST /verify-chain", s.handleVerifyChain)
 
 	// Shared.
 	mux.HandleFunc("GET /receipts/", s.handleGetReceipt)
 	mux.HandleFunc("GET /chain", s.handleGetChain)
+
+	// Test-harness-only endpoints: /execute and /inject-receipt.
+	// The stub (no-op) is in server_harness_stub.go; the real registration
+	// is in server_harness.go when building with -tags testharness.
+	s.registerTestHarnessEndpoints(mux)
 }
 
 // Shutdown gracefully shuts down the server.
@@ -369,62 +376,6 @@ func (s *Server) handleCreateLease(w http.ResponseWriter, r *http.Request) {
 
 	s.leases[lease.LeaseID] = lease
 	writeJSON(w, http.StatusOK, lease)
-}
-
-// handleExecute handles POST /execute (simulated task execution).
-func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST only")
-		return
-	}
-	defer r.Body.Close()
-
-	var req ExecuteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if req.Command == "" {
-		writeError(w, http.StatusBadRequest, "command required")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), s.config.EvalTimeout)
-	defer cancel()
-
-	workDir := req.WorkingDir
-	if workDir == "" {
-		workDir = s.config.WorkspaceDir
-	}
-
-	cmd := exec.CommandContext(ctx, "sh", "-c", req.Command)
-	cmd.Dir = workDir
-	for k, v := range req.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	exitCode := 0
-	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			exitCode = ee.ExitCode()
-		} else {
-			exitCode = -1
-		}
-	}
-
-	log.Printf("[%s] Execute: %q → exit=%d", s.config.AgentID, req.Command, exitCode)
-
-	writeJSON(w, http.StatusOK, &ExecuteResponse{
-		ExitCode: exitCode,
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-	})
 }
 
 // handleSettle handles POST /settle — triggers the settlement engine.
@@ -667,52 +618,6 @@ func (s *Server) handleDispute(w http.ResponseWriter, r *http.Request) {
 		ReceiptJSON: updatedJSON,
 		ReceiptID:   stored.ReceiptID,
 		Disputed:    true,
-	})
-}
-
-// handleInjectReceipt handles POST /inject-receipt — injects a receipt directly into
-// the chain store, bypassing the normal settlement flow. Intended ONLY for testing
-// and security validation (e.g., injecting a receipt signed by the wrong executor
-// key to verify that VerifyChain correctly detects the signature mismatch).
-func (s *Server) handleInjectReceipt(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "POST only")
-		return
-	}
-	defer r.Body.Close()
-
-	var req InjectReceiptRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "decode: "+err.Error())
-		return
-	}
-	if len(req.ReceiptJSON) == 0 {
-		writeError(w, http.StatusBadRequest, "receipt_json required")
-		return
-	}
-
-	var rec receipt.SettlementReceipt
-	if err := json.Unmarshal(req.ReceiptJSON, &rec); err != nil {
-		writeError(w, http.StatusBadRequest, "parse receipt: "+err.Error())
-		return
-	}
-
-	ctx := context.Background()
-	// Use UpdateReceipt to replace the existing receipt with the tampered one.
-	// This simulates the receipt in the chain being tampered with (e.g., by a
-	// compromised executor or MITM attack). UpdateReceipt preserves the chain
-	// position (prev_hash from the original receipt remains intact).
-	if err := s.chainStore.UpdateReceipt(ctx, &rec); err != nil {
-		writeError(w, http.StatusInternalServerError, "update: "+err.Error())
-		return
-	}
-
-	log.Printf("[%s] InjectReceipt: receipt=%s executor=%s",
-		s.config.AgentID, rec.ReceiptID, rec.ExecutorAgentID)
-
-	writeJSON(w, http.StatusOK, &InjectReceiptResponse{
-		ReceiptID: rec.ReceiptID,
-		Injected:  true,
 	})
 }
 

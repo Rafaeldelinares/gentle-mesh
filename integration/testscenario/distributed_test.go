@@ -1,3 +1,5 @@
+//go:build docker
+
 package testscenario
 
 import (
@@ -142,6 +144,17 @@ func composeUp(t *testing.T, composeDir string) func() {
 		time.Sleep(2 * time.Second)
 	}
 
+	var once sync.Once
+	cleanup := func() {
+		once.Do(func() {
+			cmd := exec.Command("docker", "compose", "-f", composeFile, "-p", "rfc002", "down", "--volumes", "--remove-orphans")
+			cmd.Dir = composeDir
+			out, _ := cmd.CombinedOutput()
+			t.Logf("docker compose down:\n%s", string(out))
+		})
+	}
+	t.Cleanup(cleanup)
+
 	if ctx.Err() != nil {
 		logsCmd := exec.Command("docker", "compose", "-f", composeFile, "-p", "rfc002", "logs", "--tail=30")
 		logsCmd.Dir = composeDir
@@ -149,12 +162,7 @@ func composeUp(t *testing.T, composeDir string) func() {
 		t.Fatalf("timeout waiting for agents. Logs:\n%s", string(logsOut))
 	}
 
-	return func() {
-		cmd := exec.Command("docker", "compose", "-f", composeFile, "-p", "rfc002", "down", "--volumes")
-		cmd.Dir = composeDir
-		out, _ := cmd.CombinedOutput()
-		t.Logf("docker compose down:\n%s", string(out))
-	}
+	return cleanup
 }
 
 // findComposeDir returns the path to the integration directory.

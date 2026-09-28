@@ -28,8 +28,6 @@ type Scenario struct {
 	bClient   *agent.HTTPClient // Agent B (executor)
 	cClient   *agent.HTTPClient // Agent C (optional executor for fan-out)
 	aSigner   *signing.BasicSigner
-	bSigner   *signing.BasicSigner
-	cSigner   *signing.BasicSigner
 	workspace string
 }
 

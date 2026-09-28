@@ -104,27 +104,6 @@ func errorEnvelope() *envelope.CognitiveTaskEnvelope {
 	}
 }
 
-func validEnvelopeWithFile(path, content string) *envelope.CognitiveTaskEnvelope {
-	return &envelope.CognitiveTaskEnvelope{
-		EnvelopeID:   "contract-file",
-		EnvelopeHash: "file123",
-		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
-			Branch:       "main",
-			WorkspacePath: "/tmp/workspace",
-		},
-		Assertions: []envelope.Assertion{
-			{
-				ID:   "file-check",
-				Type: envelope.AssertionFileModified,
-				Params: envelope.AssertionParams{
-					FilePath: path,
-				},
-			},
-		},
-	}
-}
-
 // ─────────────────────────────────────────────────────────────────
 // NewEngine
 // ─────────────────────────────────────────────────────────────────

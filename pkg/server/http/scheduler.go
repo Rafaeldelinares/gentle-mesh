@@ -457,7 +457,7 @@ func (s *TerritoryScheduler) findConflictLocked(mt *task.ManagedTask) *protocol.
 // enqueueByPriorityLocked inserts mt into the queue based on its priority.
 // Higher priority tasks are placed near the front. The caller must hold s.mu.
 func (s *TerritoryScheduler) enqueueByPriorityLocked(mt *task.ManagedTask) {
-	priority := int32(mt.Request.Priority)
+	priority := mt.Request.Priority
 	if priority < -100 {
 		priority = -100
 	} else if priority > 100 {
@@ -467,7 +467,7 @@ func (s *TerritoryScheduler) enqueueByPriorityLocked(mt *task.ManagedTask) {
 	// Find position to insert (higher priority first)
 	insertPos := len(s.queue)
 	for i := 0; i < len(s.queue); i++ {
-		qPriority := int32(s.queue[i].Request.Priority)
+		qPriority := s.queue[i].Request.Priority
 		if qPriority < -100 {
 			qPriority = -100
 		} else if qPriority > 100 {
