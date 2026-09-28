@@ -13,6 +13,11 @@ gentle-mesh RFC-002 es un protocolo de **confianza y liquidación entre agentes*
 2. ambos obtengan **evidencia verificable e inalterable** de lo que se pidió, lo que se hizo y lo que se comprobó,
 3. cualquier intento de salirse de lo autorizado **falle y deje rastro**.
 
+**Qué significa "cognitiva".** En "Red Cognitiva de Agentes", *cognitiva* se refiere a que la red transporta
+intención, contexto y criterios de verificación, no texto plano. La red no razona ni decide: garantiza que el
+razonamiento de los agentes opere dentro de límites autorizados y deje evidencia verificable.
+*La cognición vive en los agentes; la confianza vive en la malla.*
+
 Promesa pública del protocolo:
 
 > *gentle-mesh no impide que un agente intente salirse; hace que no tenga por dónde,
@@ -86,6 +91,7 @@ Lo que RFC-002 **no** pretende resolver. Declararlo evita prometer lo que no se 
 | N6 | **Ser un protocolo de transporte general ni de descubrimiento de agentes.** | Protocolos existentes (p. ej. A2A, MCP); gentle-mesh se sitúa como capa de confianza y liquidación. |
 | N7 | **Reinventar criptografía, delegación o sandboxing.** | Primitivas y modelos estándar (Ed25519, RFC 8785, macaroons/UCAN/biscuit, logs de transparencia, gVisor/nsjail). |
 | N8 | **Compatibilidad con envelopes v1.** | Migración explícita; v2 rechaza v1 (S9). |
+| N9 | **Albergar cognición compartida no gobernada.** La red no es una "mente colectiva": no ofrece canales libres de memoria o coordinación entre agentes. Cualquier estado compartido futuro será un *tablón gobernado* (escritura por capacidad, entradas firmadas y encadenadas, lectura por ámbito, revocación, solo datos tipados). | Extensión futura (RFC-004) bajo este modelo. |
 
 ## 5. Perfil mínimo conforme
 
