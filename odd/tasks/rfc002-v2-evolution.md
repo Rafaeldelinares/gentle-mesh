@@ -109,6 +109,8 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 
 ## Fase 1 — Cerrar lo explotable
 
+> **Regla de Ejecución RDD desde Fase 1:** Cada PR debe mantenerse estrictamente por debajo de 400 líneas de diff (excluyendo ficheros autogenerados), recurriendo a PRs encadenados (*chained PRs*) si es necesario, garantizando que el presupuesto de contexto de las lentes de revisión RDD no sea desbordado (`lens_context_budget_exceeded`) y la revisión nativa pueda ejecutarse completamente en cada unidad de trabajo.
+
 ### 1.1 Docs rectores
 - [ ] `docs/architecture/THREAT-MODEL.md` — activos, actores, STRIDE por endpoint, modelo de adversario
 - [ ] Verificar CVEs cited antes de citarlos en el threat model

@@ -319,3 +319,36 @@ func TestRedTeam_InvalidUnicodeAndLoneSurrogates(t *testing.T) {
 	}
 }
 
+func TestRedTeam_HashHexString_InvalidUTF8(t *testing.T) {
+	// HashHexString must not use standard json.Marshal which silently replaces
+	// invalid UTF-8 bytes with U+FFFD. It must reject invalid UTF-8 via jcs.Marshal.
+	badInput := map[string]string{
+		"data": "bad\xffbytes",
+	}
+	hash, err := HashHexString(badInput)
+	if err == nil {
+		t.Fatalf("SECURITY VULNERABILITY: HashHexString accepted invalid UTF-8 string without error, produced hash %q", hash)
+	}
+
+	// Valid input must hash successfully and deterministically match HashHex(MustCanonicalize)
+	validInput := map[string]string{
+		"data": "valid UTF-8 string 😀",
+	}
+	validHash, err := HashHexString(validInput)
+	if err != nil {
+		t.Fatalf("HashHexString failed on valid input: %v", err)
+	}
+	expectedBytes, err := Marshal(validInput)
+	if err != nil {
+		t.Fatalf("Marshal failed on valid input: %v", err)
+	}
+	expectedHash, err := HashHex(expectedBytes)
+	if err != nil {
+		t.Fatalf("HashHex failed on valid input: %v", err)
+	}
+	if validHash != expectedHash {
+		t.Fatalf("HashHexString hash mismatch: got %q, want %q", validHash, expectedHash)
+	}
+}
+
+
