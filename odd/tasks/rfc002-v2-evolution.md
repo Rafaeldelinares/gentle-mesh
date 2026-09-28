@@ -164,12 +164,26 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 ## Estado
 
 ```
-[X] Bug #48 resuelto (R7 determinismo)
+[X] Bug #48 resuelto (R7 determinismo)                              — 0430826
 [X] Tests distribuidos: WU13–WU17 pasan
 [X] Repo creado: https://github.com/Rafaeldelinares/rfc002
-[ ] Fase 0a: hygiene pura
+[X] Fase 0a: hygiene pura                                         — 5ad0b70
 [ ] Fase 0b: controles de seguridad heredados
 [ ] Fase 1: cerrar explotables
 [ ] Fase 2: autorización + robustez
 [ ] Fase 3: issues + RFC-003 draft
 ```
+
+### Fase 0a completada (5ad0b70)
+
+- CI: go build/vet/test -race + staticcheck + gosec (severity medium+) + govulncheck
+  + Docker integration tests (testharness tag)
+- .gitignore: `*.key`, `*.pem`, `*.srl`, `*.csr`, `data/`, `*.db*`, `integration/certs-generated/`,
+  `.codegraph/`, `.atl/`
+- SECURITY.md: reporting policy, timelines, in/out of scope, experimental status
+- CODEOWNERS: @Rafaeldelinares owns pkg/signing, pkg/keystore, pkg/receipt, pkg/envelope,
+  pkg/jcs, certstore, .github/, scripts/
+- Claves privadas (`.key`, `.srl`) removidas del tracking de git (ahora ignoradas)
+
+**Baseline CI: FAIL** — gosec reporta 26 issues medium+ (G104, G306, otros) que se
+arreglarán en Fase 1. govulncheck: 0 vulnerabilidades.
