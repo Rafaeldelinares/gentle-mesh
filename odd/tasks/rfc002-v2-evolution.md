@@ -18,9 +18,9 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 
 ---
 
-## Fase 0a — Hygiene pura [COMPLETADO]
+## Fase 0a — Hygiene pura [EN CURSO]
 
-### 0a.1 CI en verde [COMPLETADO]
+### 0a.1 CI en verde [EN CURSO]
 - [x] `go build ./...` — pasa
 - [x] `go vet ./...` — pasa
 - [x] `go test -race ./...` — pasa
@@ -31,7 +31,7 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 - [x] Suite Docker de integración (`//go:build docker`, `-p 1`, cleanup garantizado) — en CI y pasando
 - [x] Versiones fijadas por SHA en GitHub Actions (checkout v4.2.2, setup-go v5.4.0, setup-buildx-action v3.7.0, upload-artifact v4.6.2)
 
-### 0a.2 Hygiene de repo [COMPLETADO]
+### 0a.2 Hygiene de repo [EN CURSO]
 - [x] `data/*.db*`, `*.db-wal`, `*.db-shm` fuera del repo — git rm --cached aplicado
 - [x] `integration/certs-generated/` en `.gitignore`
 - [x] `*.key` con clave privada en `.gitignore`
@@ -39,16 +39,16 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 - [x] `.atl/` y `*.visual-check.*` ignorados en `.gitignore`
 - [x] `git rm --cached` de artefactos ya commitados: repo limpio y validado
 
-### 0a.3 Documentación [COMPLETADO]
+### 0a.3 Documentación [EN CURSO]
 - [x] `SECURITY.md` — canal de reporte, plazos, estado "experimental no auditado"
 - [x] `docs/planning/agent-rfc002-hardening-prompt.md` — este plan
 - [x] `docs/rfcs/002-goals-and-non-goals.md` — criterios de decisión canonicos
 
-**DoD 0a:** CI verde en PR #5 (Run 36441304819); repo limpio; docs presentes; fuzz tests pasando.
+**DoD 0a:** CI verde en PR #5 (Run 36441304819); repo limpio; docs presentes; fuzz tests pasando. Se marcará completada al mergear el PR.
 
 ---
 
-## Fase 0b — Controles de seguridad heredados [COMPLETADO]
+## Fase 0b — Controles de seguridad heredados [EN CURSO]
 
 ### 0b.1 InsecureSkipVerify — baseline documentado, eliminado en Fase F1 (S1)
 - [x] `security-gates.sh`: detecta `InsecureSkipVerify` y lo allowlista por fase (F1)
@@ -84,7 +84,7 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 - [x] `CODEOWNERS`: `@Rafaeldelinares` en `pkg/signing/`, `pkg/keystore/`, `pkg/receipt/`, `pkg/envelope/`, `pkg/jcs/`, `.github/`
 - [x] `scripts/security-gates.sh` ownership en CODEOWNERS
 
-**DoD 0b:** `security-gates.sh` reporta 0 violaciones; 0 endpoints de test en binario sin tag; `key_pem` fuera de SQLite; CSR enrollment documentado en Issue #4.
+**DoD 0b:** `security-gates.sh` reporta 0 violaciones; 0 endpoints de test en binario sin tag; `key_pem` fuera de SQLite; CSR enrollment documentado en Issue #4. Se marcará completada al mergear el PR.
 
 ---
 
