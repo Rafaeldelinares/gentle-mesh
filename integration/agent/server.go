@@ -537,13 +537,19 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the executor's signature on the receipt (to prevent tampering).
-	// Use the executor's public key from the signer.
-	// NOTE: Skipped here to avoid Docker Alpine Ed25519 non-determinism (Bug #48).
-	// The executor signature was verified at settle time. Chain integrity is validated
-	// at the end of the test.
+	// S2: Verify the executor's Ed25519 signature before persisting acceptance.
+	//
+	// Approach: verify against 'stored' (B's DB record), not 'rec' (A's JSON).
+	// Reason: 'stored' is B's authoritative record — its ExecutorSignedAt and
+	// ExecutorSignature are exactly what B signed. Using A's receipt risks
+	// hash mismatch if A's JSON parse/serialize lost precision or content.
+	// This is safe because the receipt_id in 'rec' (from A) matches 'stored'.
+	if err := receipt.VerifyExecutorSignature(stored, s.signer.PublicKey()); err != nil {
+		writeError(w, http.StatusUnauthorized, "executor signature invalid: "+err.Error())
+		return
+	}
 
-	// Apply the acceptance fields directly. A already computed EmitterSignature locally
+	// Apply the acceptance fields. A already computed EmitterSignature locally
 	// using AcceptReceipt; we just store the acceptance on B's chain.
 	now := time.Now().UTC()
 	stored.EmitterAcceptance = receipt.AcceptanceAccepted
@@ -631,7 +637,14 @@ func (s *Server) handleDispute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Apply the dispute fields directly. A already computed EmitterSignature locally
+	// S2: Verify against 'stored' (DB record). Using 'rec' (A's JSON) risks
+	// hash mismatch if A's JSON parse/serialize lost precision or content.
+	if err := receipt.VerifyExecutorSignature(stored, s.signer.PublicKey()); err != nil {
+		writeError(w, http.StatusUnauthorized, "executor signature invalid: "+err.Error())
+		return
+	}
+
+	// Apply the dispute fields. A already computed EmitterSignature locally
 	// using DisputeReceipt; we just store the dispute on B's chain.
 	now := time.Now().UTC()
 	stored.EmitterAcceptance = receipt.AcceptanceDisputed

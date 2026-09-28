@@ -9,7 +9,28 @@
 
 ---
 
-## 1. Motivación y Diagnóstico
+## 1. Qué significa "Cognitiva"
+
+> *"Cognitiva" se refiere a que la red transporta **intención, contexto y criterios de verificación**, no texto plano. La red no razona ni decide: garantiza que el razonamiento de los agentes opere dentro de límites autorizados y deje evidencia verificable.*
+
+**Concreto:**
+- Un CognitiveTaskEnvelope transporta *qué se autoriza* y *cómo se verifica*, no la descripción libre de una tarea.
+- La red no interpreta, no completa, no alucina. Opera sobre contratos.
+- El ejecutor razona (con su LLM). La red solo asegura que lo autorizado sea lo ejecutado y que quede prueba.
+- El settlement receipt es la evidencia: lo que se pidió, lo que se ejecutó, lo que se verificó, quién lo firmó.
+
+**Distinción operativa:**
+
+| Analogía | Red de transporte (RFC-001) | Red cognitiva (RFC-002) |
+|---|---|---|
+| Lo que transporta | Bytes, streaming, comandos shell | Intención, contexto, aserciones |
+| Decisión | El agente decide qué ejecutar | El envelope declara qué está autorizado |
+| Prueba | Exit code | SettlementReceipt firmado + cadena SHA-256 |
+| Error | "me falló la red" | Receipt con veredicto fallido + evidencia |
+
+---
+
+## 2. Motivación y Diagnóstico
 
 Gentle Mesh v1 (RFC-001) resolvió el transporte y la infraestructura distribuida:
 - Demonio en Go estático con persistencia SQLite WAL y streaming HTTPS/SSE.
@@ -24,7 +45,7 @@ Sin embargo, al operar con agentes autónomos en hardware real, despachar tareas
 
 ---
 
-## 2. La Propuesta: Red Cognitiva de Agentes
+## 3. La Propuesta: Red Cognitiva de Agentes
 
 El RFC-002 introduce una **capa semántica y contractual** sobre el transporte de Gentle Mesh:
 
@@ -61,7 +82,7 @@ El RFC-002 introduce una **capa semántica y contractual** sobre el transporte d
 
 ---
 
-## 3. Especificación de Contratos
+## 4. Especificación de Contratos
 
 ### 3.1 `CognitiveTaskEnvelope` (Contrato de Misión)
 
@@ -125,7 +146,7 @@ Al finalizar el agente:
 
 ---
 
-## 4. Hoja de Ruta de Implementación
+## 5. Hoja de Ruta de Implementación
 
 1. **Fase 1: Definición de Tipos y Parsers en Go** (`pkg/envelope`).
 2. **Fase 2: Motor de Negociación y Handshake** (`pkg/handshake`).
