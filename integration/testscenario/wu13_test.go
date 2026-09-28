@@ -1038,7 +1038,7 @@ func TestWU14_AcceptReceiptE2E(t *testing.T) {
 	t.Logf("  sending acceptance: executor_signed_at_rfc=%s emitter_sig[0:8]=%s",
 		settledRec.ExecutorSignedAt.Format(time.RFC3339Nano),
 		acceptRecCopy.EmitterSignature[:8])
-	acceptResp, err := aClient.Accept(ctx, &agent.AcceptRequest{
+	acceptResp, err := bClient.Accept(ctx, &agent.AcceptRequest{
 		ReceiptJSON:         settleResp.ReceiptJSON,
 		ExecutorSignedAtRFC: settledRec.ExecutorSignedAt.Format(time.RFC3339Nano),
 		EmitterSignature:    acceptRecCopy.EmitterSignature,

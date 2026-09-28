@@ -298,7 +298,7 @@ func (cs *ChainStore) InjectReceipt(ctx context.Context, r *SettlementReceipt) e
 		r.ReceiptID, r.ContractID, r.EnvelopeHash,
 		r.EmitterAgentID, r.ExecutorAgentID, string(r.Verdict),
 		nullable(r.PreviousReceiptHash), r.ExecutorSignature,
-		nullable(r.ExecutorSignedAt.Format(time.RFC3339Nano)),
+		nullable(r.ExecutorSignedAt.Format(time.RFC3339)),
 		nullable(string(r.EmitterAcceptance)),
 		acceptanceAt,
 		nullable(r.EmitterSignature),
