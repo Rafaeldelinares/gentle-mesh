@@ -1,16 +1,17 @@
-# CODEOWNERS — RFC-002 Settlement Protocol v2
+# CODEOWNERS — Gentle Mesh & RFC-002 Settlement Protocol
 #
 # Maintainer: @Rafaeldelinares
 #
-# All PRs touching cryptographic code, evidence chain, or CI/security gates
+# All PRs touching cryptographic code, evidence chain, security gates, or CI workflows
 # require review from the maintainer before merge.
 
-# Core cryptographic packages
+# Core cryptographic and PKI packages
 /pkg/signing/       @Rafaeldelinares
 /pkg/keystore/      @Rafaeldelinares
 /pkg/receipt/       @Rafaeldelinares
 /pkg/envelope/      @Rafaeldelinares
-/pkg/jcs/          @Rafaeldelinares
+/pkg/jcs/           @Rafaeldelinares
+/pkg/pki/           @Rafaeldelinares
 
 # Server certificate store (TLS/mTLS identity)
 pkg/server/store/certstore.go   @Rafaeldelinares
