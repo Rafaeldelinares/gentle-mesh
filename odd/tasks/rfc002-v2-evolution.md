@@ -50,10 +50,9 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 
 ## Fase 0b — Controles de seguridad heredados [EN CURSO]
 
-### 0b.1 InsecureSkipVerify eliminado [EN CURSO]
-- [x] `security-gates.sh`: detecta `InsecureSkipVerify` y lo allowlista por fase
-- [x] Allowlist: `integration/testscenario/`, `integration/agent/client.go:WithInsecureSkipVerify`,
-  `pkg/shell/mesh.go`, `integration/agent/tls_test.go` (Phase 0b)
+### 0b.1 InsecureSkipVerify — baseline documentado, eliminado en Fase F1 (S1)
+- [x] `security-gates.sh`: detecta `InsecureSkipVerify` y lo allowlista por fase (F1)
+- [x] Allowlist: todos los archivos con `InsecureSkipVerify` → fase `F1` (cuando `--dev-insecure` esté implementado)
 - [ ] `RequireAndVerifyClientCert` obligatorio por defecto en servidor
 - [ ] Flag `--dev-insecure` para desarrollo local, rechaza si `GENTLE_ENV=production`
 - [ ] Test: sin flag, TLS inválido → connection refused/rejected

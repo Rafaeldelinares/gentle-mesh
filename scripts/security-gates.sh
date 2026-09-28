@@ -151,7 +151,7 @@ run_check "$SHELL_PATTERN" \
 # S1: InsecureSkipVerify
 run_check "$INSECURE_PATTERN" \
     "S1: InsecureSkipVerify — gate behind --dev-insecure flag" \
-    "0b" || ((total+=$?))
+    "F1" || ((total+=$?))
 
 # DB artifacts versioned
 echo "Checking: versioned database artifacts (*.db, *.db-wal, *.db-shm)"

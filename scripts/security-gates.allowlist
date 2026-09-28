@@ -10,14 +10,14 @@
 # entries. They must be fixed at the source with git rm --cached and .gitignore.
 # The DB/artifact gate checks git ls-files --cached regardless of allowlist.
 
-# ── Phase 0b: InsecureSkipVerify (eliminated in 0b) ──────────────────────────
+# ── Phase F1 (S1): InsecureSkipVerify (eliminated when --dev-insecure gate is added) ──
 # All these files use self-signed certs, dev helpers, or are unused stubs.
-integration/testscenario/:InsecureSkipVerify           || 0b || test harness: self-signed certs
-integration/agent/client.go:InsecureSkipVerify        || 0b || WithInsecureSkipVerify dev helper
-integration/agent/tls_test.go:InsecureSkipVerify     || 0b || test verifies TLS 1.1 rejection (S9)
-pkg/shell/mesh.go:InsecureSkipVerify             || 0b || dev stub: file not imported in any binary
-cmd/gentle-mesh/main.go:InsecureSkipVerify       || 0b || dev flag: TLSInsecureSkipVerify config field
-pkg/client/bridge.go:InsecureSkipVerify           || 0b || dev bridge with TLSInsecureSkipVerify
+integration/testscenario/:InsecureSkipVerify           || F1 || test harness: self-signed certs
+integration/agent/client.go:InsecureSkipVerify        || F1 || WithInsecureSkipVerify dev helper
+integration/agent/tls_test.go:InsecureSkipVerify     || F1 || test verifies TLS 1.1 rejection (S9)
+pkg/shell/mesh.go:InsecureSkipVerify             || F1 || dev stub: file not imported in any binary
+cmd/gentle-mesh/main.go:InsecureSkipVerify       || F1 || dev flag: TLSInsecureSkipVerify config field
+pkg/client/bridge.go:InsecureSkipVerify           || F1 || dev bridge with TLSInsecureSkipVerify
 
 # ── Phase F2: exec sh -c (eliminated in F2 by direct exec.Command) ─────────────
 # All sh -c calls are replaced with direct exec.Command in Phase F2.
