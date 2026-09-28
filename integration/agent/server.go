@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
+	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
 	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
 	"github.com/gentleman-programming/gentle-mesh/pkg/settlement"
 	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
@@ -263,6 +264,84 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Signature verification helpers (S2)
+// ─────────────────────────────────────────────────────────────────
+
+// verifyEnvelopeSignature verifies the EmitterSignature on a CognitiveTaskEnvelope.
+// It JCS-marshals the envelope with EmitterSignature cleared, then verifies the
+// signature against the emitter's public key.
+// Returns nil on success; 401-style error on failure.
+func (s *Server) verifyEnvelopeSignature(env *envelope.CognitiveTaskEnvelope) error {
+	emitterID := env.EmitterAgentID
+	if emitterID == "" {
+		return fmt.Errorf("missing emitter_agent_id")
+	}
+
+	// Look up the emitter's public key.
+	emitterPubkey, ok := s.config.KnownAgents[emitterID]
+	if !ok || len(emitterPubkey) == 0 {
+		return fmt.Errorf("unknown emitter agent: %s", emitterID)
+	}
+
+	if env.EmitterSignature == "" {
+		return fmt.Errorf("missing EmitterSignature")
+	}
+
+	// Build the signable envelope: copy with EmitterSignature cleared.
+	// This matches the logic in scenario.go and ComputeEnvelopeHash.
+	signable := *env
+	signable.EmitterSignature = ""
+
+	data, err := jcs.Marshal(&signable)
+	if err != nil {
+		return fmt.Errorf("jcs marshal: %w", err)
+	}
+
+	if err := signing.Verify(emitterPubkey, data, env.EmitterSignature); err != nil {
+		return fmt.Errorf("signature invalid: %w", err)
+	}
+
+	return nil
+}
+
+// verifyAcceptanceSignature verifies the EmitterSignature on an acceptance.
+// The emitter signed over the receipt hash with ExecutorSignedAt matching
+// the executor's value. This mirrors the logic in AcceptReceipt.
+func (s *Server) verifyAcceptanceSignature(
+	emitterID string,
+	rec *receipt.SettlementReceipt,
+	executorSignedAtRFC string,
+	emitterSig string,
+) error {
+	emitterPubkey, ok := s.config.KnownAgents[emitterID]
+	if !ok || len(emitterPubkey) == 0 {
+		return fmt.Errorf("unknown emitter agent: %s", emitterID)
+	}
+
+	if emitterSig == "" {
+		return fmt.Errorf("missing EmitterSignature")
+	}
+
+	// Reconstruct the exact receipt content the emitter signed.
+	// Clone the stored receipt and override ExecutorSignedAt and
+	// EmitterSignature to match what A signed.
+	recCopy := *rec
+	recCopy.ExecutorSignedAt, _ = time.Parse(time.RFC3339, executorSignedAtRFC)
+	recCopy.EmitterSignature = ""
+
+	hash, err := receipt.ComputeReceiptHash(&recCopy)
+	if err != nil {
+		return fmt.Errorf("compute receipt hash: %w", err)
+	}
+
+	if err := signing.Verify(emitterPubkey, []byte(hash), emitterSig); err != nil {
+		return fmt.Errorf("acceptance signature invalid: %w", err)
+	}
+
+	return nil
+}
+
 // handleSubmitEnvelope handles POST /envelopes.
 // Called by A to submit a contract to B.
 func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
@@ -289,6 +368,14 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := envelope.Validate(env); err != nil {
 		writeError(w, http.StatusBadRequest, "validate: "+err.Error())
+		return
+	}
+
+	// S2: Verify EmitterSignature before doing any work.
+	// Reject envelopes from unknown agents or with invalid signatures.
+	if err := s.verifyEnvelopeSignature(env); err != nil {
+		log.Printf("[%s] handleSubmitEnvelope: signature rejected: %v", s.config.AgentID, err)
+		writeError(w, http.StatusUnauthorized, "emitter signature invalid: "+err.Error())
 		return
 	}
 
@@ -454,6 +541,13 @@ func (s *Server) handleSettle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// S2: Verify EmitterSignature before settling.
+	if err := s.verifyEnvelopeSignature(env); err != nil {
+		log.Printf("[%s] handleSettle: signature rejected: %v", s.config.AgentID, err)
+		writeError(w, http.StatusUnauthorized, "emitter signature invalid: "+err.Error())
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), s.config.EvalTimeout)
 	defer cancel()
 
@@ -552,6 +646,21 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// S2: Verify the emitter's signature over the acceptance.
+	// A called AcceptReceipt locally using stored.ExecutorSignedAt and signed
+	// the receipt hash. We reconstruct that exact content and verify with
+	// A's public key from KnownAgents.
+	if err := s.verifyAcceptanceSignature(
+		stored.EmitterAgentID,
+		stored,
+		req.ExecutorSignedAtRFC,
+		req.EmitterSignature,
+	); err != nil {
+		log.Printf("[%s] handleAccept: emitter signature rejected: %v", s.config.AgentID, err)
+		writeError(w, http.StatusUnauthorized, "emitter signature invalid: "+err.Error())
+		return
+	}
+
 	// Apply the acceptance fields. A already computed EmitterSignature locally
 	// using AcceptReceipt; we just store the acceptance on B's chain.
 	now := time.Now().UTC()
@@ -644,6 +753,18 @@ func (s *Server) handleDispute(w http.ResponseWriter, r *http.Request) {
 	// hash mismatch if A's JSON parse/serialize lost precision or content.
 	if err := receipt.VerifyExecutorSignature(stored, s.signer.PublicKey()); err != nil {
 		writeError(w, http.StatusUnauthorized, "executor signature invalid: "+err.Error())
+		return
+	}
+
+	// S2: Verify the emitter's signature over the dispute.
+	if err := s.verifyAcceptanceSignature(
+		stored.EmitterAgentID,
+		stored,
+		req.ExecutorSignedAtRFC,
+		req.EmitterSignature,
+	); err != nil {
+		log.Printf("[%s] handleDispute: emitter signature rejected: %v", s.config.AgentID, err)
+		writeError(w, http.StatusUnauthorized, "emitter signature invalid: "+err.Error())
 		return
 	}
 

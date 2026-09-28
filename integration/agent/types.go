@@ -33,6 +33,12 @@ type Config struct {
 	// ClientCAFile enables mutual TLS (mTLS). If set, the server requires
 	// a valid client certificate signed by this CA.
 	ClientCAFile string
+
+	// KnownAgents maps agent IDs to their Ed25519 public keys (raw bytes).
+	// Used to verify EmitterSignature in incoming envelopes and receipts.
+	// If an envelope or receipt arrives from an unknown agent, the server
+	// returns 401.
+	KnownAgents map[string][]byte
 }
 
 // Signer abstracts Ed25519 signing for test harness flexibility.

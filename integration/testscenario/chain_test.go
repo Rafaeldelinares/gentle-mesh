@@ -225,13 +225,28 @@ func TestChain_TamperDetection(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal corrupted receipt: %v", err)
 		}
-		_, err = db.Exec(
+
+		// Use a transaction for the UPDATE to ensure it persists before VerifyChain.
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatalf("begin tx: %v", err)
+		}
+		res, err := tx.ExecContext(ctx,
 			"UPDATE receipts SET data = ? WHERE receipt_id = ?",
 			string(corruptedJSON),
 			origRec.ReceiptID,
 		)
 		if err != nil {
+			tx.Rollback()
 			t.Fatalf("update corrupted receipt: %v", err)
+		}
+		rowsAffected, _ := res.RowsAffected()
+		if rowsAffected == 0 {
+			tx.Rollback()
+			t.Fatalf("UPDATE affected 0 rows — receipt_id %q not found in DB", origRec.ReceiptID)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit tx: %v", err)
 		}
 
 		results, err := cs.VerifyChain(ctx, "agent-a", "agent-b",
