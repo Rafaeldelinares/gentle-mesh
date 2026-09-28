@@ -1,5 +1,9 @@
 # RFC-002: Red Cognitiva de Agentes 🧠🌐
 
+<a href="https://github.com/Gentleman-Programming/gentle-ai">
+  <img width="220" src="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/brand/built-with-gentle-ai.png" alt="Built with Gentle-AI" />
+</a>
+
 > **Evolución Semántica y Liquidación Determinista de Tareas para Gentle Mesh.**
 
 ---

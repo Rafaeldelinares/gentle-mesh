@@ -18,9 +18,9 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 
 ---
 
-## Fase 0a — Hygiene pura [EN CURSO]
+## Fase 0a — Hygiene pura [COMPLETADA]
 
-### 0a.1 CI en verde [EN CURSO]
+### 0a.1 CI en verde [COMPLETADO]
 - [x] `go build ./...` — pasa
 - [x] `go vet ./...` — pasa
 - [x] `go test -race ./...` — pasa
@@ -31,7 +31,7 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 - [x] Suite Docker de integración (`//go:build docker`, `-p 1`, cleanup garantizado) — en CI y pasando
 - [x] Versiones fijadas por SHA en GitHub Actions (checkout v4.2.2, setup-go v5.4.0, setup-buildx-action v3.7.0, upload-artifact v4.6.2)
 
-### 0a.2 Hygiene de repo [EN CURSO]
+### 0a.2 Hygiene de repo [COMPLETADO]
 - [x] `data/*.db*`, `*.db-wal`, `*.db-shm` fuera del repo — git rm --cached aplicado
 - [x] `integration/certs-generated/` en `.gitignore`
 - [x] `*.key` con clave privada en `.gitignore`
@@ -39,16 +39,16 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 - [x] `.atl/` y `*.visual-check.*` ignorados en `.gitignore`
 - [x] `git rm --cached` de artefactos ya commitados: repo limpio y validado
 
-### 0a.3 Documentación [EN CURSO]
+### 0a.3 Documentación [COMPLETADO]
 - [x] `SECURITY.md` — canal de reporte, plazos, estado "experimental no auditado"
 - [x] `docs/planning/agent-rfc002-hardening-prompt.md` — este plan
 - [x] `docs/rfcs/002-goals-and-non-goals.md` — criterios de decisión canonicos
 
-**DoD 0a:** CI verde en PR #5 (Run 36441304819); repo limpio; docs presentes; fuzz tests pasando. Se marcará completada al mergear el PR.
+**DoD 0a:** COMPLETADA con el merge de PR #5 (Run 36462125322); repo limpio; docs presentes; fuzz tests pasando.
 
 ---
 
-## Fase 0b — Controles de seguridad heredados [EN CURSO]
+## Fase 0b — Controles de seguridad heredados [COMPLETADA]
 
 ### 0b.1 InsecureSkipVerify — baseline documentado, eliminado en Fase F1 (S1)
 - [x] `security-gates.sh`: detecta `InsecureSkipVerify` y lo allowlista por fase (F1)
@@ -63,7 +63,7 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 - [x] Stub en `server_harness_stub.go` (`//go:build !testharness`) — no-op en prod
 - [x] Binario sin tag: `/execute` y `/inject-receipt` devuelven 404 (no registrados)
 - [x] Binario con `-tags testharness`: endpoints registrados normalmente
-- [x] Build verificado en CI (Run 36441304819 verde en todos los jobs)
+- [x] Build verificado en CI (Run 36462125322 verde en todos los jobs)
 - [x] Dockerfile compila con `-tags testharness` para tests de integración
 
 ### 0b.3 Claves privadas fuera del servidor [COMPLETADO — bootstrap CSR diferido a Fase 1]
@@ -84,7 +84,7 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 - [x] `CODEOWNERS`: `@Rafaeldelinares` en `pkg/signing/`, `pkg/keystore/`, `pkg/receipt/`, `pkg/envelope/`, `pkg/jcs/`, `.github/`
 - [x] `scripts/security-gates.sh` ownership en CODEOWNERS
 
-**DoD 0b:** `security-gates.sh` reporta 0 violaciones; 0 endpoints de test en binario sin tag; `key_pem` fuera de SQLite; CSR enrollment documentado en Issue #4. Se marcará completada al mergear el PR.
+**DoD 0b:** COMPLETADA con el merge de PR #5 (Run 36462125322); `security-gates.sh` reporta 0 violaciones; 0 endpoints de test en binario sin tag; `key_pem` fuera de SQLite; CSR enrollment documentado en Issue #4.
 
 ---
 
@@ -242,24 +242,20 @@ Anota la fecha de consulta de cada fuente: estas propuestas cambian con frecuenc
 ```
 [X] Bug #48 resuelto (R7 determinismo)                              — 0430826
 [X] Tests distribuidos: WU13–WU17 pasan
-[X] Repo creado: https://github.com/Rafaeldelinares/rfc002
-[X] Fase 0a: hygiene pura                                         — 5ad0b70
-[ ] Fase 0b: controles de seguridad heredados
+[X] Repo base y tracking formal
+[X] Fase 0a: hygiene pura                                         — PR #5 (merge a60083a)
+[X] Fase 0b: controles de seguridad heredados                      — PR #5 (merge a60083a)
 [ ] Fase 1: cerrar explotables
 [ ] Fase 2: autorización + robustez
 [ ] Fase 3: issues + RFC-003 draft
 ```
 
-### Fase 0a completada (5ad0b70)
+### Fases 0a y 0b completadas (PR #5)
 
-- CI: go build/vet/test -race + staticcheck + gosec (severity medium+) + govulncheck
-  + Docker integration tests (testharness tag)
-- .gitignore: `*.key`, `*.pem`, `*.srl`, `*.csr`, `data/`, `*.db*`, `integration/certs-generated/`,
-  `.codegraph/`, `.atl/`
-- SECURITY.md: reporting policy, timelines, in/out of scope, experimental status
-- CODEOWNERS: @Rafaeldelinares owns pkg/signing, pkg/keystore, pkg/receipt, pkg/envelope,
-  pkg/jcs, certstore, .github/, scripts/
-- Claves privadas (`.key`, `.srl`) removidas del tracking de git (ahora ignoradas)
-
-**Baseline CI: FAIL** — gosec reporta 26 issues medium+ (G104, G306, otros) que se
-arreglarán en Fase 1. govulncheck: 0 vulnerabilidades.
+- **Merge:** PR #5 (`fix/phase0-clean-v2` -> `feat/rfc-002-settlement`, commit de merge `a60083a`).
+- **CI:** 100% verde en todos los jobs (Run 36462125322): `Lint & Security`, `Unit Tests`, `Integration Tests (Docker)`.
+- **Security Gates:** `scripts/security-gates.sh` con 0 violaciones.
+- **Higiene de Repo:** `.gitignore` estricto; artefactos de DB (`mesh.db*`), certificados y claves privadas eliminados del tracking.
+- **JCS Canonicalizer RFC 8785:** Reemplazo de parser vulnerable, claves duplicadas rechazadas, UTF-8 y surrogates validados, precisión IEEE 754 > 2^53 documentada, bypass de `HashHexString` corregido con TDD estricto.
+- **Base64 Malleability:** Decodificación estricta y round-trip canónico.
+- **Aislamiento Docker:** Endpoints bajo tag `testharness`, volumen aislado por agente, WAL y timeout configurados.
