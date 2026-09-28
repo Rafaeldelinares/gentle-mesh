@@ -157,13 +157,30 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 - Test: firma con clave de C en `/dispute` → 401
 - Test: firma de A con clave de A → 200 (happy path)
 
-### 1.10 Posicionamiento frente a A2A — documento docs/rfcs/002-a2a-positioning.md
-**Precondición:** redactar y acordar ANTES de escribir código de transporte o descubrimiento nuevo en la Fase 1.
-- Leer directamente la especificación A2A v1.0.0: https://a2a-protocol.org/latest/specification/ (sobre todo extensiones, securitySchemes, Agent Card firmada con JWS y ciclo de vida de tareas).
-- Mapear qué cubre A2A (descubrimiento, autenticación, ciclo de tareas) y qué aporta gentle-mesh encima (capacidades y política, pre-flight con lease, recibos firmados y encadenados, liquidación).
-- Mapear estados: p. ej. REJECTED_CAPABILITY → REJECTED con motivo; SETTLED_CLEAN → COMPLETED + recibo como artefacto firmado.
-- Recomendación razonada: ¿la v2 se implementa como extensión A2A desde ya o en una fase posterior?
-- La decisión la toma el humano antes de implementar el resto de la Fase 1.
+### 1.10 Posicionamiento de gentle-mesh sobre A2A — documento docs/rfcs/002-a2a-positioning.md
+Se hace al INICIO de la Fase 1, antes de escribir código nuevo de transporte, descubrimiento, formato de mensajes o delegación. La decisión final la toma el humano.
+
+Premisa acordada: gentle-mesh funciona SOBRE A2A. A2A aporta descubrimiento, autenticación y ciclo de vida de tareas; gentle-mesh aporta la capa de confianza y liquidación.
+
+Fuentes que hay que leer DIRECTAMENTE (no resúmenes):
+- Especificación A2A v1.0.0: https://a2a-protocol.org/latest/specification/
+- Extensiones A2A: https://a2a-protocol.org/latest/topics/extensions/
+- signed-receipts/v1: https://github.com/a2aproject/A2A/issues/2150 y su implementación https://github.com/CSOAI-ORG/a2a-signed-receipts
+- Identidad, delegación y aplicación de políticas: https://github.com/a2aproject/A2A/issues/1575 (Agent Passport System y el resto de implementaciones citadas)
+- Artifact receipts (cerrada): https://github.com/a2aproject/A2A/issues/2236
+- AP2, como patrón de autorización firmada: https://ap2-protocol.org/
+
+El documento debe responder:
+a. Mapa de capas: qué cubre A2A, qué cubren las propuestas y extensiones existentes y qué solo cubre gentle-mesh (hipótesis: pre-flight con lease, aserciones de liquidación, aceptación/disputa y cadena). Confírmala o refútala con las fuentes.
+b. Compatibilidad con signed-receipts/v1: ¿puede el SettlementReceipt ser un superconjunto compatible (mismos campos base, JCS + Ed25519, en Task.metadata) y añadir encima cadena, aserciones y contrafirma del emisor? Diferencias concretas campo a campo.
+c. Identidad de claves: ¿adoptar resolución por DID (did:web) según signed-receipts/v1 en lugar de, o además de, el keystore propio? Cómo encaja con el mTLS ligado a identidad (S1).
+d. Delegación (Fase 2): comparar Agent Passport System, UCAN, biscuit y macaroons frente a diseñar la nuestra. Recomendación, sin implementar.
+e. Mapeo de estados gentle-mesh ↔ A2A (p. ej. REJECTED_CAPABILITY → REJECTED con motivo; SETTLED_CLEAN → COMPLETED + recibo en Task.metadata; SETTLEMENT_FAILED → FAILED + recibo).
+f. Qué tipo de extensión A2A sería gentle-mesh (data-only, profile, method o state machine) y su URI.
+g. Oportunidad: esbozo de una propuesta de "extensión de liquidación" para la comunidad A2A, construida sobre signed-receipts/v1.
+h. Recomendación razonada: ¿la v2 se implementa como extensión A2A desde la Fase 2, o después? Qué cambia en el plan de la Fase 1 y la Fase 2 en cada caso.
+
+Anota la fecha de consulta de cada fuente: estas propuestas cambian con frecuencia.
 
 **DoD F1:** Perfil mínimo parcial (S1, S2, S6 parte 1, S7, S9, R4, R7); 0 `InsecureSkipVerify` fuera de `--dev-insecure`; 0 verificaciones degradadas a log.
 
