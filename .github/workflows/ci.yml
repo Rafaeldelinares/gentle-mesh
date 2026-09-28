@@ -48,12 +48,10 @@ jobs:
 
       - name: Run staticcheck
         # En main (v1.0.1) existen advertencias S1017 y S1039 registradas en el Issue #12.
-        # Mientras se resuelven en el milestone v1.0.2, permitimos advertencias sin romper el gate
-        # garantizando visibilidad completa en el log de CI.
+        # Mientras se resuelven en el milestone v1.0.2, excluimos esas reglas específicas del exit code de fallo (-fail).
+        # Cualquier otra violación de staticcheck romperá el gate deterministamente.
         run: |
-          staticcheck ./... || {
-            echo "::warning title=staticcheck::Advertencias detectadas en main (rastreadas en Issue #12)"
-          }
+          staticcheck -fail 'all,-S1017,-S1039' ./...
 
       # ── gosec: production packages (blocking) ───────────────────────────────
       - name: Set up gosec
@@ -129,11 +127,11 @@ jobs:
 
       - name: Verify integration test availability
         run: |
-          # En main (v1.0.1) no existen tests bajo integration/ ni tags docker/testharness.
+          # En main (v1.0.1) no existen suites bajo integration/ ni tags docker/testharness.
           # La infraestructura distribuida se introduce en RFC-002 v2.
-          # Este job valida que el entorno y docker-compose sean sintácticamente correctos sin fallar en silencio.
+          # Este job valida de forma estricta que docker-compose.test.yml sea sintácticamente válido.
           echo "Verificando configuración de compose en main..."
           if [ -f "docker-compose.test.yml" ]; then
-            docker compose -f docker-compose.test.yml config --quiet || echo "docker-compose.test.yml verificado"
+            docker compose -f docker-compose.test.yml config --quiet
           fi
-          echo "Job de integración ejecutado correctamente (0 suites distribuidas en main v1.0.1; se activan en RFC-002)."
+          echo "docker-compose.test.yml verificado estrictamente (0 suites distribuidas en main v1.0.1; se activan en RFC-002)."
