@@ -71,8 +71,13 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("open chain db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure chain db pragmas: %w", err)
+	}
 	chainStore := receipt.NewChainStore(db)
 	if err := chainStore.InitSchema(context.Background()); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("init chain schema: %w", err)
 	}
 

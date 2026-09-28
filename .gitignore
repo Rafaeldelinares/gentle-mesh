@@ -78,3 +78,4 @@ gentle-mesh
 gentle-mesh.zip
 # Local Pi runtime state
 .atl/
+*.visual-check.*

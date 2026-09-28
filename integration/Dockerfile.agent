@@ -11,6 +11,7 @@ RUN go mod download
 # Copy source and build.
 COPY . .
 RUN CGO_ENABLED=0 go build \
+    -tags testharness \
     -ldflags="-s -w" \
     -o /agent-binary \
     ./cmd/test-harness

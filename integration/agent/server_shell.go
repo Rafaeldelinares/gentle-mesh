@@ -53,9 +53,9 @@ func NewShellServer(agentID, workspace, chainDBPath string, evalTimeout time.Dur
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("enable WAL: %w", err)
+		return nil, fmt.Errorf("enable WAL and busy timeout: %w", err)
 	}
 
 	signer, err := signing.GenerateSigner(agentID)

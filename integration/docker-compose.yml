@@ -20,14 +20,13 @@
 #
 # The Go test harness generates certs on the host before docker compose up.
 
-version: "3.9"
-
 networks:
   gentle-mesh-net:
     name: gentle-mesh-net
     driver: bridge
 
 volumes:
+  agent-a-chain:
   agent-b-workspace:
   agent-c-workspace:
   agent-b-chain:
@@ -51,7 +50,7 @@ services:
       - "18443:8443"
     volumes:
       - ${CERTS_HOST_DIR:-/tmp/rfc002-certs}:/certs:ro
-      - agent-b-chain:/data   # A keeps its own audit copy of the chain
+      - agent-a-chain:/data   # A keeps its own audit copy of the chain
     environment:
       AGENT_ID: "agent-a"
       AGENT_ROLE: "emitter"
