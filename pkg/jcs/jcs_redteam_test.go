@@ -1,9 +1,11 @@
-//go:build redteam
-
 package jcs
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -88,4 +90,136 @@ func TestRedTeam_HashCollisionOnStringWithBraces(t *testing.T) {
 	if string(canonA) == string(canonB) {
 		t.Fatalf("SECURITY VULNERABILITY: Canonical collision detected! Both distinct payloads canonicalized to %q", string(canonA))
 	}
+}
+
+func TestHashCollision_RealGoStructs(t *testing.T) {
+	// Verification on real Go structs passed through jcs.Marshal and HashHexString.
+	type TaskStruct struct {
+		Intent  string `json:"intent"`
+		Repo    string `json:"repo"`
+		Branch  string `json:"branch"`
+		Command string `json:"command"`
+	}
+
+	taskA := TaskStruct{
+		Intent:  "Fix parser } urgently",
+		Repo:    "github.com/org/repo-A",
+		Branch:  "main",
+		Command: "make build",
+	}
+	taskB := TaskStruct{
+		Intent:  "Fix parser } urgently",
+		Repo:    "github.com/org/repo-B",
+		Branch:  "feature",
+		Command: "rm -rf /",
+	}
+
+	bytesA, err := Marshal(taskA)
+	if err != nil {
+		t.Fatalf("Marshal(taskA) error: %v", err)
+	}
+	bytesB, err := Marshal(taskB)
+	if err != nil {
+		t.Fatalf("Marshal(taskB) error: %v", err)
+	}
+
+	if bytes.Equal(bytesA, bytesB) {
+		t.Fatalf("SECURITY VULNERABILITY: distinct Go structs marshaled to identical bytes: %s", string(bytesA))
+	}
+
+	hashA, err := HashHexString(taskA)
+	if err != nil {
+		t.Fatalf("HashHexString(taskA) error: %v", err)
+	}
+	hashB, err := HashHexString(taskB)
+	if err != nil {
+		t.Fatalf("HashHexString(taskB) error: %v", err)
+	}
+
+	if hashA == hashB {
+		t.Fatalf("SECURITY VULNERABILITY: Hash collision on real Go structs! Both produced hash %s", hashA)
+	}
+}
+
+func TestRFC8785_OfficialVectors(t *testing.T) {
+	files := []string{"arrays.json", "french.json", "structures.json", "unicode.json", "values.json", "weird.json"}
+	for _, f := range files {
+		t.Run(f, func(t *testing.T) {
+			inPath := filepath.Join("testdata", "rfc8785", "input", f)
+			outPath := filepath.Join("testdata", "rfc8785", "output", f)
+
+			inBytes, err := os.ReadFile(inPath)
+			if err != nil {
+				t.Fatalf("read input %s: %v", inPath, err)
+			}
+			wantBytes, err := os.ReadFile(outPath)
+			if err != nil {
+				t.Fatalf("read output %s: %v", outPath, err)
+			}
+
+			gotBytes, err := Canonicalize(inBytes)
+			if err != nil {
+				t.Fatalf("Canonicalize(%s) error: %v", f, err)
+			}
+
+			if !bytes.Equal(gotBytes, wantBytes) {
+				t.Fatalf("RFC 8785 vector %s mismatch:\n  got:  %s\n  want: %s", f, string(gotBytes), string(wantBytes))
+			}
+		})
+	}
+}
+
+func FuzzCanonicalize(f *testing.F) {
+	// Seed with valid and edge case inputs
+	seeds := [][]byte{
+		[]byte(`{"a":1,"b":"hello"}`),
+		[]byte(`[1,2,3]`),
+		[]byte(`{"msg":"cierre } falso","z":1}`),
+		[]byte(`1e2`),
+		[]byte(`-0`),
+		[]byte(`null`),
+		[]byte(`true`),
+		[]byte(`false`),
+		[]byte(`{"z":1,"a":2}`),
+		[]byte(`{"peach":"This sorting order","péché":"is wrong according to French"}`),
+	}
+
+	// Add official vectors as seeds
+	for _, fname := range []string{"arrays.json", "french.json", "structures.json", "unicode.json", "values.json", "weird.json"} {
+		if b, err := os.ReadFile(filepath.Join("testdata", "rfc8785", "input", fname)); err == nil {
+			seeds = append(seeds, b)
+		}
+	}
+
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		c1, err := Canonicalize(data)
+		if err != nil {
+			// Malformed or non-compliant input is properly rejected.
+			return
+		}
+
+		// 1. Idempotency: Canonicalize(Canonicalize(x)) == Canonicalize(x)
+		c2, err := Canonicalize(c1)
+		if err != nil {
+			t.Fatalf("Idempotency failure: Canonicalize(c1) returned error: %v", err)
+		}
+		if !bytes.Equal(c1, c2) {
+			t.Fatalf("Idempotency failure: c1 != c2\n  c1: %s\n  c2: %s", string(c1), string(c2))
+		}
+
+		// 2. Semantic equivalence: unmarshaling c1 must match unmarshaling data
+		var vOriginal, vCanon any
+		if errOrig := json.Unmarshal(data, &vOriginal); errOrig == nil {
+			if errCanon := json.Unmarshal(c1, &vCanon); errCanon != nil {
+				t.Fatalf("Canonical output failed to unmarshal: %v", errCanon)
+			}
+			if !reflect.DeepEqual(vOriginal, vCanon) {
+				t.Fatalf("Semantic divergence:\n  original: %#v\n  canon:    %#v", vOriginal, vCanon)
+			}
+		}
+	})
 }

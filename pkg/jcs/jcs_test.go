@@ -144,7 +144,7 @@ func TestCanonicalize_Numbers(t *testing.T) {
 		{name: "scientific 1e-2", input: `1e-2`, want: `0.01`},
 		{name: "scientific 1.5e2", input: `1.5e2`, want: `150`},
 		{name: "negative -1.0", input: `-1.0`, want: `-1`},
-		{name: "negative -0", input: `-0`, want: `-0`},
+		{name: "negative -0", input: `-0`, want: `0`},
 		{name: "zero", input: `0`, want: `0`},
 		{name: "float 0.0", input: `0.0`, want: `0`},
 		{name: "scientific 0e10", input: `0e10`, want: `0`},
