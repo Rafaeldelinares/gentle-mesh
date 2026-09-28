@@ -31,6 +31,7 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/worker"
+	"github.com/gentleman-programming/gentle-mesh/pkg/tlsutil"
 )
 
 func main() {
@@ -897,11 +898,26 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
+// errorRoundTripper rejects any HTTP request with a pre-configured error.
+type errorRoundTripper struct {
+	err error
+}
+
+func (e *errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, e.err
+}
+
 // newTLSClient creates an HTTP client with optional TLS configuration.
 func newTLSClient(caCertPath string, insecureSkipVerify bool) *http.Client {
 	if insecureSkipVerify || caCertPath != "" {
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: insecureSkipVerify,
+		tlsConfig := &tls.Config{}
+		if insecureSkipVerify {
+			if err := tlsutil.ApplyDevInsecure(tlsConfig, insecureSkipVerify); err != nil {
+				fmt.Fprintf(os.Stderr, "Security error: %v\n", err)
+				return &http.Client{
+					Transport: &errorRoundTripper{err: err},
+				}
+			}
 		}
 		if caCertPath != "" && !insecureSkipVerify {
 			caCert, err := os.ReadFile(caCertPath)
@@ -928,8 +944,11 @@ func newMTLSClient(caCertPath, certPath, keyPath string, insecureSkipVerify bool
 		return nil, errors.New("both -cert and -key must be provided for mTLS authentication")
 	}
 
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: insecureSkipVerify,
+	tlsConfig := &tls.Config{}
+	if insecureSkipVerify {
+		if err := tlsutil.ApplyDevInsecure(tlsConfig, insecureSkipVerify); err != nil {
+			return nil, err
+		}
 	}
 
 	// Load CA for server verification

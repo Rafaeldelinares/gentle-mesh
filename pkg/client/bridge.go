@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/gentleman-programming/gentle-mesh/pkg/tlsutil"
 )
 
 const (
@@ -132,7 +133,11 @@ func (b *Bridge) httpClient() *http.Client {
 		tlsConfig := &tls.Config{}
 
 		if b.config.InsecureSkipTLSVerify {
-			tlsConfig.InsecureSkipVerify = true
+			if err := tlsutil.ApplyDevInsecure(tlsConfig, b.config.InsecureSkipTLSVerify); err != nil {
+				return &http.Client{
+					Transport: &errorRoundTripper{err: err},
+				}
+			}
 		} else if b.config.CACertFile != "" {
 			// Load custom CA certificate
 			caCert, err := os.ReadFile(b.config.CACertFile)
@@ -155,6 +160,14 @@ func (b *Bridge) httpClient() *http.Client {
 	}
 
 	return http.DefaultClient
+}
+
+type errorRoundTripper struct {
+	err error
+}
+
+func (e *errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, e.err
 }
 
 // resolveURL joins a coordinator path or absolute events URL with the base.
