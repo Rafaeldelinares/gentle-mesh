@@ -76,3 +76,5 @@ Thumbs.db
 # ── Compiled binaries ─────────────────────────────────────────────────────────
 gentle-mesh
 gentle-mesh.zip
+# Local Pi runtime state
+.atl/

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [main, feat/rfc-002-settlement]
   pull_request:
-    branches: [master]
+    branches: [main, feat/rfc-002-settlement]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
