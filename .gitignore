@@ -1,10 +1,73 @@
+# ── Compiled & generated ───────────────────────────────────────────────────────
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+build/
+dist/
+vendor/
+
+# ── Go ────────────────────────────────────────────────────────────────────────
+*.test
+coverage.out
+coverage.html
+
+# ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 .env
 .venv/
+venv/
+.eggs/
+*.egg-info/
+
+# ── Node ───────────────────────────────────────────────────────────────────────
 node_modules/
-dist/
-build/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ── Local dev state ─────────────────────────────────────────────────────────
 *.log
-# Local Pi runtime state
-.atl/
+atl/
+*.db
+*.db-wal
+*.db-shm
+
+# ── TLS & secrets (NEVER COMMIT) ───────────────────────────────────────────────
+# Private keys — even in dev/test environments
+*.key
+*.pem
+
+# Certificate metadata that can reveal key info
+*.srl
+*.csr
+
+# Auto-generated certs (regenerated per environment)
+integration/certs-generated/
+
+# ── Data & workspaces ──────────────────────────────────────────────────────────
+data/
+*.sqlite
+*.sqlite3
+
+# ── IDE & tools ────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Code analysis ─────────────────────────────────────────────────────────────
+.codegraph/
+*.prof
+
+# ── Temporary ─────────────────────────────────────────────────────────────────
+*.tmp
+*.bak
+*.orig

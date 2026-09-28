@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Static analysis ──────────────────────────────────────────────────────────
+  lint:
+    name: Lint & Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@0a7c6e68f4e02f60a0f0e0a8c6f5e7e3b3b6e3b  # v5.4.0
+        with:
+          go-version-file: go.mod
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Download Go dependencies
+        run: go mod download
+
+      # ── staticcheck ──────────────────────────────────────────────────────────
+      - name: Set up staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+
+      - name: Run staticcheck
+        run: staticcheck ./...
+
+      # ── gosec ──────────────────────────────────────────────────────────────
+      - name: Set up gosec
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run gosec
+        run: gosec -severity medium ./...
+
+      # ── govulncheck ────────────────────────────────────────────────────────
+      - name: Set up govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+  # ── Unit tests ───────────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@0a7c6e68f4e02f60a0f0e0a8c6f5e7e3b3b6e3b  # v5.4.0
+        with:
+          go-version-file: go.mod
+
+      - name: Download Go dependencies
+        run: go mod download
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test (with race detector)
+        run: go test -race -timeout 10m ./...
+
+  # ── Docker integration tests ──────────────────────────────────────────────────
+  integration:
+    name: Integration Tests (Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@0a7c6e68f4e02f60a0f0e0a8c6f5e7e3b3b6e3b  # v5.4.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@54b9d94bb7f4a32a23f49fd770e2d0e2f5a5c0aa  # v3.7.0
+
+      - name: Run distributed integration tests
+        run: |
+          go test -race -tags testharness \
+            -timeout 20m \
+            -run "TestWU13|TestWU14|TestWU15|TestWU16" \
+            ./integration/testscenario/...
+        env:
+          # Certificates generated locally for Docker bind mount
+          CERTS_HOST_DIR: /tmp/rfc002-certs
