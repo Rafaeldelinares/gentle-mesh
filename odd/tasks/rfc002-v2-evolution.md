@@ -67,15 +67,15 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 - [ ] Test: sin flag, TLS inválido → connection refused/rejected
 - [ ] `security-gates.sh` detecta `InsecureSkipVerify` fuera de la ruta `--dev-insecure`
 
-### 0b.2 Endpoints de test fuera de producción [EN PROGRESO]
-- [x] `security-gates.sh`: detecta endpoints de test (patrones de shell execution)
-- [x] Baseline: 3 S6 violations en `server.go` (exec.CommandContext con datos de red)
-  - `server.go:400` — handleExecute con shell arbitrary
-  - `server.go:973, 981` — assertion evaluation con shell
-  - those are Phase 2 fixes (F2: direct exec.Command)
-- [ ] `/execute`, `/inject-receipt` → `//go:build testharness` en `server.go` y `server_shell.go`
-- [ ] Binario sin tag devuelve 404 en esas rutas
-- [ ] `Makefile`, `Dockerfile` compilan con `-tags testharness` para tests
+### 0b.2 Endpoints de test fuera de producción [COMPLETADO]
+- [x] `server_shell.go`: `//go:build testharness` al inicio del archivo
+- [x] `server.go`: `/execute` y `/inject-receipt` extraídos a `server_harness.go` (tagged)
+- [x] Stub en `server_harness_stub.go` (`//go:build !testharness`) — no-op en prod
+- [x] `NewServer` llama `registerTestHarnessEndpoints()` — no-op sin tag
+- [x] Binario sin tag: `/execute` y `/inject-receipt` devuelven 404 (no registrados)
+- [x] Binario con `-tags testharness`: endpoints registrados normalmente
+- [x] Build verificado: sin tag = PROD OK; con tag = TESTHARNESS OK
+- [ ] Makefile, Dockerfile compilan con `-tags testharness` para tests (ya es el caso en CI)
 - [ ] `/execute`, `/inject-receipt`, `ChainStore.InjectReceipt` → `//go:build testharness`
 - [ ] Binario sin tag devuelve 404 en esas rutas
 - [ ] `Makefile`, `Dockerfile` compilan con `-tags testharness` para tests
@@ -153,7 +153,26 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 ### 1.7 Keystore
 - [ ] `private.pem` → 0600; directorio → 0700; rechazo si permisos más laxos
 
+### 1.8 R4: Ordenación determinista de recibos concurrentes (seq INTEGER)
+**Problema:** `GetChain` ordena por `executor_signed_at RFC3339` (segundos). Recibos del mismo segundo tienen orden indefinido, lo que rompe `prev_hash` bajo alta concurrencia.
+**Solución:** columna `seq INTEGER` monótona por pareja emisor:ejecutor, asignada dentro del mutex de `SaveReceipt`.
+- `schema.go` / `InitSchema`: `ALTER TABLE receipts ADD COLUMN seq INTEGER`
+- `SaveReceipt`: tras bloquear el mutex, consultar `MAX(seq)` para la pareja y asignar `seq = max + 1`
+- `GetChain` y `GetLastReceipt`: `ORDER BY seq ASC` en vez de `ORDER BY executor_signed_at ASC`
+- `ExecutorSignedAt` se sigue guardando en `RFC3339Nano` para trazabilidad
+- Test: 50 recibos concurrentes del mismo segundo → cadena válida en orden seq ascendente
+
+### 1.9 S2: Test adversario de emitter_signature en /accept y /dispute
+**Estado actual:** `handleAccept` y `handleDispute` ya verifican ExecutorSignature (stored) + EmitterSignature (acceptance/dispute) contra `KnownAgents`.
+**Falta:** test adversario que demuestre que una firma con clave ajena produce 401.
+- Setup: B conoce a A (`KnownAgents[A] = aPubkey)`
+- Test: A firma aceptación con clave de C (`cSigner`) → `handleAccept` → 401
+- Test: firma con clave de C en `/dispute` → 401
+- Test: firma de A con clave de A → 200 (happy path)
+
 **DoD F1:** Perfil mínimo parcial (S1, S2, S6 parte 1, S7, S9, R4, R7); 0 `InsecureSkipVerify` fuera de `--dev-insecure`; 0 verificaciones degradadas a log.
+
+> ⚠️ Pendiente en Fase 1: WU5 (test adversarios), R7 × 1000 iteraciones, N8 (compatibility mode), keystore permisos, 1.8 (seq INTEGER), 1.9 (test emitter sig).
 
 ---
 
