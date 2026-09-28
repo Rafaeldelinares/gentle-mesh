@@ -265,6 +265,19 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────
+
+// strictDecoder returns a json.Decoder that disallows unknown fields.
+// S6: Unknown fields in incoming JSON are rejected to prevent
+// schema confusion attacks.
+func strictDecoder(r *http.Request) *json.Decoder {
+	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
+	return d
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Signature verification helpers (S2)
 // ─────────────────────────────────────────────────────────────────
 
@@ -352,7 +365,7 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req EnvelopeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := strictDecoder(r).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "decode: "+err.Error())
 		return
 	}
@@ -424,7 +437,7 @@ func (s *Server) handleCreateLease(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req struct{ EnvelopeJSON []byte }
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := strictDecoder(r).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -470,7 +483,7 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req ExecuteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := strictDecoder(r).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -526,7 +539,7 @@ func (s *Server) handleSettle(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req SettleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := strictDecoder(r).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -592,7 +605,7 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req AcceptRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := strictDecoder(r).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "decode: "+err.Error())
 		return
 	}
@@ -699,7 +712,7 @@ func (s *Server) handleDispute(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req DisputeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := strictDecoder(r).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "decode: "+err.Error())
 		return
 	}
@@ -806,7 +819,7 @@ func (s *Server) handleInjectReceipt(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req InjectReceiptRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := strictDecoder(r).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "decode: "+err.Error())
 		return
 	}
@@ -850,7 +863,7 @@ func (s *Server) handleVerifyChain(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req VerifyChainRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := strictDecoder(r).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "decode: "+err.Error())
 		return
 	}
@@ -975,7 +988,7 @@ func (s *Server) handleVerifyReceipt(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	var req VerifyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := strictDecoder(r).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

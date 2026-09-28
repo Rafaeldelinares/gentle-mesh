@@ -85,6 +85,26 @@ func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) err
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
+	// S7: Verify prev_hash inside the critical section.
+	// If the caller provides a prev_hash, it must match the latest receipt.
+	// This prevents a malicious or accidental write of a receipt with a wrong
+	// prev_hash that would break the chain integrity.
+	if r.PreviousReceiptHash != "" {
+		last, err := cs.getLastReceiptUnlocked(ctx, r.EmitterAgentID, r.ExecutorAgentID)
+		if err != nil && !errors.Is(err, ErrReceiptNotFound) {
+			return fmt.Errorf("get last receipt for prev_hash check: %w", err)
+		}
+		if last != nil {
+			// PreviousReceiptHash = SHA256(last.ExecutorSignature) per spec.
+			h := sha256.Sum256([]byte(last.ExecutorSignature))
+			expectedPrevHash := hex.EncodeToString(h[:])
+			if r.PreviousReceiptHash != expectedPrevHash {
+				return fmt.Errorf("%w: prev_hash=%q does not match expected=%q",
+					ErrChainBroken, r.PreviousReceiptHash, expectedPrevHash)
+			}
+		}
+	}
+
 	// If prev_hash is empty, compute it from the last receipt inside the critical
 	// section. This ensures that concurrent goroutines each see the correct
 	// previous receipt and compute distinct prev_hash values.

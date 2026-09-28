@@ -24,6 +24,7 @@ var (
 	ErrInvalidAssertionType = errors.New("assertion: unknown type")
 	ErrNegativeTimeout      = errors.New("timeout_seconds: must be positive")
 	ErrNegativeRemediations = errors.New("max_remediations: must be non-negative")
+	ErrUnknownProtocolVersion = errors.New("protocol_version: unknown version")
 )
 
 // Validate checks that the envelope is structurally and semantically valid.
@@ -75,6 +76,12 @@ func Validate(env *CognitiveTaskEnvelope) error {
 	}
 	if env.MaxRemediations < 0 {
 		return ErrNegativeRemediations
+	}
+
+	// S9: Protocol version enforcement.
+	// Only "1" is supported. Unknown versions are rejected.
+	if env.Version != "" && env.Version != "1" {
+		return fmt.Errorf("%w: %q (supported: \"1\")", ErrUnknownProtocolVersion, env.Version)
 	}
 
 	return nil
