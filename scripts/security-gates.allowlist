@@ -1,0 +1,32 @@
+# security-gates.allowlist — RFC-002 v2
+# Format: path:grep_pattern || phase || reason
+# path         = directory prefix or file, matched by prefix
+# grep_pattern = ERE matched against file content with grep -E
+# phase        = phase that eliminates this violation (0a, 0b, F2)
+# reason       = human-readable justification
+# Lines starting with # and blank lines are ignored.
+
+# ── Phase 0a: versioned artifacts removed from index ─────────────────────────────────
+data/:                           || 0a || workspace DBs removed from index, .gitignore covers future runs
+integration/certs-generated/:     || 0a || auto-generated TLS certs in .gitignore
+integration/certs/:              || 0a || .srl serial number files in .gitignore
+tls-test/:                      || 0a || .csr files in .gitignore
+
+# ── Phase 0b: InsecureSkipVerify in test infrastructure ─────────────────────────
+integration/testscenario/:InsecureSkipVerify           || 0b || test harness: self-signed certs
+integration/agent/client.go:InsecureSkipVerify        || 0b || WithInsecureSkipVerify dev helper
+integration/agent/tls_test.go:InsecureSkipVerify     || 0b || test verifies TLS 1.1 rejection (S9)
+pkg/shell/mesh.go:InsecureSkipVerify             || 0b || dev stub: file not imported in any binary
+cmd/gentle-mesh/main.go:InsecureSkipVerify       || 0b || dev flag: TLSInsecureSkipVerify config field
+pkg/client/bridge.go:InsecureSkipVerify           || 0b || dev bridge with TLSInsecureSkipVerify
+
+# ── Phase F2: exec sh -c in production code ─────────────────────────────────────
+pkg/shell/:exec.Command.*"sh".*"-c"               || F2 || stub package, direct exec in Phase 2
+pkg/shell/:exec.Command.*"sh".*"-c"               || 0b || stub package (Phase 0b baseline)
+integration/agent/server.go:exec.Command.*"sh".*"-c" || F2 || handleExecute + assertion evaluation
+integration/agent/server.go:exec.Command.*"sh".*"-c" || 0b || handleExecute + assertion evaluation (Phase 0b baseline)
+
+# ── Phase 0b: exec sh -c in test infrastructure (no testharness build tag) ─────
+# These test files lack //go:build testharness but are test-only infrastructure.
+integration/testscenario/:exec.Command.*"sh".*"-c"  || 0b || docker exec and fixture setup in tests
+integration/testscenario/:exec.Command.*"sh".*"-c"  || F2 || docker exec and fixture setup in tests

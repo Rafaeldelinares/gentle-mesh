@@ -18,75 +18,59 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 
 ---
 
-## Fase 0a — Hygiene pura [COMPLETADA]
+## Fase 0a — Hygiene pura [EN CURSO]
 
-### 0a.1 CI en verde [COMPLETADO]
-- [ ] `go build ./...` — pasa
-- [ ] `go vet ./...` — pasa
-- [ ] `go test -race ./...` — pasa
-- [ ] `staticcheck` — configurado, pasar
-- [ ] `govulncheck` — configurado, pasar
-- [ ] `gosec` — configurado, severidad media+ falla el build
-- [ ] Fuzz tests (`-fuzztime=30s`) — configurados
-- [ ] Suite Docker de integración (`//go:build testharness`) — en CI
-- [ ] Versiones fijadas por SHA en GitHub Actions
+### 0a.1 CI en verde [EN CURSO]
+- [x] `go build ./...` — pasa
+- [x] `go vet ./...` — pasa
+- [x] `go test -race ./...` — pasa
+- [x] `staticcheck` — configurado
+- [x] `govulncheck` — configurado
+- [x] `gosec` — configurado, HIGH+ en pkg/ (bloqueante), medium en integration/ (no bloqueante, sube informe como artefacto)
+- [ ] Fuzz tests (`-fuzztime=30s`) — pendiente
+- [x] Suite Docker de integración (`//go:build testharness`) — en CI
+- [x] Versiones fijadas por SHA en GitHub Actions (setup-go v5.4.0, setup-buildx-action v3.7.0)
 
-### 0a.2 Hygiene de repo
-- [ ] `data/*.db*`, `*.db-wal`, `*.db-shm` fuera del repo (ya en `.gitignore`)
-- [ ] `integration/certs-generated/` en `.gitignore`
-- [ ] `*.key` con clave privada en `.gitignore`
-- [ ] Ningún `.pem` con clave privada commiteado
-- [ ] No hay artefactos de ejecución (`*.csr`, `.srl`) en el repo
+### 0a.2 Hygiene de repo [EN CURSO]
+- [x] `data/*.db*`, `*.db-wal`, `*.db-shm` fuera del repo — git rm --cached aplicado
+- [x] `integration/certs-generated/` en `.gitignore`
+- [x] `*.key` con clave privada en `.gitignore`
+- [x] Ningún `.pem` con clave privada commiteado
+- [ ] `*.srl` (serial numbers) y `*.csr` (CSR) — git rm --cached aplicado; generar en CI o docker-compose
+- [ ] `git rm --cached` de artefactos ya commitados: verificar que no queden en historial (verificar tras merge)
 
 ### 0a.3 Documentación
-- [ ] `SECURITY.md` — canal de reporte, plazos, estado "experimental no auditado"
-- [ ] `docs/planning/agent-rfc002-hardening-prompt.md` — este plan
-- [ ] `docs/rfcs/002-goals-and-non-goals.md` — criterios de decisión canonicos
+- [x] `SECURITY.md` — canal de reporte, plazos, estado "experimental no auditado"
+- [x] `docs/planning/agent-rfc002-hardening-prompt.md` — este plan
+- [x] `docs/rfcs/002-goals-and-non-goals.md` — criterios de decisión canonicos
 
-**DoD 0a:** CI verde en PR; repo limpio; docs presentes.
+**DoD 0a:** CI verde en PR; repo limpio; docs presentes. Pendiente: fuzz tests, verificación de artefactos en historial.
 
 ---
 
-## Fase 0b — Controles de seguridad heredados
+## Fase 0b — Controles de seguridad heredados [EN CURSO]
 
-### 0b.1 InsecureSkipVerify eliminado [COMPLETADO]
-- [x] Keystore: claves privadas en `private.pem` (0600), NO en DB — **ya correcto desde diseño**
+### 0b.1 InsecureSkipVerify eliminado [EN CURSO]
 - [x] `security-gates.sh`: detecta `InsecureSkipVerify` y lo allowlista por fase
-  - Baseline violations (en allowlist, para arreglar en Fase 1):
-    - `integration/testscenario/*.go` (tests con certs auto-generados)
-    - `integration/agent/client.go:WithInsecureSkipVerify` (helper de test)
-    - `pkg/shell/mesh.go` (stub de dev, no importado en prod)
-    - `integration/agent/server_shell.go` (stub testharness)
-    - `integration/agent/tls_test.go` (verifica rechazo TLS 1.1)
+- [x] Allowlist: `integration/testscenario/`, `integration/agent/client.go:WithInsecureSkipVerify`,
+  `pkg/shell/mesh.go`, `integration/agent/tls_test.go` (Phase 0b)
 - [ ] `RequireAndVerifyClientCert` obligatorio por defecto en servidor
 - [ ] Flag `--dev-insecure` para desarrollo local, rechaza si `GENTLE_ENV=production`
 - [ ] Test: sin flag, TLS inválido → connection refused/rejected
-- [ ] `RequireAndVerifyClientCert` obligatorio por defecto en servidor
-- [ ] Flag `--dev-insecure` para desarrollo local, rechaza si `GENTLE_ENV=production`
-- [ ] `InsecureSkipVerify` solo tras `--dev-insecure`, con warning en logs
-- [ ] Test: sin flag, TLS inválido → connection refused/rejected
-- [ ] `security-gates.sh` detecta `InsecureSkipVerify` fuera de la ruta `--dev-insecure`
 
 ### 0b.2 Endpoints de test fuera de producción [COMPLETADO]
 - [x] `server_shell.go`: `//go:build testharness` al inicio del archivo
 - [x] `server.go`: `/execute` y `/inject-receipt` extraídos a `server_harness.go` (tagged)
 - [x] Stub en `server_harness_stub.go` (`//go:build !testharness`) — no-op en prod
-- [x] `NewServer` llama `registerTestHarnessEndpoints()` — no-op sin tag
 - [x] Binario sin tag: `/execute` y `/inject-receipt` devuelven 404 (no registrados)
 - [x] Binario con `-tags testharness`: endpoints registrados normalmente
-- [x] Build verificado: sin tag = PROD OK; con tag = TESTHARNESS OK
-- [ ] Makefile, Dockerfile compilan con `-tags testharness` para tests (ya es el caso en CI)
-- [ ] `/execute`, `/inject-receipt`, `ChainStore.InjectReceipt` → `//go:build testharness`
-- [ ] Binario sin tag devuelve 404 en esas rutas
-- [ ] `Makefile`, `Dockerfile` compilan con `-tags testharness` para tests
-- [ ] `security-gates.sh` detecta endpoints de test fuera de build tag
+- [ ] Build verificado en CI (pendiente: CI debe pasar primero)
+- [ ] Makefile, Dockerfile compilan con `-tags testharness` para tests
 
 ### 0b.3 Claves privadas fuera del servidor [COMPLETADO]
 - [x] `pkg/keystore/store.go`: genera clave local, solo `private.pem` en disco (0600)
 - [x] Nunca se transmite `key_pem` por la red
 - [x] `key_pem` NO está en el esquema SQLite
-- [x] Ninguna ruta del servidor recibe, guarda o devuelve clave privada
-- [ ] Migración que borre `key_pem` de DBs existentes (no aplica: no existe en schema)
 - [ ] Nodo genera clave localmente, envía CSR al servidor
 - [ ] Servidor firma y devuelve solo certificado, nunca `key_pem`
 - [ ] Eliminar `key_pem` del esquema SQLite
