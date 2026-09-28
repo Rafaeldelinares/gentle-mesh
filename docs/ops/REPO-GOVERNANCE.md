@@ -198,7 +198,7 @@ Parámetros aplicados:
      - `require_code_owner_reviews: true`
 2. **Checks en `main`:**
    - La rama `main` aún conserva el estado de la versión v1.0.1 y no contiene el directorio `.github/workflows/ci.yml`. Exigir los checks en `main` en este momento provocaría que cualquier PR legítimo hacia `main` quedase bloqueado indefinidamente.
-   - **Condición de endurecimiento:** Cuando se porte el CI a `main` (por ejemplo con la resolución de RFC-001 Issue #7), se añadirán de inmediato los 3 checks requeridos con `strict: true`.
+   - **Condición de endurecimiento:** Cuando se porte el CI a `main` (con la resolución del Issue #10: "ci: llevar el workflow de CI y los security gates a main"), se añadirán de inmediato los 3 checks requeridos con `strict: true`.
 
 ---
 
