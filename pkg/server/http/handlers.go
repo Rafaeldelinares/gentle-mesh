@@ -92,7 +92,7 @@ func (s *Server) handleMeshCA(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 	// Set headers for download
 	w.Header().Set("Content-Type", "application/x-pem-file")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="gentle-mesh-ca.pem"`))
+	w.Header().Set("Content-Disposition", `attachment; filename="gentle-mesh-ca.pem"`)
 	w.Header().Set("Cache-Control", "public, max-age=86400") // Cache for 24 hours
 	w.WriteHeader(stdhttp.StatusOK)
 	w.Write(caData)

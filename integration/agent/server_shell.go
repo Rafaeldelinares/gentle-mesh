@@ -26,10 +26,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// shellServer wraps a Shell executor with HTTP handlers.
+// ShellServer wraps a Shell executor with HTTP handlers.
 // It is used for Mode A (Local Sidecar) where gentle-mesh settlement runs
 // embedded alongside the shell execution layer.
-type shellServer struct {
+type ShellServer struct {
 	shell      *shellWrapper
 	chainStore *receipt.ChainStore
 	db         *sql.DB
@@ -43,8 +43,8 @@ type shellWrapper struct {
 	evalTimeout time.Duration
 }
 
-// newShellServer creates a shell-based HTTP server.
-func newShellServer(agentID, workspace, chainDBPath string, evalTimeout time.Duration) (*shellServer, error) {
+// NewShellServer creates a shell-based HTTP server.
+func NewShellServer(agentID, workspace, chainDBPath string, evalTimeout time.Duration) (*ShellServer, error) {
 	if err := os.MkdirAll(filepath.Dir(chainDBPath), 0755); err != nil {
 		return nil, fmt.Errorf("create chain db dir: %w", err)
 	}
@@ -70,7 +70,7 @@ func newShellServer(agentID, workspace, chainDBPath string, evalTimeout time.Dur
 		return nil, fmt.Errorf("init chain schema: %w", err)
 	}
 
-	return &shellServer{
+	return &ShellServer{
 		shell: &shellWrapper{
 			workspace:   workspace,
 			evalTimeout: evalTimeout,
@@ -83,7 +83,7 @@ func newShellServer(agentID, workspace, chainDBPath string, evalTimeout time.Dur
 }
 
 // Close releases resources.
-func (s *shellServer) Close() error {
+func (s *ShellServer) Close() error {
 	if s.db != nil {
 		s.db.Close()
 	}
@@ -92,7 +92,7 @@ func (s *shellServer) Close() error {
 
 // RegisterHTTPHandlers registers shell-based HTTP handlers on the given mux.
 // These supplement (not replace) the existing agent server handlers.
-func (s *shellServer) RegisterHTTPHandlers(mux *http.ServeMux) {
+func (s *ShellServer) RegisterHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /check", s.handleCheck)
 	mux.HandleFunc("POST /execute-local", s.handleExecuteLocal)
 	mux.HandleFunc("POST /dispatch", s.handleDispatch)
@@ -116,7 +116,7 @@ type CheckResponse struct {
 }
 
 // handleCheck evaluates preconditions locally and returns a ReadinessReport.
-func (s *shellServer) handleCheck(w http.ResponseWriter, r *http.Request) {
+func (s *ShellServer) handleCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
@@ -152,7 +152,7 @@ func (s *shellServer) handleCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 // evalPrecondition evaluates a single precondition on the local filesystem.
-func (s *shellServer) evalPrecondition(ctx context.Context, p envelope.Precondition) envelope.PreconditionResult {
+func (s *ShellServer) evalPrecondition(ctx context.Context, p envelope.Precondition) envelope.PreconditionResult {
 	var result envelope.PreconditionResult
 	result.Type = string(p.Type)
 
@@ -232,7 +232,7 @@ type ExecuteLocalResponse struct {
 }
 
 // handleExecuteLocal runs assertions via the local shell executor.
-func (s *shellServer) handleExecuteLocal(w http.ResponseWriter, r *http.Request) {
+func (s *ShellServer) handleExecuteLocal(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
@@ -267,7 +267,7 @@ func (s *shellServer) handleExecuteLocal(w http.ResponseWriter, r *http.Request)
 }
 
 // executeLocal runs assertions via direct command execution (Mode A: Local Sidecar).
-func (s *shellServer) executeLocal(ctx context.Context, assertions []envelope.Assertion) (*receipt.SettlementReceipt, error) {
+func (s *ShellServer) executeLocal(ctx context.Context, assertions []envelope.Assertion) (*receipt.SettlementReceipt, error) {
 	settledAssertions := convertAssertions(assertions)
 
 	eval := settlement.NewEvaluator(s.shell.workspace)
@@ -349,7 +349,7 @@ type DispatchResult struct {
 }
 
 // handleDispatch orchestrates fan-out dispatch to multiple executors concurrently.
-func (s *shellServer) handleDispatch(w http.ResponseWriter, r *http.Request) {
+func (s *ShellServer) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST only")
 		return
@@ -401,7 +401,7 @@ func (s *shellServer) handleDispatch(w http.ResponseWriter, r *http.Request) {
 }
 
 // dispatchOne executes one leg of the fan-out: sign + submit + settle.
-func (s *shellServer) dispatchOne(ctx context.Context, idx int, env envelope.CognitiveTaskEnvelope, executorURL string) DispatchResult {
+func (s *ShellServer) dispatchOne(ctx context.Context, idx int, env envelope.CognitiveTaskEnvelope, executorURL string) DispatchResult {
 	result := DispatchResult{ExecutorID: env.ExecutorAgentID}
 
 	executorClient, err := NewHTTPClientTLS(executorURL, WithInsecureSkipVerify())
@@ -476,7 +476,7 @@ func (s *shellServer) dispatchOne(ctx context.Context, idx int, env envelope.Cog
 // ─────────────────────────────────────────────────────────────────
 
 // handleGetChainByPair handles GET /chain/:pair where pair = "emitter:executor".
-func (s *shellServer) handleGetChainByPair(w http.ResponseWriter, r *http.Request) {
+func (s *ShellServer) handleGetChainByPair(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "GET only")
 		return
