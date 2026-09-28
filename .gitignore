@@ -1,30 +1,85 @@
-# Binarios compilados
-/gentle-mesh
-*.zip
-/bin/
-/dist/
-*.exe
-*.exe~
-*.dll
+# ── Compiled & generated ───────────────────────────────────────────────────────
+*.o
+*.a
 *.so
 *.dylib
+*.dll
+*.exe
+build/
+dist/
+vendor/
 
-# Artefactos de Test y Cobertura
-*.out
+# ── Go ────────────────────────────────────────────────────────────────────────
 *.test
+coverage.out
+coverage.html
+*.out
 *.prof
 coverage.txt
 .coverage
-*.visual-check.*
 
-# Herramientas locales y Pi
-.atl/
-*.secret
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
 .env
 .env.local
+.venv/
+venv/
+.eggs/
+*.egg-info/
 
-# IDEs y Editores
+# ── Node ─────────────────────────────────────────────────────────────────────
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ── Local dev state ─────────────────────────────────────────────────────────
+*.log
+atl/
+*.db
+*.db-wal
+*.db-shm
+
+# ── TLS & secrets (NEVER COMMIT) ─────────────────────────────────────────────
+# Private keys — even in dev/test environments
+*.key
+*.pem
+
+# Certificate metadata that can reveal key info
+*.srl
+*.csr
+
+# Auto-generated certs (regenerated per environment)
+integration/certs-generated/
+
+# ── Data & workspaces ──────────────────────────────────────────────────────────
+data/
+*.sqlite
+*.sqlite3
+
+# ── IDE & tools ─────────────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
+*.swo
 *~
+.DS_Store
+Thumbs.db
+
+# ── Code analysis ─────────────────────────────────────────────────────────────
+.codegraph/
+*.prof
+
+# ── Temporary ────────────────────────────────────────────────────────────────
+*.tmp
+*.bak
+*.orig
+
+# ── Compiled binaries ─────────────────────────────────────────────────────────
+gentle-mesh
+gentle-mesh.zip
+# Local Pi runtime state
+.atl/
+*.visual-check.*

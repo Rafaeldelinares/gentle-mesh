@@ -1,0 +1,15 @@
+# CODEOWNERS — RFC-001 / Gentle Mesh
+#
+# Maintainer: @Rafaeldelinares
+#
+# All PRs touching cryptographic code, security gates, or CI workflows
+# require review from the maintainer before merge.
+
+# Security & CI infrastructure
+.github/           @Rafaeldelinares
+scripts/           @Rafaeldelinares
+scripts/security-gates*   @Rafaeldelinares
+
+# PKI & cryptographic packages
+/pkg/pki/          @Rafaeldelinares
+/pkg/server/store/certstore.go   @Rafaeldelinares
