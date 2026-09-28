@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -447,4 +448,103 @@ func TestTerritoryScheduler_ConcurrentScheduleAndDrain(t *testing.T) {
 			t.Fatalf("task %s expected completed, got %s", mt.TaskID, got)
 		}
 	}
+}
+
+func TestClampPriority_BoundaryAndSaturation(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    int
+		expected int32
+	}{
+		{name: "zero", input: 0, expected: 0},
+		{name: "positive within range", input: 50, expected: 50},
+		{name: "negative within range", input: -50, expected: -50},
+		{name: "upper boundary 100", input: 100, expected: 100},
+		{name: "lower boundary -100", input: -100, expected: -100},
+		{name: "overflow saturation positive 1000", input: 1000, expected: 100},
+		{name: "overflow saturation negative -1000", input: -1000, expected: -100},
+		{name: "max int32 saturation", input: math.MaxInt32, expected: 100},
+		{name: "min int32 saturation", input: math.MinInt32, expected: -100},
+		{name: "max int64 saturation", input: int(int64(math.MaxInt64)), expected: 100},
+		{name: "min int64 saturation", input: int(int64(math.MinInt64)), expected: -100},
+		{name: "max int saturation", input: math.MaxInt, expected: 100},
+		{name: "min int saturation", input: math.MinInt, expected: -100},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := meshhttp.ClampPriority(tc.input)
+			if got != tc.expected {
+				t.Fatalf("ClampPriority(%d) = %d, expected %d", tc.input, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestTerritoryScheduler_PriorityQueueOrdering_Boundaries(t *testing.T) {
+	const repo = "github.com/org/priority-repo"
+
+	r := newSchedulerGateRunner()
+	h := newSchedulerHarness(t, protocol.TerritoryModeQueue, r)
+
+	// Block territory with root task
+	root := h.createTask(t, "root-blocker", repo, "main")
+	if queued, err := h.sched.Schedule(root); err != nil || queued {
+		t.Fatalf("expected root task to dispatch, got queued=%v err=%v", queued, err)
+	}
+
+	// Create tasks with different priorities including extreme bounds
+	priorities := []struct {
+		taskName string
+		priority int
+	}{
+		{taskName: "lowest-min-int", priority: math.MinInt},
+		{taskName: "negative-50", priority: -50},
+		{taskName: "zero-default", priority: 0},
+		{taskName: "positive-50", priority: 50},
+		{taskName: "highest-max-int", priority: math.MaxInt},
+	}
+
+	for _, p := range priorities {
+		mt, err := h.tm.CreateTask(protocol.TaskRequest{
+			Agent:     "worker",
+			Task:      p.taskName,
+			GitRepo:   repo,
+			GitBranch: "main",
+			Priority:  p.priority,
+		})
+		if err != nil {
+			t.Fatalf("failed to create task %s: %v", p.taskName, err)
+		}
+		queued, err := h.sched.Schedule(mt)
+		if err != nil || !queued {
+			t.Fatalf("expected task %s to be queued, got queued=%v err=%v", p.taskName, queued, err)
+		}
+	}
+
+	// Verify queued order in scheduler is strictly descending by clamped priority
+	// highest-max-int (100) -> positive-50 (50) -> zero-default (0) -> negative-50 (-50) -> lowest-min-int (-100)
+	queuedTasks := h.sched.QueuedTasks()
+	if len(queuedTasks) != len(priorities) {
+		t.Fatalf("expected %d queued tasks, got %d", len(priorities), len(queuedTasks))
+	}
+
+	expectedOrder := []string{"highest-max-int", "positive-50", "zero-default", "negative-50", "lowest-min-int"}
+	for i, taskID := range queuedTasks {
+		st, ok := h.tm.GetTask(taskID)
+		if !ok {
+			t.Fatalf("task %s not found in tm", taskID)
+		}
+		if st.Request.Task != expectedOrder[i] {
+			t.Fatalf("queue position %d: expected task %s, got %s (priority %d)",
+				i, expectedOrder[i], st.Request.Task, st.Request.Priority)
+		}
+	}
+
+	// Clean up runner
+	r.release("root-blocker")
+	for _, name := range expectedOrder {
+		r.release(name)
+	}
+	waitForCondition(t, func() bool { return h.sched.RunningLen() == 0 && h.sched.QueueLen() == 0 })
 }
