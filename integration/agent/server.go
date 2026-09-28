@@ -202,16 +202,19 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 
 	// Agent B endpoints (executor).
 	mux.HandleFunc("POST /leases", s.handleCreateLease)
-	mux.HandleFunc("POST /execute", s.handleExecute)
 	mux.HandleFunc("POST /settle", s.handleSettle)
 	mux.HandleFunc("POST /accept", s.handleAccept)
 	mux.HandleFunc("POST /dispute", s.handleDispute)
-	mux.HandleFunc("POST /inject-receipt", s.handleInjectReceipt)
 	mux.HandleFunc("POST /verify-chain", s.handleVerifyChain)
 
 	// Shared.
 	mux.HandleFunc("GET /receipts/", s.handleGetReceipt)
 	mux.HandleFunc("GET /chain", s.handleGetChain)
+
+	// Test-harness-only endpoints: /execute and /inject-receipt.
+	// The stub (no-op) is in server_harness_stub.go; the real registration
+	// is in server_harness.go when building with -tags testharness.
+	s.registerTestHarnessEndpoints(mux)
 }
 
 // Shutdown gracefully shuts down the server.

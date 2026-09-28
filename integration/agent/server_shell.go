@@ -1,3 +1,5 @@
+//go:build testharness
+
 package agent
 
 import (

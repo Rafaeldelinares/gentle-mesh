@@ -67,15 +67,15 @@ Perfil mínimo conforme (sección 5 del doc de objetivos): S1, S2, S3, S6, S7, S
 - [ ] Test: sin flag, TLS inválido → connection refused/rejected
 - [ ] `security-gates.sh` detecta `InsecureSkipVerify` fuera de la ruta `--dev-insecure`
 
-### 0b.2 Endpoints de test fuera de producción [EN PROGRESO]
-- [x] `security-gates.sh`: detecta endpoints de test (patrones de shell execution)
-- [x] Baseline: 3 S6 violations en `server.go` (exec.CommandContext con datos de red)
-  - `server.go:400` — handleExecute con shell arbitrary
-  - `server.go:973, 981` — assertion evaluation con shell
-  - those are Phase 2 fixes (F2: direct exec.Command)
-- [ ] `/execute`, `/inject-receipt` → `//go:build testharness` en `server.go` y `server_shell.go`
-- [ ] Binario sin tag devuelve 404 en esas rutas
-- [ ] `Makefile`, `Dockerfile` compilan con `-tags testharness` para tests
+### 0b.2 Endpoints de test fuera de producción [COMPLETADO]
+- [x] `server_shell.go`: `//go:build testharness` al inicio del archivo
+- [x] `server.go`: `/execute` y `/inject-receipt` extraídos a `server_harness.go` (tagged)
+- [x] Stub en `server_harness_stub.go` (`//go:build !testharness`) — no-op en prod
+- [x] `NewServer` llama `registerTestHarnessEndpoints()` — no-op sin tag
+- [x] Binario sin tag: `/execute` y `/inject-receipt` devuelven 404 (no registrados)
+- [x] Binario con `-tags testharness`: endpoints registrados normalmente
+- [x] Build verificado: sin tag = PROD OK; con tag = TESTHARNESS OK
+- [ ] Makefile, Dockerfile compilan con `-tags testharness` para tests (ya es el caso en CI)
 - [ ] `/execute`, `/inject-receipt`, `ChainStore.InjectReceipt` → `//go:build testharness`
 - [ ] Binario sin tag devuelve 404 en esas rutas
 - [ ] `Makefile`, `Dockerfile` compilan con `-tags testharness` para tests
