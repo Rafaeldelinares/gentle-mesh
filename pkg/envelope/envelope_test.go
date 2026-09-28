@@ -49,7 +49,7 @@ func validEnvelope() *CognitiveTaskEnvelope {
 		MaxRemediations: 2,
 		NoSubdelegation: true,
 		CreatedAt:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		Version:          "1.0",
+		Version:          "1",
 	}
 }
 

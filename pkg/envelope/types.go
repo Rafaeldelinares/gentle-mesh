@@ -58,7 +58,7 @@ type CognitiveTaskEnvelope struct {
 	// This hash appears in the final SettlementReceipt for correlation.
 	EnvelopeHash string `json:"envelope_hash,omitempty"`
 
-	// Version is the protocol version (currently "1.0").
+	// Version is the protocol version (currently "1" or "1.0").
 	Version string `json:"version"`
 }
 

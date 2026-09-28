@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -126,34 +127,31 @@ func TestSaveReceipt_ChainBroken(t *testing.T) {
 	r1.PreviousReceiptHash = ""
 	cs.SaveReceipt(context.Background(), r1)
 
-	// Second receipt with WRONG previous hash: SaveReceipt no longer validates
-	// prev_hash (VerifyChain does that). SaveReceipt accepts any hash.
+	// Second receipt with WRONG previous hash: S7 requires SaveReceipt
+	// to verify prev_hash inside the critical section and reject invalid
+	// chain links at save time.
 	r2 := validReceipt()
 	r2.ReceiptID = "receipt-002"
 	r2.ContractID = "contract-002"
 	r2.PreviousReceiptHash = "wrong-hash-value-0000000000000000000000000000000000000000000"
 
-	// SaveReceipt should succeed (validation moved to VerifyChain).
+	// SaveReceipt should reject with ErrChainBroken.
 	err := cs.SaveReceipt(context.Background(), r2)
-	if err != nil {
-		t.Errorf("SaveReceipt with wrong previous hash: expected success, got %v", err)
+	if err == nil {
+		t.Errorf("SaveReceipt with wrong previous hash: expected ErrChainBroken, got nil")
+	} else if !errors.Is(err, ErrChainBroken) {
+		t.Errorf("SaveReceipt with wrong previous hash: expected ErrChainBroken, got %v", err)
 	}
 
-	// VerifyChain returns nil error but marks the receipt invalid.
+	// VerifyChain should only see one valid receipt.
 	_, executorSigner := makeTestSigners(t)
 	results, err := cs.VerifyChain(context.Background(), "agent-a", "agent-b",
 		executorSigner.PublicKey(), nil)
 	if err != nil {
 		t.Fatalf("VerifyChain returned unexpected error: %v", err)
 	}
-	if len(results) < 2 {
-		t.Fatalf("VerifyChain returned %d results, want at least 2", len(results))
-	}
-	if results[1].PreviousHashValid {
-		t.Error("VerifyChain: second receipt should have PreviousHashValid=false")
-	}
-	if results[1].Valid {
-		t.Error("VerifyChain: second receipt should be invalid")
+	if len(results) != 1 {
+		t.Errorf("VerifyChain returned %d results, want 1 (broken receipt rejected)", len(results))
 	}
 }
 
@@ -407,27 +405,47 @@ func TestVerifyChain_Valid(t *testing.T) {
 }
 
 func TestVerifyChain_BrokenChain(t *testing.T) {
-	cs, _ := setupChain(t)
+	cs, db := setupChain(t)
 	_, executor := makeTestSigners(t)
+	var err error
 
 	// First receipt.
 	r1 := validReceipt()
 	r1.ReceiptID = "bc-001"
 	r1.PreviousReceiptHash = ""
-	signReceipt(r1, executor)
+	if err := signReceipt(r1, executor); err != nil {
+		t.Fatalf("signReceipt r1: %v", err)
+	}
 	cs.SaveReceipt(context.Background(), r1)
 
-	// Second receipt with CORRUPTED previous hash: SaveReceipt no longer validates
-	// prev_hash (moved to VerifyChain). SaveReceipt succeeds.
+	// Second receipt with CORRUPTED previous hash: insert directly into DB
+	// (bypassing SaveReceipt which now validates prev_hash at save time).
+	// This tests that VerifyChain detects broken chains at read time.
 	r2 := validReceipt()
 	r2.ReceiptID = "bc-002"
 	r2.ContractID = "contract-bc-002"
 	r2.PreviousReceiptHash = "deadbeef00000000000000000000000000000000000000000000000000000000"
 	signReceipt(r2, executor)
 
-	err := cs.SaveReceipt(context.Background(), r2)
+	// Insert directly into DB bypassing SaveReceipt (which now validates).
+	// This tests that VerifyChain detects broken chains at read time.
+	r2JSON, jsonErr := json.Marshal(r2)
+	if jsonErr != nil {
+		t.Fatalf("marshal r2: %v", jsonErr)
+	}
+	_, err = db.ExecContext(context.Background(),
+		`INSERT INTO receipts (receipt_id, contract_id, envelope_hash,
+		emitter_agent_id, executor_agent_id, verdict,
+		previous_receipt_hash, executor_signature, executor_signed_at,
+		emitter_acceptance, emitter_acceptance_at, emitter_signature,
+		dispute_reason, data) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r2.ReceiptID, r2.ContractID, r2.EnvelopeHash,
+		r2.EmitterAgentID, r2.ExecutorAgentID, string(r2.Verdict),
+		r2.PreviousReceiptHash, r2.ExecutorSignature,
+		r2.ExecutorSignedAt.Format(time.RFC3339),
+		"", nil, "", "", string(r2JSON))
 	if err != nil {
-		t.Errorf("SaveReceipt with corrupted prev_hash: expected success, got %v", err)
+		t.Fatalf("direct DB insert failed: %v", err)
 	}
 
 	// VerifyChain should detect the broken chain.

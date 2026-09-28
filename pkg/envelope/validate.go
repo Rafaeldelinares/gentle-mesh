@@ -79,9 +79,9 @@ func Validate(env *CognitiveTaskEnvelope) error {
 	}
 
 	// S9: Protocol version enforcement.
-	// Only "1" is supported. Unknown versions are rejected.
-	if env.Version != "" && env.Version != "1" {
-		return fmt.Errorf("%w: %q (supported: \"1\")", ErrUnknownProtocolVersion, env.Version)
+	// Only "1" and "1.0" are supported. Unknown versions are rejected.
+	if env.Version != "" && env.Version != "1" && env.Version != "1.0" {
+		return fmt.Errorf("%w: %q (supported: \"1\", \"1.0\")", ErrUnknownProtocolVersion, env.Version)
 	}
 
 	return nil
