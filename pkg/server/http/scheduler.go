@@ -454,25 +454,27 @@ func (s *TerritoryScheduler) findConflictLocked(mt *task.ManagedTask) *protocol.
 	return s.territoryManager.FindRunningConflict(mt.Territory())
 }
 
+// ClampPriority bounds raw priority to [-100, 100] with explicit range checking
+// before integer conversion, preventing integer overflow (CWE-190 / G115).
+func ClampPriority(p int) int32 {
+	if p < -100 {
+		return -100
+	}
+	if p > 100 {
+		return 100
+	}
+	return int32(p)
+}
+
 // enqueueByPriorityLocked inserts mt into the queue based on its priority.
 // Higher priority tasks are placed near the front. The caller must hold s.mu.
 func (s *TerritoryScheduler) enqueueByPriorityLocked(mt *task.ManagedTask) {
-	priority := mt.Request.Priority
-	if priority < -100 {
-		priority = -100
-	} else if priority > 100 {
-		priority = 100
-	}
+	priority := ClampPriority(mt.Request.Priority)
 
 	// Find position to insert (higher priority first)
 	insertPos := len(s.queue)
 	for i := 0; i < len(s.queue); i++ {
-		qPriority := s.queue[i].Request.Priority
-		if qPriority < -100 {
-			qPriority = -100
-		} else if qPriority > 100 {
-			qPriority = 100
-		}
+		qPriority := ClampPriority(s.queue[i].Request.Priority)
 		if priority > qPriority {
 			insertPos = i
 			break

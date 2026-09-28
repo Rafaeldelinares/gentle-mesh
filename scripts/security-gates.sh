@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# security-gates.sh — RFC-002 v2 Security Gate
+# security-gates.sh — Gentle Mesh & RFC-002 Security Gates
 #
 # Fails if prohibited patterns are found outside build-tagged test files.
 # Allowlist is in scripts/security-gates.allowlist.
@@ -33,12 +33,12 @@ is_exempt_file() {
     grep -qE "^// \+build.*(testharness|redteam)" "$1" 2>/dev/null
 }
 
-# load_allowlist returns 0 if (file, pattern, phase) matches an allowlist entry.
+# in_allowlist returns 0 if (file, pattern, phase) matches an allowlist entry.
 # Format of each entry in security-gates.allowlist:
 #   path:grep_pattern || phase || reason
 # path is a directory prefix or filename.
 # grep_pattern is an ERE matched with grep -E against file content.
-# phase is the phase that eliminates this violation.
+# phase is the phase/milestone that eliminates this violation.
 # Lines starting with # and blank lines are ignored.
 in_allowlist() {
     local file="$1"; shift
@@ -49,8 +49,6 @@ in_allowlist() {
         [[ -z "${line// }" ]] && continue       # blank
 
         # Parse: path:grep_pattern || phase || reason
-        # Strip everything after the second || to get the entry.
-        # Extract the phase token between first and second ||.
         local entry entry_phase
         entry="${line%% || *}"
         entry_phase="${line#*|| }"
@@ -62,7 +60,14 @@ in_allowlist() {
         entry_phase="${entry_phase#${entry_phase%%[![:space:]]*}}"
         entry_phase="${entry_phase%${entry_phase##*[![:space:]]}}"
 
-        [[ "$phase" != "$entry_phase" ]] && continue
+        # Match exact phase or equivalent phase aliases (F1 <-> v1.0.2)
+        local phase_match=0
+        if [[ "$phase" == "$entry_phase" ]]; then
+            phase_match=1
+        elif [[ ("$phase" == "F1" || "$phase" == "v1.0.2") && ("$entry_phase" == "F1" || "$entry_phase" == "v1.0.2") ]]; then
+            phase_match=1
+        fi
+        [[ "$phase_match" -ne 1 ]] && continue
 
         # Split entry on FIRST colon only (path may contain colons).
         local first_field="${entry%%:*}"
@@ -74,7 +79,6 @@ in_allowlist() {
         grep_pattern="${grep_pattern%${grep_pattern##*[![:space:]]}}"
 
         # path_pattern uses ":" as delimiter; strip it for prefix matching.
-        # Use bash prefix check instead of grep to avoid regex issues with ":".
         local dir_pattern="${path_pattern%:}"
         local matched=0
         if [[ "$dir_pattern" == !* ]]; then
@@ -130,7 +134,7 @@ run_check() {
 # ── Main ─────────────────────────────────────────────────────────────────
 
 echo "============================================================"
-echo "RFC-002 v2 Security Gates"
+echo "Gentle Mesh & RFC-002 Security Gates"
 echo "============================================================"
 echo ""
 
@@ -143,25 +147,21 @@ total=0
 
 # S6: any shell exec outside testharness files
 # ALL sh -c exceptions are eliminated in Phase F2 (direct exec.Command replacement).
-# Each allowlist entry carries exactly one phase: the one that removes the violation.
 run_check "$SHELL_PATTERN" \
     "S6: exec.Command(\"sh\" | \"bash\", \"-c\", ...) — Phase F2: replace with direct exec" \
     "F2" || ((total+=$?))
 
 # S1: InsecureSkipVerify
 run_check "$INSECURE_PATTERN" \
-    "S1: InsecureSkipVerify — gate behind --dev-insecure flag" \
-    "F1" || ((total+=$?))
+    "S1: InsecureSkipVerify — gate behind --dev-insecure flag (Issue #15 / v1.0.2)" \
+    "v1.0.2" || ((total+=$?))
 
-# DB artifacts versioned
+# DB artifacts versioned (must NEVER be in git)
 echo "Checking: versioned database artifacts (*.db, *.db-wal, *.db-shm)"
 db_violations=0
 while IFS=: read -r file _; do
     [[ -z "$file" ]] && continue
     [[ "$file" =~ \.git/ ]] && continue
-    if in_allowlist "$file" "0a"; then
-        continue
-    fi
     echo "  VIOLATION: $file — database artifact tracked in git"
     ((db_violations++)) || true
 done < <(git ls-files --cached | grep -E "$DB_PATTERN" 2>/dev/null || true)

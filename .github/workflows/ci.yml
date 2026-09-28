@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 jobs:
-  # ── Static analysis ──────────────────────────────────────────────────────────
+  # ── Static analysis & Security Gates ──────────────────────────────────────────
   lint:
     name: Lint & Security
     runs-on: ubuntu-latest
@@ -55,8 +55,9 @@ jobs:
           go install github.com/securego/gosec/v2/cmd/gosec@latest
 
       - name: Run gosec (pkg/, HIGH+, blocking)
-        # Baseline (Phase 0a): 1 G115 false positive in pkg/jcs/canonical.go (suppressed).
-        # 0 HIGH issues in pkg/. Medium issues tracked for Phase 1.
+        # ÚNICA exclusión activa en gosec: G104 (Audit errors not checked).
+        # En el código base v1.0.1 existen retornos de error no comprobados (ej. closes/writes).
+        # Esta exclusión se audita y resuelve formalmente en el Milestone v1.0.3 (Issue #18).
         run: |
           gosec -severity high \
             -exclude=G104 \
@@ -65,22 +66,19 @@ jobs:
             exit 1
           }
 
-      # ── gosec: integration packages (non-blocking) ─────────────────────────
-      - name: Run gosec (integration/, all severities, report artifact)
-        # Baseline: 4 G115 (int64→uint16/uint64 cast) in test infrastructure.
-        # G104/G306 known, tracked for Phase 1.
-        # This step always passes; report is uploaded for visibility.
+      # ── gosec: all packages (report artifact) ───────────────────────────────
+      - name: Run gosec (all packages, report artifact)
         run: |
           set +e
-          gosec -severity medium -fmt json -out gosec-integration-report.json ./integration/... ./cmd/...
+          gosec -severity medium -fmt json -out gosec-report.json ./...
           exit 0
 
-      - name: Upload gosec integration report
+      - name: Upload gosec report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: gosec-integration-report
-          path: gosec-integration-report.json
+          name: gosec-report
+          path: gosec-report.json
           retention-days: 7
 
       # ── govulncheck ────────────────────────────────────────────────────────
