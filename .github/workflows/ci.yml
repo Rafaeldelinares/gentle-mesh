@@ -26,6 +26,15 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
+      # ── security gates ─────────────────────────────────────────────────────────
+      - name: Run security gates
+        run: |
+          chmod +x scripts/security-gates.sh
+          ./scripts/security-gates.sh || {
+            echo "SECURITY GATE FAILED: fix violations before merging"
+            exit 1
+          }
+
       - name: Download Go dependencies
         run: go mod download
 
