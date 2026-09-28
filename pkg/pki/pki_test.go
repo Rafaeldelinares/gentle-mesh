@@ -105,7 +105,7 @@ func TestSaveAndLoadCA(t *testing.T) {
 	// Check public key matches
 	origPub := ca.Key.PublicKey
 	loadedPub := loadedCA.Key.PublicKey
-	if origPub.X.Cmp(loadedPub.X) != 0 || origPub.Y.Cmp(loadedPub.Y) != 0 {
+	if !origPub.Equal(&loadedPub) {
 		t.Error("Loaded CA public key doesn't match")
 	}
 }
