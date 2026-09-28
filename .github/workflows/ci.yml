@@ -47,11 +47,8 @@ jobs:
           go install honnef.co/go/tools/cmd/staticcheck@latest
 
       - name: Run staticcheck
-        # En main (v1.0.1) existen advertencias S1017 y S1039 registradas en el Issue #12.
-        # Mientras se resuelven en el milestone v1.0.2, excluimos esas reglas específicas del exit code de fallo (-fail).
-        # Cualquier otra violación de staticcheck romperá el gate deterministamente.
         run: |
-          staticcheck -fail 'all,-S1017,-S1039' ./...
+          staticcheck ./...
 
       # ── gosec: production packages (blocking) ───────────────────────────────
       - name: Set up gosec

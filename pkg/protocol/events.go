@@ -228,10 +228,7 @@ func ParseSSE(raw []byte) (*Event, error) {
 			continue
 		}
 		field := line[:colonIdx]
-		val := line[colonIdx+1:]
-		if strings.HasPrefix(val, " ") {
-			val = val[1:]
-		}
+		val := strings.TrimPrefix(line[colonIdx+1:], " ")
 
 		switch field {
 		case "id":
