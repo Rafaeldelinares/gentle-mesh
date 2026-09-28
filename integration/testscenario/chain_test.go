@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -215,12 +216,18 @@ func TestChain_TamperDetection(t *testing.T) {
 			t.Skip("need at least 2 receipts")
 		}
 
-		// Corrupt receipt #1 signature by reading the raw JSON, corrupting the sig,
-		// and writing it back.
-		// REPLACE(origSig, ...) fails because JSON stores it as "<sig>" with quotes.
+		// Corrupt receipt #1 signature by reading the raw JSON, corrupting a middle byte
+		// of the decoded signature bytes, and writing it back.
 		origRec := chain[0]
 		corruptedRec := *origRec
-		corruptedRec.ExecutorSignature = origRec.ExecutorSignature[:len(origRec.ExecutorSignature)-1] + "X"
+		rawSig, err := base64.RawURLEncoding.DecodeString(origRec.ExecutorSignature)
+		if err != nil {
+			t.Fatalf("decode executor signature: %v", err)
+		}
+		if len(rawSig) > 10 {
+			rawSig[len(rawSig)/2] ^= 0xFF
+		}
+		corruptedRec.ExecutorSignature = base64.RawURLEncoding.EncodeToString(rawSig)
 		corruptedJSON, err := json.Marshal(&corruptedRec)
 		if err != nil {
 			t.Fatalf("marshal corrupted receipt: %v", err)

@@ -138,13 +138,18 @@ func Verify(publicKey []byte, data []byte, signatureB64 string) error {
 		return ErrInvalidSig
 	}
 
-	sig, err := base64.RawURLEncoding.DecodeString(signatureB64)
+	sig, err := base64.RawURLEncoding.Strict().DecodeString(signatureB64)
 	if err != nil {
 		return fmt.Errorf("%w: base64 decode error: %v", ErrInvalidSig, err)
 	}
 	if len(sig) != ed25519.SignatureSize {
 		return fmt.Errorf("%w: wrong size %d, want %d",
 			ErrInvalidSig, len(sig), ed25519.SignatureSize)
+	}
+
+	// Enforce canonical round-trip encoding to eliminate all malleability.
+	if base64.RawURLEncoding.EncodeToString(sig) != signatureB64 {
+		return fmt.Errorf("%w: non-canonical base64 signature encoding", ErrInvalidSig)
 	}
 
 	if !ed25519.Verify(publicKey, data, sig) {

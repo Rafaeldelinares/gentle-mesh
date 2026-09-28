@@ -1,5 +1,3 @@
-//go:build redteam
-
 package signing
 
 import (
