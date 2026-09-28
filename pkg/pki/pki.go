@@ -53,10 +53,11 @@ type MeshCA struct {
 	Key  *ecdsa.PrivateKey
 }
 
-// ServerCert holds a server certificate and its private key.
+// ServerCert holds a server certificate, its private key, and optional CA certificate for chain building.
 type ServerCert struct {
 	Cert *x509.Certificate
 	Key  *ecdsa.PrivateKey
+	CA   *x509.Certificate
 }
 
 // NodeCert holds a node/client certificate and its private key for mTLS.
@@ -172,7 +173,7 @@ func (ca *MeshCA) GenerateServerCert(hostnames []string, validFor time.Duration)
 		return nil, fmt.Errorf("%w: failed to parse server cert: %v", ErrGenerationFailed, err)
 	}
 
-	return &ServerCert{Cert: cert, Key: key}, nil
+	return &ServerCert{Cert: cert, Key: key, CA: ca.Cert}, nil
 }
 
 // GenerateNodeCert creates a client/node certificate signed by the provided CA.
@@ -358,6 +359,19 @@ func (cert *ServerCert) SaveServerCertFiles(dir string, force bool) error {
 	if err := WriteCertificatePemFile(certPath, cert.Cert); err != nil {
 		return err
 	}
+
+	// Append CA certificate to cert.pem if available, so TLS listeners serve the full chain.
+	if cert.CA != nil {
+		caPEM, err := CertificateToPEM(cert.CA)
+		if err == nil {
+			f, err := os.OpenFile(certPath, os.O_WRONLY|os.O_APPEND, 0644)
+			if err == nil {
+				_, _ = f.WriteString("\n" + caPEM)
+				_ = f.Close()
+			}
+		}
+	}
+
 	if err := WritePrivateKeyPemFile(keyPath, cert.Key); err != nil {
 		return err
 	}

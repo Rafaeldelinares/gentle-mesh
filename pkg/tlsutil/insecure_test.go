@@ -2,8 +2,12 @@ package tlsutil_test
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -108,6 +112,86 @@ func TestApplyDevInsecure(t *testing.T) {
 		}
 		if !cfg.InsecureSkipVerify {
 			t.Error("expected InsecureSkipVerify to be true")
+		}
+	})
+}
+
+func TestPinnedBootstrapConfig(t *testing.T) {
+	t.Run("empty hash returns error", func(t *testing.T) {
+		cfg, err := tlsutil.PinnedBootstrapConfig("")
+		if !errors.Is(err, tlsutil.ErrEmptyPinHash) {
+			t.Fatalf("expected ErrEmptyPinHash, got: %v", err)
+		}
+		if cfg != nil {
+			t.Fatalf("expected nil config, got: %+v", cfg)
+		}
+	})
+
+	t.Run("invalid format returns error", func(t *testing.T) {
+		cfg, err := tlsutil.PinnedBootstrapConfig("md5:123456")
+		if !errors.Is(err, tlsutil.ErrInvalidPinFormat) {
+			t.Fatalf("expected ErrInvalidPinFormat, got: %v", err)
+		}
+		if cfg != nil {
+			t.Fatalf("expected nil config, got: %+v", cfg)
+		}
+	})
+
+	t.Run("allowed in production without warning", func(t *testing.T) {
+		t.Setenv("GENTLE_ENV", "production")
+		var buf bytes.Buffer
+		oldWarn := tlsutil.WarnWriter
+		tlsutil.WarnWriter = &buf
+		defer func() { tlsutil.WarnWriter = oldWarn }()
+
+		cfg, err := tlsutil.PinnedBootstrapConfig("sha256:abcd1234ef")
+		if err != nil {
+			t.Fatalf("expected success in production, got: %v", err)
+		}
+		if cfg == nil {
+			t.Fatal("expected non-nil config")
+		}
+		if buf.Len() > 0 {
+			t.Fatalf("expected no warnings for pinned bootstrap, got: %q", buf.String())
+		}
+	})
+
+	t.Run("handshake verification against test server", func(t *testing.T) {
+		ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer ts.Close()
+
+		cert := ts.Certificate()
+		sum := sha256.Sum256(cert.Raw)
+		correctFingerprint := fmt.Sprintf("sha256:%x", sum)
+		wrongFingerprint := "sha256:11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff"
+
+		// Matching pin passes
+		cfg, err := tlsutil.PinnedBootstrapConfig(correctFingerprint)
+		if err != nil {
+			t.Fatalf("unexpected error creating config: %v", err)
+		}
+		client := &http.Client{
+			Transport: &http.Transport{TLSClientConfig: cfg},
+		}
+		resp, err := client.Get(ts.URL)
+		if err != nil {
+			t.Fatalf("expected request with matching pin to succeed, got: %v", err)
+		}
+		resp.Body.Close()
+
+		// Mismatched pin fails during handshake
+		badCfg, err := tlsutil.PinnedBootstrapConfig(wrongFingerprint)
+		if err != nil {
+			t.Fatalf("unexpected error creating config: %v", err)
+		}
+		badClient := &http.Client{
+			Transport: &http.Transport{TLSClientConfig: badCfg},
+		}
+		_, err = badClient.Get(ts.URL)
+		if err == nil {
+			t.Fatal("expected request with wrong pin to fail during handshake, got nil error")
 		}
 	})
 }

@@ -407,7 +407,10 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 
 			if *caCertHash != "" {
 				fmt.Fprintf(stdout, "Downloading mesh CA for verification (pin: %s)...\n", *caCertHash)
-				bootstrapClient := newTLSClient("", true)
+				bootstrapClient, err := newPinnedTLSClient(*caCertHash)
+				if err != nil {
+					return fmt.Errorf("failed to create pinned bootstrap TLS client: %w", err)
+				}
 				caData, err := downloadCA(ctx, bootstrapClient, caURL)
 				if err != nil {
 					return fmt.Errorf("failed to download CA from coordinator: %w", err)
@@ -929,6 +932,21 @@ type errorRoundTripper struct {
 
 func (e *errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, e.err
+}
+
+// newPinnedTLSClient creates an HTTP client with TLS pinned to an expected CA/cert hash.
+// This is permitted in production and does not emit insecure warnings because verification
+// occurs cryptographically during the TLS handshake via PinnedBootstrapConfig.
+func newPinnedTLSClient(expectedHash string) (*http.Client, error) {
+	tlsConfig, err := tlsutil.PinnedBootstrapConfig(expectedHash)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}, nil
 }
 
 // newTLSClient creates an HTTP client with optional TLS configuration.

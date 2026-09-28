@@ -1,6 +1,7 @@
 package tlsutil
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -15,6 +16,15 @@ var (
 
 	// ErrExplicitFlagRequired is returned when dev insecure config is requested without explicit confirmation.
 	ErrExplicitFlagRequired = errors.New("insecure TLS verification requires an explicit development flag")
+
+	// ErrEmptyPinHash is returned when a pinned bootstrap config is requested without an expected hash.
+	ErrEmptyPinHash = errors.New("expected CA fingerprint cannot be empty")
+
+	// ErrInvalidPinFormat is returned when the fingerprint does not have the sha256: prefix.
+	ErrInvalidPinFormat = errors.New("invalid CA fingerprint format: must start with sha256: prefix")
+
+	// ErrPinMismatch is returned when the peer certificate chain does not contain a certificate matching the expected pin.
+	ErrPinMismatch = errors.New("peer certificate chain does not contain a certificate matching expected fingerprint")
 
 	// WarnWriter is the default output destination for TLS security warnings (defaults to os.Stderr).
 	WarnWriter io.Writer = os.Stderr
@@ -67,3 +77,38 @@ func ApplyDevInsecure(cfg *tls.Config, explicitFlag bool) error {
 	cfg.InsecureSkipVerify = devCfg.InsecureSkipVerify
 	return nil
 }
+
+// PinnedBootstrapConfig returns a *tls.Config configured to verify that at least one
+// certificate in the server's presented certificate chain matches expectedHash (format: "sha256:<hex>").
+//
+// This config does NOT require a development flag, does NOT emit insecure warnings,
+// and IS allowed in production because it cryptographically verifies the peer certificate
+// against the pinned fingerprint during the TLS handshake before transmitting any data.
+func PinnedBootstrapConfig(expectedHash string) (*tls.Config, error) {
+	expected := strings.TrimSpace(strings.ToLower(expectedHash))
+	if expected == "" {
+		return nil, ErrEmptyPinHash
+	}
+	if !strings.HasPrefix(expected, "sha256:") {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidPinFormat, expectedHash)
+	}
+
+	return &tls.Config{
+		// #nosec G402 -- Custom verification implemented via VerifyConnection against expected SHA-256 fingerprint.
+		InsecureSkipVerify: true,
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return errors.New("server presented no certificates")
+			}
+			for _, cert := range cs.PeerCertificates {
+				sum := sha256.Sum256(cert.Raw)
+				actual := fmt.Sprintf("sha256:%x", sum)
+				if strings.EqualFold(actual, expected) {
+					return nil
+				}
+			}
+			return fmt.Errorf("%w: expected %s", ErrPinMismatch, expected)
+		},
+	}, nil
+}
+
