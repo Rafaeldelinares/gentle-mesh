@@ -31,6 +31,7 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/worker"
+	"github.com/gentleman-programming/gentle-mesh/pkg/tlsutil"
 )
 
 func main() {
@@ -406,7 +407,15 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 
 			if *caCertHash != "" {
 				fmt.Fprintf(stdout, "Downloading mesh CA for verification (pin: %s)...\n", *caCertHash)
-				bootstrapClient := newTLSClient("", true)
+				u, err := url.Parse(coordURL)
+				if err != nil {
+					return fmt.Errorf("invalid coordinator URL %q: %w", coordURL, err)
+				}
+				serverName := u.Hostname()
+				bootstrapClient, err := newPinnedTLSClient(serverName, *caCertHash)
+				if err != nil {
+					return fmt.Errorf("failed to create pinned bootstrap TLS client: %w", err)
+				}
 				caData, err := downloadCA(ctx, bootstrapClient, caURL)
 				if err != nil {
 					return fmt.Errorf("failed to download CA from coordinator: %w", err)
@@ -921,11 +930,42 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
+// errorRoundTripper rejects any HTTP request with a pre-configured error.
+type errorRoundTripper struct {
+	err error
+}
+
+func (e *errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, e.err
+}
+
+// newPinnedTLSClient creates an HTTP client with TLS pinned to an expected CA/cert hash
+// and ServerName configured for hostname verification during the handshake.
+// This is permitted in production and does not emit insecure warnings because verification
+// occurs cryptographically during the TLS handshake via PinnedBootstrapConfigWithServerName.
+func newPinnedTLSClient(serverName string, expectedHash string) (*http.Client, error) {
+	tlsConfig, err := tlsutil.PinnedBootstrapConfigWithServerName(serverName, expectedHash)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}, nil
+}
+
 // newTLSClient creates an HTTP client with optional TLS configuration.
 func newTLSClient(caCertPath string, insecureSkipVerify bool) *http.Client {
 	if insecureSkipVerify || caCertPath != "" {
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: insecureSkipVerify,
+		tlsConfig := &tls.Config{}
+		if insecureSkipVerify {
+			if err := tlsutil.ApplyDevInsecure(tlsConfig, insecureSkipVerify); err != nil {
+				fmt.Fprintf(os.Stderr, "Security error: %v\n", err)
+				return &http.Client{
+					Transport: &errorRoundTripper{err: err},
+				}
+			}
 		}
 		if caCertPath != "" && !insecureSkipVerify {
 			caCert, err := os.ReadFile(caCertPath)
@@ -952,8 +992,11 @@ func newMTLSClient(caCertPath, certPath, keyPath string, insecureSkipVerify bool
 		return nil, errors.New("both -cert and -key must be provided for mTLS authentication")
 	}
 
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: insecureSkipVerify,
+	tlsConfig := &tls.Config{}
+	if insecureSkipVerify {
+		if err := tlsutil.ApplyDevInsecure(tlsConfig, insecureSkipVerify); err != nil {
+			return nil, err
+		}
 	}
 
 	// Load CA for server verification

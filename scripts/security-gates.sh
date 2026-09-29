@@ -20,7 +20,7 @@ in_allowlist() {
         entry="${line%% || *}"
         entry_phase="${line#*|| }"; entry_phase="${entry_phase%% || *}"
         entry_phase="$(echo "$entry_phase" | xargs)"
-        [[ "$phase" != "$entry_phase" ]] && continue
+        [[ "$entry_phase" != "permanent" && "$phase" != "$entry_phase" ]] && continue
 
         local first_field="${entry%%:*}"
         local grep_pattern="$(echo "${entry#"$first_field:"}" | xargs)"

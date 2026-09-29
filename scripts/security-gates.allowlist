@@ -1,10 +1,9 @@
-# security-gates.allowlist — RFC-001 / Gentle Mesh v1.0.1 (main)
+# security-gates.allowlist — Gentle Mesh Security Gate Allowlist
 # Format: path:grep_pattern || phase || reason
 # path         = directory prefix or file, matched by prefix
 # grep_pattern = ERE matched against file content with grep -E
-# phase        = milestone that eliminates this violation (v1.0.2 o v1.0.3)
+# phase        = milestone (v1.0.2, v1.0.3) or "permanent"
 # reason       = human-readable justification
 
-# ── Milestone v1.0.2 (S1): InsecureSkipVerify ───────────────────────────────
-cmd/gentle-mesh/main.go:InsecureSkipVerify       || v1.0.2 || flag TLSInsecureSkipVerify en cliente/servidor CLI
-pkg/client/bridge.go:InsecureSkipVerify           || v1.0.2 || bridge de cliente local sin verificación TLS estricta
+# ── Permanent Gate Exceptions (S1: InsecureSkipVerify) ──────────────────────
+pkg/tlsutil/:InsecureSkipVerify                  || permanent || centralized dev-insecure TLS configuration
