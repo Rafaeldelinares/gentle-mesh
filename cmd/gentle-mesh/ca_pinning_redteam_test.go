@@ -5,10 +5,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -505,6 +511,299 @@ func TestRedTeam_CAPinning_AttackerUntrustedLeafWithRealCAInChain(t *testing.T) 
 
 	if received {
 		t.Fatal("SECURITY VULNERABILITY: attacker server received HTTP request because real CA in chain bypassed verification!")
+	}
+}
+
+func generateCustomServerCert(ca *pki.MeshCA, dnsNames []string, ipAddresses []net.IP) (*pki.ServerCert, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, err
+	}
+	template := &x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName: "Custom Server",
+		},
+		NotBefore:    time.Now().Add(-1 * time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     dnsNames,
+		IPAddresses:  ipAddresses,
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, template, ca.Cert, &key.PublicKey, ca.Key)
+	if err != nil {
+		return nil, err
+	}
+	cert, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		return nil, err
+	}
+	return &pki.ServerCert{Cert: cert, Key: key, CA: ca.Cert}, nil
+}
+
+func setupCustomCertTLSServer(t *testing.T, ca *pki.MeshCA, dnsNames []string, ipAddresses []net.IP) (*httptest.Server, *bool) {
+	t.Helper()
+
+	serverCert, err := generateCustomServerCert(ca, dnsNames, ipAddresses)
+	if err != nil {
+		t.Fatalf("generateCustomServerCert failed: %v", err)
+	}
+
+	certPEM, err := pki.CertificateToPEM(serverCert.Cert)
+	if err != nil {
+		t.Fatalf("CertificateToPEM failed: %v", err)
+	}
+	caPEM, err := pki.CertificateToPEM(ca.Cert)
+	if err != nil {
+		t.Fatalf("CA CertificateToPEM failed: %v", err)
+	}
+	fullChainPEM := certPEM + "\n" + caPEM
+
+	keyBytes, err := x509.MarshalECPrivateKey(serverCert.Key)
+	if err != nil {
+		t.Fatalf("MarshalECPrivateKey failed: %v", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
+
+	tlsPair, err := tls.X509KeyPair([]byte(fullChainPEM), keyPEM)
+	if err != nil {
+		t.Fatalf("tls.X509KeyPair failed: %v", err)
+	}
+
+	requestReceived := false
+	var mu sync.Mutex
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/mesh/ca", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestReceived = true
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/x-pem-file")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(caPEM))
+	})
+	mux.HandleFunc("/v1/certs/enroll", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestReceived = true
+		mu.Unlock()
+
+		var req struct {
+			Token  string `json:"token"`
+			CSR    string `json:"csr"`
+			NodeID string `json:"node_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		signedCert, err := ca.SignCSR(req.CSR, req.NodeID, 24*time.Hour)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		signedPEM, _ := pki.CertificateToPEM(signedCert)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{
+			"cert_pem": signedPEM,
+			"node_id":  req.NodeID,
+		})
+	})
+	mux.HandleFunc("/v1/mesh/join", func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.NodeJoinRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(protocol.NodeInfo{
+			NodeID: req.NodeID,
+			Status: protocol.NodeStatusOnline,
+		})
+	})
+	mux.HandleFunc("/v1/mesh/heartbeat", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "acknowledged"})
+	})
+
+	ts := httptest.NewUnstartedServer(mux)
+	ts.TLS = &tls.Config{
+		Certificates: []tls.Certificate{tlsPair},
+	}
+	ts.StartTLS()
+
+	return ts, &requestReceived
+}
+
+func TestRedTeam_CAPinning_CoordinatorIP_WrongIPRejection(t *testing.T) {
+	// Vulnerability reproduction:
+	// Coordinator reached via IP address (127.0.0.1), certificate signed by legitimate pinned CA
+	// but issued for a DIFFERENT IP (e.g. 192.168.1.99).
+	// When cs.ServerName is used, it arrives empty for IP connections, so Go skips IP verification.
+	// The client MUST verify cleanServerName and reject the connection during handshake!
+	ca, err := pki.GenerateCA("Gentle Mesh Root CA", "test", 0)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+	caHash := pki.CertFingerprint(ca.Cert)
+
+	// Server cert issued only for 192.168.1.99 (NOT 127.0.0.1, NOT localhost)
+	wrongIPs := []net.IP{net.ParseIP("192.168.1.99")}
+	wrongDNS := []string{"other.coordinator.mesh"}
+	ts, requestReceived := setupCustomCertTLSServer(t, ca, wrongDNS, wrongIPs)
+	defer ts.Close()
+
+	tempConfigDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tempConfigDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	// Worker connects to ts.URL which is https://127.0.0.1:<port>
+	err = runCLI(ctx, []string{
+		"worker",
+		"-coordinator", ts.URL,
+		"-node-id", "test-wrong-ip-node",
+		"-join-token", "secret-test-token-value",
+		"-ca-cert-hash", caHash,
+	}, &stdout, &stderr)
+
+	if err == nil {
+		t.Fatal("SECURITY VULNERABILITY: worker accepted connection to 127.0.0.1 when server cert was issued for 192.168.1.99!")
+	}
+
+	if *requestReceived {
+		t.Fatal("SECURITY VULNERABILITY: server received HTTP request despite IP mismatch in certificate!")
+	}
+}
+
+func TestRedTeam_CAPinning_CoordinatorIP_CorrectIPAccepted(t *testing.T) {
+	ca, err := pki.GenerateCA("Gentle Mesh Root CA", "test", 0)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+	caHash := pki.CertFingerprint(ca.Cert)
+
+	// Server cert issued for 127.0.0.1 (exact match for httptest IP)
+	correctIPs := []net.IP{net.ParseIP("127.0.0.1")}
+	ts, _ := setupCustomCertTLSServer(t, ca, nil, correctIPs)
+	defer ts.Close()
+
+	tempConfigDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tempConfigDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runCLI(ctx, []string{
+			"worker",
+			"-coordinator", ts.URL,
+			"-node-id", "test-correct-ip-node",
+			"-join-token", "valid-enrollment-token",
+			"-ca-cert-hash", caHash,
+			"-heartbeat-interval", "50ms",
+		}, &stdout, &stderr)
+	}()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("worker failed with correct IP certificate: %v (stderr: %s)", err, stderr.String())
+	case <-time.After(500 * time.Millisecond):
+		cancel()
+		err := <-errCh
+		if err != nil && !strings.Contains(err.Error(), "context canceled") {
+			t.Fatalf("unexpected error on shutdown: %v", err)
+		}
+	}
+}
+
+func TestRedTeam_CAPinning_CoordinatorDNS_WrongDNSRejection(t *testing.T) {
+	ca, err := pki.GenerateCA("Gentle Mesh Root CA", "test", 0)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+	caHash := pki.CertFingerprint(ca.Cert)
+
+	// Server cert issued for other.domain.com only (no localhost, no IP)
+	ts, requestReceived := setupCustomCertTLSServer(t, ca, []string{"other.domain.com"}, nil)
+	defer ts.Close()
+
+	tempConfigDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tempConfigDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	// Replace 127.0.0.1 with localhost in coordinator URL
+	localhostURL := strings.Replace(ts.URL, "127.0.0.1", "localhost", 1)
+	err = runCLI(ctx, []string{
+		"worker",
+		"-coordinator", localhostURL,
+		"-node-id", "test-wrong-dns-node",
+		"-join-token", "secret-test-token-value",
+		"-ca-cert-hash", caHash,
+	}, &stdout, &stderr)
+
+	if err == nil {
+		t.Fatal("SECURITY VULNERABILITY: worker accepted connection to localhost when server cert was issued for other.domain.com!")
+	}
+
+	if *requestReceived {
+		t.Fatal("SECURITY VULNERABILITY: server received HTTP request despite hostname mismatch in certificate!")
+	}
+}
+
+func TestRedTeam_CAPinning_CoordinatorDNS_CorrectDNSAccepted(t *testing.T) {
+	ca, err := pki.GenerateCA("Gentle Mesh Root CA", "test", 0)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+	caHash := pki.CertFingerprint(ca.Cert)
+
+	// Server cert issued for localhost only
+	ts, _ := setupCustomCertTLSServer(t, ca, []string{"localhost"}, nil)
+	defer ts.Close()
+
+	tempConfigDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tempConfigDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	localhostURL := strings.Replace(ts.URL, "127.0.0.1", "localhost", 1)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runCLI(ctx, []string{
+			"worker",
+			"-coordinator", localhostURL,
+			"-node-id", "test-correct-dns-node",
+			"-join-token", "valid-enrollment-token",
+			"-ca-cert-hash", caHash,
+			"-heartbeat-interval", "50ms",
+		}, &stdout, &stderr)
+	}()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("worker failed with correct DNS certificate: %v (stderr: %s)", err, stderr.String())
+	case <-time.After(500 * time.Millisecond):
+		cancel()
+		err := <-errCh
+		if err != nil && !strings.Contains(err.Error(), "context canceled") {
+			t.Fatalf("unexpected error on shutdown: %v", err)
+		}
 	}
 }
 

@@ -125,8 +125,34 @@ func TestApplyDevInsecure(t *testing.T) {
 }
 
 func TestPinnedBootstrapConfig(t *testing.T) {
+	t.Run("empty server name returns error", func(t *testing.T) {
+		cfg, err := tlsutil.PinnedBootstrapConfig("", "sha256:11223344")
+		if !errors.Is(err, tlsutil.ErrEmptyServerName) {
+			t.Fatalf("expected ErrEmptyServerName, got: %v", err)
+		}
+		if cfg != nil {
+			t.Fatalf("expected nil config, got: %+v", cfg)
+		}
+
+		cfg, err = tlsutil.PinnedBootstrapConfig("   ", "sha256:11223344")
+		if !errors.Is(err, tlsutil.ErrEmptyServerName) {
+			t.Fatalf("expected ErrEmptyServerName for whitespace, got: %v", err)
+		}
+		if cfg != nil {
+			t.Fatalf("expected nil config, got: %+v", cfg)
+		}
+
+		cfg, err = tlsutil.PinnedBootstrapConfig(":8443", "sha256:11223344")
+		if !errors.Is(err, tlsutil.ErrEmptyServerName) {
+			t.Fatalf("expected ErrEmptyServerName for empty host with port, got: %v", err)
+		}
+		if cfg != nil {
+			t.Fatalf("expected nil config, got: %+v", cfg)
+		}
+	})
+
 	t.Run("empty hash returns error", func(t *testing.T) {
-		cfg, err := tlsutil.PinnedBootstrapConfig("")
+		cfg, err := tlsutil.PinnedBootstrapConfig("localhost", "")
 		if !errors.Is(err, tlsutil.ErrEmptyPinHash) {
 			t.Fatalf("expected ErrEmptyPinHash, got: %v", err)
 		}
@@ -136,7 +162,7 @@ func TestPinnedBootstrapConfig(t *testing.T) {
 	})
 
 	t.Run("invalid format returns error", func(t *testing.T) {
-		cfg, err := tlsutil.PinnedBootstrapConfig("md5:123456")
+		cfg, err := tlsutil.PinnedBootstrapConfig("localhost", "md5:123456")
 		if !errors.Is(err, tlsutil.ErrInvalidPinFormat) {
 			t.Fatalf("expected ErrInvalidPinFormat, got: %v", err)
 		}
@@ -152,7 +178,7 @@ func TestPinnedBootstrapConfig(t *testing.T) {
 		tlsutil.WarnWriter = &buf
 		defer func() { tlsutil.WarnWriter = oldWarn }()
 
-		cfg, err := tlsutil.PinnedBootstrapConfig("sha256:abcd1234ef")
+		cfg, err := tlsutil.PinnedBootstrapConfig("localhost", "sha256:abcd1234ef")
 		if err != nil {
 			t.Fatalf("expected success in production, got: %v", err)
 		}
@@ -175,8 +201,8 @@ func TestPinnedBootstrapConfig(t *testing.T) {
 		correctFingerprint := fmt.Sprintf("sha256:%x", sum)
 		wrongFingerprint := "sha256:11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff"
 
-		// Matching pin passes
-		cfg, err := tlsutil.PinnedBootstrapConfig(correctFingerprint)
+		// Matching pin passes (using 127.0.0.1 from ts.URL)
+		cfg, err := tlsutil.PinnedBootstrapConfig("127.0.0.1", correctFingerprint)
 		if err != nil {
 			t.Fatalf("unexpected error creating config: %v", err)
 		}
@@ -190,7 +216,7 @@ func TestPinnedBootstrapConfig(t *testing.T) {
 		resp.Body.Close()
 
 		// Mismatched pin fails during handshake
-		badCfg, err := tlsutil.PinnedBootstrapConfig(wrongFingerprint)
+		badCfg, err := tlsutil.PinnedBootstrapConfig("127.0.0.1", wrongFingerprint)
 		if err != nil {
 			t.Fatalf("unexpected error creating config: %v", err)
 		}
@@ -259,26 +285,138 @@ func TestPinnedBootstrapConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("ServerName mismatch is rejected", func(t *testing.T) {
-		ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	t.Run("IP address verification in handshake", func(t *testing.T) {
+		// Generate anchor CA
+		caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		caTemplate := &x509.Certificate{
+			SerialNumber:          big.NewInt(100),
+			Subject:               pkix.Name{CommonName: "IP Test CA"},
+			NotBefore:             time.Now().Add(-1 * time.Hour),
+			NotAfter:              time.Now().Add(24 * time.Hour),
+			IsCA:                  true,
+			KeyUsage:              x509.KeyUsageCertSign,
+			BasicConstraintsValid: true,
+		}
+		caDER, _ := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+		caCert, _ := x509.ParseCertificate(caDER)
+		caHash := fmt.Sprintf("sha256:%x", sha256.Sum256(caCert.Raw))
+
+		// Server certificate valid for 127.0.0.1
+		serverKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		serverTemplate := &x509.Certificate{
+			SerialNumber: big.NewInt(101),
+			Subject:      pkix.Name{CommonName: "Server"},
+			NotBefore:    time.Now().Add(-1 * time.Hour),
+			NotAfter:     time.Now().Add(24 * time.Hour),
+			KeyUsage:     x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		}
+		serverDER, _ := x509.CreateCertificate(rand.Reader, serverTemplate, caCert, &serverKey.PublicKey, caKey)
+
+		ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}))
+		ts.TLS = &tls.Config{
+			Certificates: []tls.Certificate{
+				{
+					Certificate: [][]byte{serverDER, caDER},
+					PrivateKey:  serverKey,
+				},
+			},
+		}
+		ts.StartTLS()
 		defer ts.Close()
 
-		cert := ts.Certificate()
-		sum := sha256.Sum256(cert.Raw)
-		fingerprint := fmt.Sprintf("sha256:%x", sum)
-
-		cfg, err := tlsutil.PinnedBootstrapConfigWithServerName("wrong.server.name", fingerprint)
+		// 1. Correct IP (127.0.0.1) succeeds
+		cfgValid, err := tlsutil.PinnedBootstrapConfig("127.0.0.1", caHash)
 		if err != nil {
 			t.Fatalf("unexpected error creating config: %v", err)
 		}
-		client := &http.Client{
-			Transport: &http.Transport{TLSClientConfig: cfg},
+		clientValid := &http.Client{Transport: &http.Transport{TLSClientConfig: cfgValid}}
+		resp, err := clientValid.Get(ts.URL)
+		if err != nil {
+			t.Fatalf("expected request with matching IP to succeed, got: %v", err)
 		}
-		_, err = client.Get(ts.URL)
+		resp.Body.Close()
+
+		// 2. Different IP (192.168.1.99) fails handshake
+		cfgWrongIP, err := tlsutil.PinnedBootstrapConfig("192.168.1.99", caHash)
+		if err != nil {
+			t.Fatalf("unexpected error creating config: %v", err)
+		}
+		clientWrongIP := &http.Client{Transport: &http.Transport{TLSClientConfig: cfgWrongIP}}
+		_, err = clientWrongIP.Get(ts.URL)
 		if err == nil {
-			t.Fatal("expected error due to ServerName mismatch, got nil")
+			t.Fatal("expected handshake failure when connecting with mismatched IP, got nil")
+		}
+	})
+
+	t.Run("DNS hostname verification in handshake", func(t *testing.T) {
+		caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		caTemplate := &x509.Certificate{
+			SerialNumber:          big.NewInt(200),
+			Subject:               pkix.Name{CommonName: "DNS Test CA"},
+			NotBefore:             time.Now().Add(-1 * time.Hour),
+			NotAfter:              time.Now().Add(24 * time.Hour),
+			IsCA:                  true,
+			KeyUsage:              x509.KeyUsageCertSign,
+			BasicConstraintsValid: true,
+		}
+		caDER, _ := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+		caCert, _ := x509.ParseCertificate(caDER)
+		caHash := fmt.Sprintf("sha256:%x", sha256.Sum256(caCert.Raw))
+
+		// Server certificate valid for localhost
+		serverKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		serverTemplate := &x509.Certificate{
+			SerialNumber: big.NewInt(201),
+			Subject:      pkix.Name{CommonName: "Server"},
+			NotBefore:    time.Now().Add(-1 * time.Hour),
+			NotAfter:     time.Now().Add(24 * time.Hour),
+			KeyUsage:     x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			DNSNames:     []string{"localhost"},
+		}
+		serverDER, _ := x509.CreateCertificate(rand.Reader, serverTemplate, caCert, &serverKey.PublicKey, caKey)
+
+		ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		ts.TLS = &tls.Config{
+			Certificates: []tls.Certificate{
+				{
+					Certificate: [][]byte{serverDER, caDER},
+					PrivateKey:  serverKey,
+				},
+			},
+		}
+		ts.StartTLS()
+		defer ts.Close()
+
+		localhostURL := strings.Replace(ts.URL, "127.0.0.1", "localhost", 1)
+
+		// 1. Correct DNS hostname (localhost) succeeds
+		cfgValid, err := tlsutil.PinnedBootstrapConfig("localhost", caHash)
+		if err != nil {
+			t.Fatalf("unexpected error creating config: %v", err)
+		}
+		clientValid := &http.Client{Transport: &http.Transport{TLSClientConfig: cfgValid}}
+		resp, err := clientValid.Get(localhostURL)
+		if err != nil {
+			t.Fatalf("expected request with matching DNS to succeed, got: %v", err)
+		}
+		resp.Body.Close()
+
+		// 2. Mismatched DNS hostname fails handshake
+		cfgWrongDNS, err := tlsutil.PinnedBootstrapConfig("other.server.mesh", caHash)
+		if err != nil {
+			t.Fatalf("unexpected error creating config: %v", err)
+		}
+		clientWrongDNS := &http.Client{Transport: &http.Transport{TLSClientConfig: cfgWrongDNS}}
+		_, err = clientWrongDNS.Get(localhostURL)
+		if err == nil {
+			t.Fatal("expected handshake failure when connecting with mismatched DNS, got nil")
 		}
 	})
 }

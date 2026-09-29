@@ -22,6 +22,9 @@ var (
 	// ErrEmptyPinHash is returned when a pinned bootstrap config is requested without an expected hash.
 	ErrEmptyPinHash = errors.New("expected CA fingerprint cannot be empty")
 
+	// ErrEmptyServerName is returned when a pinned bootstrap config is requested without an expected server name.
+	ErrEmptyServerName = errors.New("expected server name cannot be empty for pinned bootstrap")
+
 	// ErrInvalidPinFormat is returned when the fingerprint does not have the sha256: prefix.
 	ErrInvalidPinFormat = errors.New("invalid CA fingerprint format: must start with sha256: prefix")
 
@@ -81,19 +84,29 @@ func ApplyDevInsecure(cfg *tls.Config, explicitFlag bool) error {
 }
 
 // PinnedBootstrapConfig returns a *tls.Config configured to verify that the server's certificate
-// is signed by a trust anchor matching expectedHash (format: "sha256:<hex>").
+// is signed by a trust anchor matching expectedHash (format: "sha256:<hex>") and matches serverName (host or IP).
 //
 // This config does NOT require a development flag, does NOT emit insecure warnings,
 // and IS allowed in production because it cryptographically verifies the peer certificate
-// chain against the pinned CA fingerprint during the TLS handshake before transmitting any data.
-func PinnedBootstrapConfig(expectedHash string) (*tls.Config, error) {
-	return PinnedBootstrapConfigWithServerName("", expectedHash)
+// chain against the pinned CA fingerprint and server name during the TLS handshake before transmitting any data.
+func PinnedBootstrapConfig(serverName, expectedHash string) (*tls.Config, error) {
+	return PinnedBootstrapConfigWithServerName(serverName, expectedHash)
 }
 
-// PinnedBootstrapConfigWithServerName returns a *tls.Config configured with an expected ServerName
+// PinnedBootstrapConfigWithServerName returns a *tls.Config configured with an expected serverName (hostname or IP)
 // and verifying that the server's presented certificate chain is signed by the trust anchor matching
 // expectedHash (format: "sha256:<hex>") and matches serverName.
 func PinnedBootstrapConfigWithServerName(serverName, expectedHash string) (*tls.Config, error) {
+	cleanServerName := strings.TrimSpace(serverName)
+	if h, _, err := net.SplitHostPort(cleanServerName); err == nil {
+		cleanServerName = h
+	}
+	cleanServerName = strings.Trim(cleanServerName, "[]")
+	cleanServerName = strings.TrimSpace(cleanServerName)
+	if cleanServerName == "" {
+		return nil, ErrEmptyServerName
+	}
+
 	expected := strings.TrimSpace(strings.ToLower(expectedHash))
 	if expected == "" {
 		return nil, ErrEmptyPinHash
@@ -102,13 +115,8 @@ func PinnedBootstrapConfigWithServerName(serverName, expectedHash string) (*tls.
 		return nil, fmt.Errorf("%w: %s", ErrInvalidPinFormat, expectedHash)
 	}
 
-	cleanServerName := serverName
-	if h, _, err := net.SplitHostPort(serverName); err == nil {
-		cleanServerName = h
-	}
-
 	return &tls.Config{
-		// #nosec G402 -- Custom verification implemented via VerifyConnection against expected SHA-256 fingerprint and chain signature.
+		// #nosec G402 -- Custom verification implemented via VerifyConnection against expected SHA-256 fingerprint, chain signature, and server name.
 		InsecureSkipVerify: true,
 		ServerName:         cleanServerName,
 		VerifyConnection: func(cs tls.ConnectionState) error {
@@ -136,7 +144,7 @@ func PinnedBootstrapConfigWithServerName(serverName, expectedHash string) (*tls.
 			_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
 				Roots:         roots,
 				Intermediates: inter,
-				DNSName:       cs.ServerName,
+				DNSName:       cleanServerName,
 				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 			})
 			return err
