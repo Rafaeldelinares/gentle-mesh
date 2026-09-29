@@ -383,7 +383,7 @@ func TestPiRunner_EmitsNoCompletionOnNonZeroExit(t *testing.T) {
 func TestPiRunner_ContextCancellationStopsStreaming(t *testing.T) {
 	stream := `{"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"start"}}
 `
-	script := writeFakePi(t, fakePiScript("", stream, 0)+"sleep 30\n")
+	script := writeFakePi(t, fmt.Sprintf("cat <<'PI_EOF'\n%sPI_EOF\nsleep 30\n", stream))
 
 	sink := newMockSink(context.Background())
 	firstEvent := make(chan struct{})
