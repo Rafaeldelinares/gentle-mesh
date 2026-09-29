@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -2710,3 +2711,104 @@ func TestServer_TLSCADownload(t *testing.T) {
 		t.Error("downloaded CA should match CA file")
 	}
 }
+
+func TestServer_CertEnrollmentReturnsNoPrivateKey(t *testing.T) {
+	tlsDir := t.TempDir()
+	ca, _, err := pki.EnsureMeshTLS(tlsDir, "Gentle Mesh Test", "testing", []string{"localhost"}, true)
+	if err != nil {
+		t.Fatalf("failed to init TLS: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open in-memory db: %v", err)
+	}
+	defer db.Close()
+
+	if err := store.InitTokenSchema(db); err != nil {
+		t.Fatalf("failed to init token schema: %v", err)
+	}
+	tokenStore := store.NewSQLiteTokenStore(db)
+
+	tokenExp := time.Now().Add(24 * time.Hour)
+	tokenRecord := &store.TokenRecord{
+		Token:     "test-enrollment-token-123",
+		MaxUses:   1,
+		ExpiresAt: &tokenExp,
+	}
+	if err := tokenStore.CreateToken(context.Background(), tokenRecord); err != nil {
+		t.Fatalf("failed to create token: %v", err)
+	}
+
+	tasksDir := t.TempDir()
+	cfg := meshhttp.ServerConfig{
+		TasksDir:         tasksDir,
+		HeartbeatTimeout: 5 * time.Second,
+		TaskTTL:          1 * time.Hour,
+		TLSEnabled:       true,
+		TLSCertFile:      filepath.Join(tlsDir, pki.CertPemFile),
+		TLSKeyFile:       filepath.Join(tlsDir, pki.CertKeyFile),
+		MeshCA:           ca,
+		MeshCAPemFile:    filepath.Join(tlsDir, pki.CAPemFile),
+		TokenStore:       tokenStore,
+	}
+
+	srv, err := meshhttp.NewServer(cfg)
+	if err != nil {
+		t.Fatalf("failed to create TLS server: %v", err)
+	}
+
+	ts := httptest.NewTLSServer(srv.Handler())
+	defer ts.Close()
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	// Client generates CSR locally (private key never leaves node)
+	nodeID := "node-secret-test"
+	csrResult, err := pki.GenerateCSR(nodeID)
+	if err != nil {
+		t.Fatalf("failed to generate CSR: %v", err)
+	}
+
+	enrollPayload := map[string]string{
+		"token":   "test-enrollment-token-123",
+		"csr":     csrResult.CSRPEM,
+		"node_id": nodeID,
+	}
+	payloadBytes, _ := json.Marshal(enrollPayload)
+
+	resp, err := ts.Client().Post(ts.URL+"/v1/certs/enroll", "application/json", bytes.NewReader(payloadBytes))
+	if err != nil {
+		t.Fatalf("POST /v1/certs/enroll failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errResp map[string]string
+		_ = json.NewDecoder(resp.Body).Decode(&errResp)
+		t.Fatalf("expected status 200, got %d: %v", resp.StatusCode, errResp)
+	}
+
+	var rawResp map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&rawResp); err != nil {
+		t.Fatalf("failed to decode enrollment response: %v", err)
+	}
+
+	// Verify only cert_pem and node_id are returned
+	if _, ok := rawResp["cert_pem"]; !ok {
+		t.Error("missing cert_pem in response")
+	}
+	if rawResp["node_id"] != nodeID {
+		t.Errorf("expected node_id %q, got %v", nodeID, rawResp["node_id"])
+	}
+
+	forbiddenFields := []string{"key_pem", "private_key", "key", "secret", "privateKeyPEM"}
+	for _, field := range forbiddenFields {
+		if _, ok := rawResp[field]; ok {
+			t.Errorf("security violation: enrollment response exposed %q field", field)
+		}
+	}
+	if len(rawResp) != 2 {
+		t.Errorf("expected exactly 2 fields in response (cert_pem, node_id), got %d: %+v", len(rawResp), rawResp)
+	}
+}
+

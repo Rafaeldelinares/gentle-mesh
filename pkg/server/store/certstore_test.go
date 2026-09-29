@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 )
@@ -220,3 +221,111 @@ func TestCertStoreIsCertRevokedUnknown(t *testing.T) {
 		t.Error("unknown cert should not be reported as revoked")
 	}
 }
+
+func TestCertStore_SchemaHasNoKeyPEMColumn(t *testing.T) {
+	db := setupTestCertDB(t)
+	defer db.Close()
+
+	rows, err := db.Query("PRAGMA table_info(node_certs);")
+	if err != nil {
+		t.Fatalf("failed to query table_info: %v", err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dfltValue sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			t.Fatalf("failed to scan column info: %v", err)
+		}
+		columns[name] = true
+	}
+
+	if columns["key_pem"] {
+		t.Fatal("security violation: node_certs table contains key_pem column, private keys must not be stored on server")
+	}
+	expectedCols := []string{"node_id", "common_name", "serial", "cert_pem", "issued_at", "expires_at", "revoked"}
+	for _, col := range expectedCols {
+		if !columns[col] {
+			t.Errorf("missing expected column %s in node_certs", col)
+		}
+	}
+}
+
+func TestCertStore_MigrationDropsKeyPEMFromLegacySchema(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	// 1. Manually create legacy schema with key_pem
+	legacyDDL := `CREATE TABLE node_certs (
+		node_id TEXT PRIMARY KEY,
+		common_name TEXT NOT NULL,
+		serial TEXT UNIQUE NOT NULL,
+		cert_pem TEXT NOT NULL,
+		key_pem TEXT,
+		issued_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL,
+		revoked INTEGER NOT NULL DEFAULT 0,
+		revoked_at INTEGER
+	);`
+	if _, err := db.Exec(legacyDDL); err != nil {
+		t.Fatalf("failed to create legacy schema: %v", err)
+	}
+
+	// 2. Insert dummy legacy record with a private key
+	_, err = db.Exec(`INSERT INTO node_certs (
+		node_id, common_name, serial, cert_pem, key_pem, issued_at, expires_at, revoked
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"legacy-node-1", "legacy-node-1", "serial-999",
+		"-----BEGIN CERTIFICATE-----\nLEGACY_CERT\n-----END CERTIFICATE-----",
+		"-----BEGIN EC PRIVATE KEY-----\nLEGACY_PRIVATE_KEY_LEAK\n-----END EC PRIVATE KEY-----",
+		time.Now().Unix(), time.Now().Add(24*time.Hour).Unix(), 0,
+	)
+	if err != nil {
+		t.Fatalf("failed to insert legacy record: %v", err)
+	}
+
+	// 3. Run InitCertSchema(db) which must migrate and drop/clean key_pem
+	if err := InitCertSchema(db); err != nil {
+		t.Fatalf("InitCertSchema migration failed: %v", err)
+	}
+
+	// 4. Verify key_pem column no longer exists
+	rows, err := db.Query("PRAGMA table_info(node_certs);")
+	if err != nil {
+		t.Fatalf("failed to query table_info: %v", err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dfltValue sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			t.Fatalf("failed to scan column info: %v", err)
+		}
+		columns[name] = true
+	}
+	if columns["key_pem"] {
+		t.Fatal("security violation: legacy key_pem column still present after migration")
+	}
+
+	// 5. Verify the existing cert record remains intact and queryable
+	var certPEM string
+	err = db.QueryRow("SELECT cert_pem FROM node_certs WHERE node_id = ?", "legacy-node-1").Scan(&certPEM)
+	if err != nil {
+		t.Fatalf("failed to query legacy cert after migration: %v", err)
+	}
+	if !strings.Contains(certPEM, "LEGACY_CERT") {
+		t.Errorf("cert_pem corrupted after migration: got %s", certPEM)
+	}
+}
+

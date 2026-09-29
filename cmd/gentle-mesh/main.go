@@ -1424,24 +1424,13 @@ func runCertRevoke(ctx context.Context, args []string, stdout, stderr io.Writer)
 	fs.SetOutput(stderr)
 
 	fs.String("tls-dir", "", "TLS directory with CA (required)")
-	nodeID := fs.String("node-id", "", "Node identifier to revoke (required)")
+	fs.String("node-id", "", "Node identifier to revoke (required)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	if *nodeID == "" {
-		return errors.New("-node-id is required")
-	}
-
-	// Revocation is handled via the database, not filesystem
-	// For now, we just print a warning since we don't have DB access here
-	fmt.Fprintf(stdout, "⚠️  To revoke a certificate, you need to:")
-	fmt.Fprintf(stdout, "\n  1. Delete the certificate files from the node")
-	fmt.Fprintf(stdout, "\n  2. Issue a new certificate with a different serial")
-	fmt.Fprintf(stdout, "\n\nFor production revocation lists, implement CRL distribution.\n")
-
-	return nil
+	return errors.New("la revocación de certificados no está implementada en esta versión; ver issue #25")
 }
 
 // runCertList lists all issued certificates.
