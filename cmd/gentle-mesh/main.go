@@ -407,7 +407,12 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 
 			if *caCertHash != "" {
 				fmt.Fprintf(stdout, "Downloading mesh CA for verification (pin: %s)...\n", *caCertHash)
-				bootstrapClient, err := newPinnedTLSClient(*caCertHash)
+				u, err := url.Parse(coordURL)
+				if err != nil {
+					return fmt.Errorf("invalid coordinator URL %q: %w", coordURL, err)
+				}
+				serverName := u.Hostname()
+				bootstrapClient, err := newPinnedTLSClient(serverName, *caCertHash)
 				if err != nil {
 					return fmt.Errorf("failed to create pinned bootstrap TLS client: %w", err)
 				}
@@ -934,11 +939,12 @@ func (e *errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, e.err
 }
 
-// newPinnedTLSClient creates an HTTP client with TLS pinned to an expected CA/cert hash.
+// newPinnedTLSClient creates an HTTP client with TLS pinned to an expected CA/cert hash
+// and ServerName configured for hostname verification during the handshake.
 // This is permitted in production and does not emit insecure warnings because verification
-// occurs cryptographically during the TLS handshake via PinnedBootstrapConfig.
-func newPinnedTLSClient(expectedHash string) (*http.Client, error) {
-	tlsConfig, err := tlsutil.PinnedBootstrapConfig(expectedHash)
+// occurs cryptographically during the TLS handshake via PinnedBootstrapConfigWithServerName.
+func newPinnedTLSClient(serverName string, expectedHash string) (*http.Client, error) {
+	tlsConfig, err := tlsutil.PinnedBootstrapConfigWithServerName(serverName, expectedHash)
 	if err != nil {
 		return nil, err
 	}

@@ -420,4 +420,93 @@ func TestRedTeam_CAPinning_ServerDifferentCARejectionAtHandshake(t *testing.T) {
 	}
 }
 
+func TestRedTeam_CAPinning_AttackerUntrustedLeafWithRealCAInChain(t *testing.T) {
+	// Vulnerability reproduction:
+	// Attacker server presents its own untrusted leaf cert (signed by attackerCA)
+	// plus the victim's legitimate public CA cert in the chain.
+	// If the client only checks whether ANY cert in cs.PeerCertificates matches the pin,
+	// the connection is accepted (status 200) even though the leaf is untrusted!
+	// It MUST be rejected during TLS handshake because the leaf is not signed by the pinned CA.
+	attackerCA, err := pki.GenerateCA("Attacker Fake CA", "evil", 0)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+	attackerServerCert, err := attackerCA.GenerateServerCert([]string{"localhost", "127.0.0.1"}, 0)
+	if err != nil {
+		t.Fatalf("GenerateServerCert failed: %v", err)
+	}
+
+	realCA, err := pki.GenerateCA("Real Mesh CA", "real", 0)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+	realCAHash := pki.CertFingerprint(realCA.Cert)
+	realCAPEM, _ := pki.CertificateToPEM(realCA.Cert)
+
+	attackerCertPEM, _ := pki.CertificateToPEM(attackerServerCert.Cert)
+	keyBytes, _ := x509.MarshalECPrivateKey(attackerServerCert.Key)
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
+
+	// Combined chain: [attackerLeaf, realCA]
+	combinedPEM := attackerCertPEM + "\n" + realCAPEM
+	tlsPair, err := tls.X509KeyPair([]byte(combinedPEM), keyPEM)
+	if err != nil {
+		t.Fatalf("tls.X509KeyPair failed: %v", err)
+	}
+
+	requestReceived := false
+	var mu sync.Mutex
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/mesh/ca", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestReceived = true
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/x-pem-file")
+		w.Write([]byte(realCAPEM))
+	})
+	mux.HandleFunc("/v1/certs/enroll", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestReceived = true
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	ts := httptest.NewUnstartedServer(mux)
+	ts.TLS = &tls.Config{
+		Certificates: []tls.Certificate{tlsPair},
+	}
+	ts.StartTLS()
+	defer ts.Close()
+
+	tempConfigDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tempConfigDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	// Worker runs with -ca-cert-hash pointing to realCA
+	err = runCLI(ctx, []string{
+		"worker",
+		"-coordinator", ts.URL,
+		"-node-id", "test-attacker-chain-node",
+		"-join-token", "secret-test-token-value",
+		"-ca-cert-hash", realCAHash,
+	}, &stdout, &stderr)
+
+	if err == nil {
+		t.Fatal("SECURITY VULNERABILITY: worker accepted connection from server with untrusted leaf cert signed by attacker!")
+	}
+
+	mu.Lock()
+	received := requestReceived
+	mu.Unlock()
+
+	if received {
+		t.Fatal("SECURITY VULNERABILITY: attacker server received HTTP request because real CA in chain bypassed verification!")
+	}
+}
+
+
 

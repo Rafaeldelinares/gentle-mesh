@@ -2,14 +2,22 @@ package tlsutil_test
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	"fmt"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/tlsutil"
 )
@@ -192,6 +200,85 @@ func TestPinnedBootstrapConfig(t *testing.T) {
 		_, err = badClient.Get(ts.URL)
 		if err == nil {
 			t.Fatal("expected request with wrong pin to fail during handshake, got nil error")
+		}
+	})
+
+	t.Run("rejects attacker leaf cert with anchor present in chain", func(t *testing.T) {
+		// Generate legitimate root (anchor)
+		anchorKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		anchorTemplate := &x509.Certificate{
+			SerialNumber:          big.NewInt(1),
+			Subject:               pkix.Name{CommonName: "Legit Root CA"},
+			NotBefore:             time.Now().Add(-1 * time.Hour),
+			NotAfter:              time.Now().Add(24 * time.Hour),
+			IsCA:                  true,
+			KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+			BasicConstraintsValid: true,
+		}
+		anchorDER, _ := x509.CreateCertificate(rand.Reader, anchorTemplate, anchorTemplate, &anchorKey.PublicKey, anchorKey)
+		anchorCert, _ := x509.ParseCertificate(anchorDER)
+		anchorHash := fmt.Sprintf("sha256:%x", sha256.Sum256(anchorCert.Raw))
+
+		// Attacker generates own key and leaf cert (not signed by anchor)
+		attackerKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		attackerTemplate := &x509.Certificate{
+			SerialNumber: big.NewInt(2),
+			Subject:      pkix.Name{CommonName: "localhost"},
+			NotBefore:    time.Now().Add(-1 * time.Hour),
+			NotAfter:     time.Now().Add(24 * time.Hour),
+			KeyUsage:     x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			DNSNames:     []string{"localhost"},
+			IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		}
+		attackerDER, _ := x509.CreateCertificate(rand.Reader, attackerTemplate, attackerTemplate, &attackerKey.PublicKey, attackerKey)
+
+		// Attacker serves attackerDER as leaf, but includes anchorDER in chain
+		attackerServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		attackerServer.TLS = &tls.Config{
+			Certificates: []tls.Certificate{
+				{
+					Certificate: [][]byte{attackerDER, anchorDER},
+					PrivateKey:  attackerKey,
+				},
+			},
+		}
+		attackerServer.StartTLS()
+		defer attackerServer.Close()
+
+		cfg, err := tlsutil.PinnedBootstrapConfigWithServerName("localhost", anchorHash)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		client := &http.Client{Transport: &http.Transport{TLSClientConfig: cfg}}
+		_, err = client.Get(attackerServer.URL)
+		if err == nil {
+			t.Fatal("expected handshake rejection when leaf is not signed by anchor, got nil")
+		}
+	})
+
+	t.Run("ServerName mismatch is rejected", func(t *testing.T) {
+		ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer ts.Close()
+
+		cert := ts.Certificate()
+		sum := sha256.Sum256(cert.Raw)
+		fingerprint := fmt.Sprintf("sha256:%x", sum)
+
+		cfg, err := tlsutil.PinnedBootstrapConfigWithServerName("wrong.server.name", fingerprint)
+		if err != nil {
+			t.Fatalf("unexpected error creating config: %v", err)
+		}
+		client := &http.Client{
+			Transport: &http.Transport{TLSClientConfig: cfg},
+		}
+		_, err = client.Get(ts.URL)
+		if err == nil {
+			t.Fatal("expected error due to ServerName mismatch, got nil")
 		}
 	})
 }

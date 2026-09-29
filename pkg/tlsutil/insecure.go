@@ -3,9 +3,11 @@ package tlsutil
 import (
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
 )
@@ -78,13 +80,20 @@ func ApplyDevInsecure(cfg *tls.Config, explicitFlag bool) error {
 	return nil
 }
 
-// PinnedBootstrapConfig returns a *tls.Config configured to verify that at least one
-// certificate in the server's presented certificate chain matches expectedHash (format: "sha256:<hex>").
+// PinnedBootstrapConfig returns a *tls.Config configured to verify that the server's certificate
+// is signed by a trust anchor matching expectedHash (format: "sha256:<hex>").
 //
 // This config does NOT require a development flag, does NOT emit insecure warnings,
 // and IS allowed in production because it cryptographically verifies the peer certificate
-// against the pinned fingerprint during the TLS handshake before transmitting any data.
+// chain against the pinned CA fingerprint during the TLS handshake before transmitting any data.
 func PinnedBootstrapConfig(expectedHash string) (*tls.Config, error) {
+	return PinnedBootstrapConfigWithServerName("", expectedHash)
+}
+
+// PinnedBootstrapConfigWithServerName returns a *tls.Config configured with an expected ServerName
+// and verifying that the server's presented certificate chain is signed by the trust anchor matching
+// expectedHash (format: "sha256:<hex>") and matches serverName.
+func PinnedBootstrapConfigWithServerName(serverName, expectedHash string) (*tls.Config, error) {
 	expected := strings.TrimSpace(strings.ToLower(expectedHash))
 	if expected == "" {
 		return nil, ErrEmptyPinHash
@@ -93,22 +102,54 @@ func PinnedBootstrapConfig(expectedHash string) (*tls.Config, error) {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidPinFormat, expectedHash)
 	}
 
+	cleanServerName := serverName
+	if h, _, err := net.SplitHostPort(serverName); err == nil {
+		cleanServerName = h
+	}
+
 	return &tls.Config{
-		// #nosec G402 -- Custom verification implemented via VerifyConnection against expected SHA-256 fingerprint.
+		// #nosec G402 -- Custom verification implemented via VerifyConnection against expected SHA-256 fingerprint and chain signature.
 		InsecureSkipVerify: true,
+		ServerName:         cleanServerName,
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			if len(cs.PeerCertificates) == 0 {
 				return errors.New("server presented no certificates")
 			}
-			for _, cert := range cs.PeerCertificates {
-				sum := sha256.Sum256(cert.Raw)
-				actual := fmt.Sprintf("sha256:%x", sum)
-				if strings.EqualFold(actual, expected) {
-					return nil
+			var anchor *x509.Certificate
+			for _, c := range cs.PeerCertificates {
+				if fingerprintMatches(c, expected) {
+					anchor = c
+					break
 				}
 			}
-			return fmt.Errorf("%w: expected %s", ErrPinMismatch, expected)
+			if anchor == nil {
+				return fmt.Errorf("%w: expected %s", ErrPinMismatch, expected)
+			}
+			roots := x509.NewCertPool()
+			roots.AddCert(anchor)
+			inter := x509.NewCertPool()
+			for _, c := range cs.PeerCertificates[1:] {
+				if c != anchor {
+					inter.AddCert(c)
+				}
+			}
+			_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
+				Roots:         roots,
+				Intermediates: inter,
+				DNSName:       cs.ServerName,
+				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			})
+			return err
 		},
 	}, nil
+}
+
+func fingerprintMatches(cert *x509.Certificate, expected string) bool {
+	if cert == nil {
+		return false
+	}
+	sum := sha256.Sum256(cert.Raw)
+	actual := fmt.Sprintf("sha256:%x", sum)
+	return strings.EqualFold(actual, expected)
 }
 
