@@ -51,15 +51,15 @@ func TestWU13_FanOutOneToThree(t *testing.T) {
 
 	type legResult struct {
 		executorID string
-		receipt   *receipt.SettlementReceipt
-		err       error
+		receipt    *receipt.SettlementReceipt
+		err        error
 	}
 
 	// 3 concurrent legs: agent-a → b, agent-a → c, agent-a → (re-use b for 3rd)
 	executors := []struct {
-		execID string // ExecutorAgentID in the envelope
+		execID    string // ExecutorAgentID in the envelope
 		container string // Docker container name for exec commands
-		client *agent.HTTPClient
+		client    *agent.HTTPClient
 	}{
 		{"agent-b", "agent-b", bClient},
 		{"agent-c", "agent-c", cClient},
@@ -71,9 +71,9 @@ func TestWU13_FanOutOneToThree(t *testing.T) {
 	for i, exec := range executors {
 		wg.Add(1)
 		go func(idx int, e struct {
-			execID   string
+			execID    string
 			container string
-			client   *agent.HTTPClient
+			client    *agent.HTTPClient
 		}) {
 			defer wg.Done()
 			rec, err := fanDispatchLeg(ctx, aClient, e.client, aSigner, e.execID, e.container,
@@ -229,7 +229,7 @@ func fanDispatchLeg(ctx context.Context, aClient, executorClient *agent.HTTPClie
 		ExecutorAgentID: executorAgentID,
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
-			Branch:       "main",
+			Branch:        "main",
 			WorkspacePath: workspace,
 		},
 		Assertions: []envelope.Assertion{
@@ -284,7 +284,7 @@ func fanDispatchLeg(ctx context.Context, aClient, executorClient *agent.HTTPClie
 	// Settle.
 	settleResp, err := executorClient.Settle(ctx, &agent.SettleRequest{
 		EnvelopeJSON: envJSON,
-		LeaseID:     leaseResp.LeaseID,
+		LeaseID:      leaseResp.LeaseID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("settle: %w", err)
@@ -488,7 +488,7 @@ func TestWU13_DispatchEndpointFanOut(t *testing.T) {
 			ExecutorAgentID: leg.executorID,
 			Territory: envelope.Territory{
 				Repository:    "github.com/gentleman-programming/gentle-mesh",
-				Branch:       "main",
+				Branch:        "main",
 				WorkspacePath: workspace,
 			},
 			Assertions: []envelope.Assertion{
@@ -543,8 +543,8 @@ func TestWU13_DispatchEndpointFanOut(t *testing.T) {
 }
 
 type dispatchResult struct {
-	rec       *receipt.SettlementReceipt
-	err       error
+	rec        *receipt.SettlementReceipt
+	err        error
 	executorID string
 }
 
@@ -578,7 +578,7 @@ func dispatchLegSync(ctx context.Context, aClient, executorClient *agent.HTTPCli
 
 	settleResp, err := executorClient.Settle(ctx, &agent.SettleRequest{
 		EnvelopeJSON: envJSON,
-		LeaseID:     leaseResp.LeaseID,
+		LeaseID:      leaseResp.LeaseID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("settle: %w", err)
@@ -647,7 +647,7 @@ func TestWU13_PreFlightRejectsDirtyWorktree(t *testing.T) {
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
-			Branch:       "main",
+			Branch:        "main",
 			WorkspacePath: workspace,
 		},
 		Preconditions: []envelope.Precondition{
@@ -726,7 +726,10 @@ func TestWU13_ChainStressTenReceipts(t *testing.T) {
 	workspace := "/srv/workspace"
 
 	// Get initial chain length.
-	before, _ := bClient.GetChain(ctx, "agent-a", "agent-b")
+	before, err := bClient.GetChain(ctx, "agent-a", "agent-b")
+	if err != nil {
+		t.Fatalf("get initial chain: %v", err)
+	}
 	initialLen := len(before.Receipts)
 
 	counter := atomic.Int32{}
@@ -759,7 +762,7 @@ func TestWU13_ChainStressTenReceipts(t *testing.T) {
 					ExecutorAgentID: "agent-b",
 					Territory: envelope.Territory{
 						Repository:    "github.com/gentleman-programming/gentle-mesh",
-						Branch:       "main",
+						Branch:        "main",
 						WorkspacePath: workspace,
 					},
 					Assertions: []envelope.Assertion{
@@ -792,7 +795,7 @@ func TestWU13_ChainStressTenReceipts(t *testing.T) {
 				if leaseResp != nil && leaseResp.Accepted {
 					bClient.Settle(ctx, &agent.SettleRequest{
 						EnvelopeJSON: envJSON,
-						LeaseID:     leaseResp.LeaseID,
+						LeaseID:      leaseResp.LeaseID,
 					})
 				}
 			}(batch*5 + i)
@@ -907,12 +910,12 @@ func TestWU14_AcceptReceiptE2E(t *testing.T) {
 
 	// ── Step 2: Emitter (A) creates and signs the CognitiveTaskEnvelope ──────
 	env := &envelope.CognitiveTaskEnvelope{
-		EnvelopeID:     newUUIDv7(),
-		EmitterAgentID: "agent-a",
+		EnvelopeID:      newUUIDv7(),
+		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
-			Branch:       "main",
+			Branch:        "main",
 			WorkspacePath: workspace,
 		},
 		Assertions: []envelope.Assertion{
@@ -925,7 +928,7 @@ func TestWU14_AcceptReceiptE2E(t *testing.T) {
 				},
 			},
 		},
-		TimeoutSeconds: 60,
+		TimeoutSeconds:  60,
 		MaxRemediations: 0,
 		NoSubdelegation: true,
 		CreatedAt:       time.Now().UTC(),
@@ -970,7 +973,7 @@ func TestWU14_AcceptReceiptE2E(t *testing.T) {
 	// ── Step 4: B settles: validates assertions and emits SettlementReceipt ──
 	settleResp, err := bClient.Settle(ctx, &agent.SettleRequest{
 		EnvelopeJSON: envJSON,
-		LeaseID:     leaseResp.LeaseID,
+		LeaseID:      leaseResp.LeaseID,
 	})
 	if err != nil {
 		t.Fatalf("settle on agent-b: %v", err)
@@ -1070,10 +1073,18 @@ func TestWU14_AcceptReceiptE2E(t *testing.T) {
 
 	// ── Step 10: A verifies the accepted receipt has BOTH signatures ───────────
 	t.Logf("  accepted receipt: executor_sig[0:8]=%s emitter_sig[0:8]=%s",
-		func() string { if len(acceptedRec.ExecutorSignature) >= 8 { return acceptedRec.ExecutorSignature[:8] }
-			return "" }(),
-		func() string { if len(acceptedRec.EmitterSignature) >= 8 { return acceptedRec.EmitterSignature[:8] }
-			return "" }())
+		func() string {
+			if len(acceptedRec.ExecutorSignature) >= 8 {
+				return acceptedRec.ExecutorSignature[:8]
+			}
+			return ""
+		}(),
+		func() string {
+			if len(acceptedRec.EmitterSignature) >= 8 {
+				return acceptedRec.EmitterSignature[:8]
+			}
+			return ""
+		}())
 
 	if acceptedRec.ExecutorSignature == "" {
 		t.Error("  accepted receipt: missing executor signature")
@@ -1233,9 +1244,9 @@ func TestWU15_FanOutE2E(t *testing.T) {
 	t.Logf("  phase A: dispatching to B and C in parallel...")
 
 	type legOutcome struct {
-		name         string
-		executorID   string
-		client       *agent.HTTPClient
+		name        string
+		executorID  string
+		client      *agent.HTTPClient
 		receipt     *receipt.SettlementReceipt
 		receiptJSON []byte
 		err         error
@@ -1315,12 +1326,12 @@ func TestWU15_FanOutE2E(t *testing.T) {
 			executorSignedAt := o.receipt.ExecutorSignedAt
 			if err := receipt.AcceptReceipt(&recCopy, aSigner, executorSignedAt); err != nil {
 				acceptOutcomes[idx] = legOutcome{name: o.name, executorID: o.executorID, client: o.client, err: fmt.Errorf("AcceptReceipt: %w", err)}
-			return
+				return
 			}
 
 			if recCopy.EmitterSignature == "" {
 				acceptOutcomes[idx] = legOutcome{name: o.name, executorID: o.executorID, client: o.client, err: fmt.Errorf("EmitterSignature empty after AcceptReceipt")}
-			return
+				return
 			}
 			t.Logf("  leg[%s] local acceptance: emitter_sig[0:8]=%s ✓",
 				o.name, recCopy.EmitterSignature[:8])
@@ -1580,7 +1591,7 @@ func TestWU16_DisputeReceiptE2E(t *testing.T) {
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
-			Branch:       "main",
+			Branch:        "main",
 			WorkspacePath: workspace,
 		},
 		Assertions: []envelope.Assertion{
@@ -1639,7 +1650,7 @@ func TestWU16_DisputeReceiptE2E(t *testing.T) {
 	t.Logf("  step 4: executor settling receipt...")
 	settleResp, err := bClient.Settle(ctx, &agent.SettleRequest{
 		EnvelopeJSON: envJSON,
-		LeaseID:     leaseResp.LeaseID,
+		LeaseID:      leaseResp.LeaseID,
 	})
 	if err != nil {
 		t.Fatalf("settle: %v", err)
@@ -1914,7 +1925,7 @@ func TestWU17_VerifyChain_WrongExecutorKey(t *testing.T) {
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
-			Branch:       "main",
+			Branch:        "main",
 			WorkspacePath: workspace,
 		},
 		Assertions: []envelope.Assertion{
@@ -1968,7 +1979,7 @@ func TestWU17_VerifyChain_WrongExecutorKey(t *testing.T) {
 
 	settleResp, err := bClient.Settle(ctx, &agent.SettleRequest{
 		EnvelopeJSON: envJSON,
-		LeaseID:     leaseResp.LeaseID,
+		LeaseID:      leaseResp.LeaseID,
 	})
 	if err != nil {
 		t.Fatalf("settle: %v", err)

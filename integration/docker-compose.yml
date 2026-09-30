@@ -152,6 +152,8 @@ services:
   # Orchestrates the full scenario and validates results over HTTPS.
   # ─────────────────────────────────────────────────────────────────
   integration-test:
+    profiles:
+      - runner
     build:
       context: ..
       dockerfile: integration/Dockerfile.agent
