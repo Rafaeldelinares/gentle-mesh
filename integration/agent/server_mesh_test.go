@@ -31,11 +31,6 @@ func setupTestServerWithMesh(t *testing.T, meshID string) (*Server, *httptest.Se
 		t.Fatalf("create workspace dir: %v", err)
 	}
 
-	signer, err := signing.GenerateSigner("test-executor")
-	if err != nil {
-		t.Fatalf("GenerateSigner: %v", err)
-	}
-
 	cfg := Config{
 		AgentID:      "test-executor",
 		MeshID:       meshID,
@@ -56,7 +51,7 @@ func setupTestServerWithMesh(t *testing.T, meshID string) (*Server, *httptest.Se
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 
-	return srv, ts, signer
+	return srv, ts, srv.signer
 }
 
 func makeValidEnvelope(meshID string) *envelope.CognitiveTaskEnvelope {
@@ -339,5 +334,116 @@ func TestClient_IngressValidation_RejectsInvalidReceipt(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "validate receipt") {
 		t.Errorf("expected validate receipt error, got: %v", err)
+	}
+}
+
+// 6. Legacy receipt tolerance: Verify legacy receipts without MeshID/ProtocolVersion
+// can be retrieved, verified, accepted, and disputed on a mesh-configured server.
+func TestServer_LegacyReceipt_AllowedWithoutMeshID(t *testing.T) {
+	srv, ts, signer := setupTestServerWithMesh(t, "mesh-alpha")
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+
+	// 1. Create legacy receipt (ProtocolVersion == "", MeshID == "")
+	now := time.Now().UTC()
+	legacyRec := &receipt.SettlementReceipt{
+		ProtocolVersion:  "",
+		MeshID:           "",
+		ReceiptID:        "legacy-rcpt-001",
+		ContractID:       "contract-legacy-1",
+		EnvelopeHash:     "legacy-hash-1",
+		EmitterAgentID:   "agent-emitter",
+		ExecutorAgentID:  "test-executor",
+		Verdict:          receipt.VerdictSettledClean,
+		ExecutorSignedAt: now,
+	}
+	if err := receipt.SignReceipt(legacyRec, signer); err != nil {
+		t.Fatalf("SignReceipt: %v", err)
+	}
+	if err := srv.chainStore.InjectReceipt(context.Background(), legacyRec); err != nil {
+		t.Fatalf("InjectReceipt: %v", err)
+	}
+
+	// 2. GET /receipts/legacy-rcpt-001 must return 200
+	respGet, err := httpClient.Get(ts.URL + "/receipts/legacy-rcpt-001")
+	if err != nil {
+		t.Fatalf("GET /receipts: %v", err)
+	}
+	defer respGet.Body.Close()
+	if respGet.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(respGet.Body)
+		t.Fatalf("GET /receipts status=%d, want 200, body=%s", respGet.StatusCode, string(body))
+	}
+
+	// 3. POST /verify must return 200 and valid signature
+	legacyJSON, _ := json.Marshal(legacyRec)
+	verifyReqBody, _ := json.Marshal(&VerifyRequest{
+		ReceiptJSON: legacyJSON,
+	})
+	respVerify, err := httpClient.Post(ts.URL+"/verify", "application/json", bytes.NewReader(verifyReqBody))
+	if err != nil {
+		t.Fatalf("POST /verify: %v", err)
+	}
+	defer respVerify.Body.Close()
+	if respVerify.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(respVerify.Body)
+		t.Fatalf("POST /verify status=%d, want 200, body=%s", respVerify.StatusCode, string(body))
+	}
+	var verifyResp VerifyResponse
+	if err := json.NewDecoder(respVerify.Body).Decode(&verifyResp); err != nil {
+		t.Fatalf("decode verify response: %v", err)
+	}
+	if !verifyResp.ExecutorSigOK {
+		t.Errorf("ExecutorSigOK = false, want true, errors=%v", verifyResp.Errors)
+	}
+
+	// 4. POST /accept must return 200
+	acceptReqBody, _ := json.Marshal(&AcceptRequest{
+		ReceiptJSON:         legacyJSON,
+		ExecutorSignedAtRFC: legacyRec.ExecutorSignedAt.Format(time.RFC3339Nano),
+		EmitterSignature:    "dummy-emitter-sig",
+	})
+	respAccept, err := httpClient.Post(ts.URL+"/accept", "application/json", bytes.NewReader(acceptReqBody))
+	if err != nil {
+		t.Fatalf("POST /accept: %v", err)
+	}
+	defer respAccept.Body.Close()
+	if respAccept.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(respAccept.Body)
+		t.Fatalf("POST /accept status=%d, want 200, body=%s", respAccept.StatusCode, string(body))
+	}
+
+	// 5. POST /dispute on a second legacy receipt must return 200
+	legacyRec2 := &receipt.SettlementReceipt{
+		ProtocolVersion:  "",
+		MeshID:           "",
+		ReceiptID:        "legacy-rcpt-002",
+		ContractID:       "contract-legacy-2",
+		EnvelopeHash:     "legacy-hash-2",
+		EmitterAgentID:   "agent-emitter",
+		ExecutorAgentID:  "test-executor",
+		Verdict:          receipt.VerdictSettledClean,
+		ExecutorSignedAt: now,
+	}
+	if err := receipt.SignReceipt(legacyRec2, signer); err != nil {
+		t.Fatalf("SignReceipt 2: %v", err)
+	}
+	if err := srv.chainStore.InjectReceipt(context.Background(), legacyRec2); err != nil {
+		t.Fatalf("InjectReceipt 2: %v", err)
+	}
+	legacy2JSON, _ := json.Marshal(legacyRec2)
+	disputeReqBody, _ := json.Marshal(&DisputeRequest{
+		ReceiptJSON:         legacy2JSON,
+		ExecutorSignedAtRFC: legacyRec2.ExecutorSignedAt.Format(time.RFC3339Nano),
+		EmitterSignature:    "dummy-emitter-sig",
+		DisputeReason:       "legacy dispute reason",
+	})
+	respDispute, err := httpClient.Post(ts.URL+"/dispute", "application/json", bytes.NewReader(disputeReqBody))
+	if err != nil {
+		t.Fatalf("POST /dispute: %v", err)
+	}
+	defer respDispute.Body.Close()
+	if respDispute.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(respDispute.Body)
+		t.Fatalf("POST /dispute status=%d, want 200, body=%s", respDispute.StatusCode, string(body))
 	}
 }

@@ -79,6 +79,15 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 	if in.EmitterAgentID == "" {
 		return nil, errors.New("emitter agent ID is required")
 	}
+	if in.Envelope.EmitterAgentID == "" {
+		in.Envelope.EmitterAgentID = in.EmitterAgentID
+	}
+	if in.Envelope.ExecutorAgentID == "" {
+		in.Envelope.ExecutorAgentID = in.ExecutorAgentID
+	}
+	if err := envelope.Validate(in.Envelope); err != nil {
+		return nil, fmt.Errorf("envelope validation failed: %w", err)
+	}
 	if in.Envelope.EnvelopeHash == "" {
 		if in.Envelope.EmitterAgentID == "" {
 			in.Envelope.EmitterAgentID = in.EmitterAgentID

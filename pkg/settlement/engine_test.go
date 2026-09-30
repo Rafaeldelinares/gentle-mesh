@@ -69,6 +69,7 @@ func validEnvelope() *envelope.CognitiveTaskEnvelope {
 				},
 			},
 		},
+		TimeoutSeconds: 300,
 	}
 }
 
@@ -78,6 +79,11 @@ func failingEnvelope() *envelope.CognitiveTaskEnvelope {
 		MeshID:          "gentle-mesh-dev",
 		EnvelopeID:      "contract-fail",
 		EnvelopeHash:    "fail123",
+		Territory: envelope.Territory{
+			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Branch:        "main",
+			WorkspacePath: "/tmp/workspace",
+		},
 		Assertions: []envelope.Assertion{
 			{
 				ID:   "fail-test",
@@ -88,6 +94,7 @@ func failingEnvelope() *envelope.CognitiveTaskEnvelope {
 				},
 			},
 		},
+		TimeoutSeconds: 300,
 	}
 }
 
@@ -97,6 +104,11 @@ func errorEnvelope() *envelope.CognitiveTaskEnvelope {
 		MeshID:          "gentle-mesh-dev",
 		EnvelopeID:      "contract-error",
 		EnvelopeHash:    "err123",
+		Territory: envelope.Territory{
+			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Branch:        "main",
+			WorkspacePath: "/tmp/workspace",
+		},
 		Assertions: []envelope.Assertion{
 			{
 				ID:   "bad-cmd",
@@ -107,6 +119,7 @@ func errorEnvelope() *envelope.CognitiveTaskEnvelope {
 				},
 			},
 		},
+		TimeoutSeconds: 300,
 	}
 }
 
@@ -221,6 +234,11 @@ func TestSettle_SecondReceipt_ChainLink(t *testing.T) {
 			MeshID:          "gentle-mesh-dev",
 			EnvelopeID:      "contract-002",
 			EnvelopeHash:    "def456",
+			Territory: envelope.Territory{
+				Repository:    "github.com/gentleman-programming/gentle-mesh",
+				Branch:        "main",
+				WorkspacePath: "/tmp/workspace",
+			},
 			Assertions: []envelope.Assertion{
 				{
 					ID:   "test-pass2",
@@ -231,6 +249,7 @@ func TestSettle_SecondReceipt_ChainLink(t *testing.T) {
 					},
 				},
 			},
+			TimeoutSeconds: 300,
 		},
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
@@ -335,6 +354,8 @@ func TestSettle_ExitCodeMismatch(t *testing.T) {
 		EnvelopeID:      "contract-exit-mismatch",
 		EnvelopeHash:    "hash123",
 		Territory: envelope.Territory{
+			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Branch:        "main",
 			WorkspacePath: dir,
 		},
 		Assertions: []envelope.Assertion{
@@ -347,6 +368,7 @@ func TestSettle_ExitCodeMismatch(t *testing.T) {
 				},
 			},
 		},
+		TimeoutSeconds: 300,
 	}
 
 	db, _ := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
@@ -398,6 +420,8 @@ func TestSettle_FileHashMismatch(t *testing.T) {
 		EnvelopeID:      "contract-hash-mismatch",
 		EnvelopeHash:    "hash456",
 		Territory: envelope.Territory{
+			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Branch:        "main",
 			WorkspacePath: dir,
 		},
 		Assertions: []envelope.Assertion{
@@ -410,6 +434,7 @@ func TestSettle_FileHashMismatch(t *testing.T) {
 				},
 			},
 		},
+		TimeoutSeconds: 300,
 	}
 
 	db, _ := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
@@ -464,6 +489,8 @@ func TestSettle_AssertionTimeout(t *testing.T) {
 		EnvelopeID:      "contract-timeout",
 		EnvelopeHash:    "hash789",
 		Territory: envelope.Territory{
+			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Branch:        "main",
 			WorkspacePath: dir,
 		},
 		Assertions: []envelope.Assertion{
@@ -477,6 +504,7 @@ func TestSettle_AssertionTimeout(t *testing.T) {
 				},
 			},
 		},
+		TimeoutSeconds: 300,
 	}
 
 	db, _ := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
@@ -528,6 +556,8 @@ func TestSettle_RemediationMaxReached(t *testing.T) {
 		EnvelopeID:      "contract-remed-fail",
 		EnvelopeHash:    "hash-fail",
 		Territory: envelope.Territory{
+			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Branch:        "main",
 			WorkspacePath: dir,
 		},
 		Assertions: []envelope.Assertion{
@@ -540,6 +570,7 @@ func TestSettle_RemediationMaxReached(t *testing.T) {
 				},
 			},
 		},
+		TimeoutSeconds: 300,
 	}
 
 	db, _ := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
@@ -584,6 +615,8 @@ func TestSettle_ErrorRemediation(t *testing.T) {
 		EnvelopeID:      "contract-error",
 		EnvelopeHash:    "hash-error",
 		Territory: envelope.Territory{
+			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Branch:        "main",
 			WorkspacePath: dir,
 		},
 		Assertions: []envelope.Assertion{
@@ -596,6 +629,7 @@ func TestSettle_ErrorRemediation(t *testing.T) {
 				},
 			},
 		},
+		TimeoutSeconds: 300,
 	}
 
 	db, _ := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
@@ -640,6 +674,8 @@ func TestSettle_AllAssertionsFail(t *testing.T) {
 		EnvelopeID:      "contract-multi-fail",
 		EnvelopeHash:    "hash-multi",
 		Territory: envelope.Territory{
+			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Branch:        "main",
 			WorkspacePath: dir,
 		},
 		Assertions: []envelope.Assertion{
@@ -660,6 +696,7 @@ func TestSettle_AllAssertionsFail(t *testing.T) {
 				},
 			},
 		},
+		TimeoutSeconds: 300,
 	}
 
 	db, _ := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
@@ -707,6 +744,8 @@ func TestSettle_MixedResults(t *testing.T) {
 		EnvelopeID:      "contract-mixed",
 		EnvelopeHash:    "hash-mixed",
 		Territory: envelope.Territory{
+			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Branch:        "main",
 			WorkspacePath: dir,
 		},
 		Assertions: []envelope.Assertion{
@@ -727,6 +766,7 @@ func TestSettle_MixedResults(t *testing.T) {
 				},
 			},
 		},
+		TimeoutSeconds: 300,
 	}
 
 	db, _ := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
@@ -828,7 +868,7 @@ func TestSettle_InvalidEnvelope_FailsBeforeEvaluating(t *testing.T) {
 	defer cleanup()
 
 	env := validEnvelope()
-	env.EnvelopeHash = ""
+	env.EnvelopeHash = "pre-computed-hash"
 	env.ProtocolVersion = "invalid-version"
 
 	_, err := eng.Settle(context.Background(), SettlementInput{
@@ -1119,10 +1159,12 @@ func TestSettle_FileBasedAssertion(t *testing.T) {
 				ID:   "file-exists",
 				Type: envelope.AssertionFileModified,
 				Params: envelope.AssertionParams{
-					FilePath: "output.txt",
+					FilePath:       "output.txt",
+					ExpectedSHA256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
 				},
 			},
 		},
+		TimeoutSeconds: 300,
 	}
 
 	out, err := eng.Settle(context.Background(), SettlementInput{
@@ -1198,6 +1240,7 @@ func TestSettle_GitCleanWorktree(t *testing.T) {
 				Type: envelope.AssertionGitCleanWorktree,
 			},
 		},
+		TimeoutSeconds: 300,
 	}
 
 	out, err := eng.Settle(context.Background(), SettlementInput{
@@ -1240,6 +1283,8 @@ func TestSettle_GitDirtyWorktree(t *testing.T) {
 		EnvelopeID:      "contract-git-dirty",
 		EnvelopeHash:    "git456",
 		Territory: envelope.Territory{
+			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Branch:        "main",
 			WorkspacePath: gitDir,
 		},
 		Assertions: []envelope.Assertion{
@@ -1248,6 +1293,7 @@ func TestSettle_GitDirtyWorktree(t *testing.T) {
 				Type: envelope.AssertionGitCleanWorktree,
 			},
 		},
+		TimeoutSeconds: 300,
 	}
 
 	out, err := eng.Settle(context.Background(), SettlementInput{

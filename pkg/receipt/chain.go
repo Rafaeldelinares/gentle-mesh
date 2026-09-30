@@ -283,8 +283,10 @@ func (cs *ChainStore) InjectReceipt(ctx context.Context, r *SettlementReceipt) e
 	if r == nil {
 		return ErrInvalidReceipt
 	}
-	if err := ValidateReceipt(r); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidReceipt, err)
+	if r.ProtocolVersion != "" {
+		if err := ValidateReceipt(r); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidReceipt, err)
+		}
 	}
 	data, err := json.Marshal(r)
 	if err != nil {
