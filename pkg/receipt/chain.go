@@ -243,13 +243,8 @@ func (cs *ChainStore) UpdateReceipt(ctx context.Context, r *SettlementReceipt) e
 	if r.ReceiptID == "" || r.ContractID == "" {
 		return fmt.Errorf("%w: missing receipt_id or contract_id", ErrInvalidReceipt)
 	}
-	// For protocol v2 receipts, validate the full schema.
-	// Legacy receipts (persisted before protocol v2) lack protocol_version and mesh_id;
-	// allow them to be updated for accept/dispute without failing validation.
-	if r.ProtocolVersion != "" {
-		if err := ValidateReceipt(r); err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalidReceipt, err)
-		}
+	if err := ValidateReceipt(r); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidReceipt, err)
 	}
 	data, err := json.Marshal(r)
 	if err != nil {
@@ -283,10 +278,8 @@ func (cs *ChainStore) InjectReceipt(ctx context.Context, r *SettlementReceipt) e
 	if r == nil {
 		return ErrInvalidReceipt
 	}
-	if r.ProtocolVersion != "" {
-		if err := ValidateReceipt(r); err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalidReceipt, err)
-		}
+	if err := ValidateReceipt(r); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidReceipt, err)
 	}
 	data, err := json.Marshal(r)
 	if err != nil {

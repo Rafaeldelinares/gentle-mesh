@@ -46,6 +46,9 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.AgentID == "" {
 		return nil, errors.New("agent_id is required")
 	}
+	if cfg.MeshID == "" {
+		return nil, errors.New("mesh_id is required")
+	}
 	if cfg.Role == "" {
 		cfg.Role = RoleExecutor
 	}
@@ -305,7 +308,7 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validate: "+err.Error())
 		return
 	}
-	if s.config.MeshID != "" && env.MeshID != s.config.MeshID {
+	if env.MeshID != s.config.MeshID {
 		writeError(w, http.StatusBadRequest, envelope.ErrMeshMismatch.Error())
 		return
 	}
@@ -321,9 +324,6 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 	}
 
 	meshID := s.config.MeshID
-	if meshID == "" {
-		meshID = env.MeshID
-	}
 
 	lease := &envelope.Lease{
 		ProtocolVersion:     envelope.CurrentProtocolVersion,
@@ -380,7 +380,7 @@ func (s *Server) handleCreateLease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validate: "+err.Error())
 		return
 	}
-	if s.config.MeshID != "" && env.MeshID != s.config.MeshID {
+	if env.MeshID != s.config.MeshID {
 		writeError(w, http.StatusBadRequest, envelope.ErrMeshMismatch.Error())
 		return
 	}
@@ -395,9 +395,6 @@ func (s *Server) handleCreateLease(w http.ResponseWriter, r *http.Request) {
 	}
 
 	meshID := s.config.MeshID
-	if meshID == "" {
-		meshID = env.MeshID
-	}
 
 	lease := &envelope.Lease{
 		ProtocolVersion:     envelope.CurrentProtocolVersion,
@@ -447,7 +444,7 @@ func (s *Server) handleSettle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validate: "+err.Error())
 		return
 	}
-	if s.config.MeshID != "" && env.MeshID != s.config.MeshID {
+	if env.MeshID != s.config.MeshID {
 		writeError(w, http.StatusBadRequest, envelope.ErrMeshMismatch.Error())
 		return
 	}
@@ -519,7 +516,7 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "parse receipt: "+err.Error())
 		return
 	}
-	if s.config.MeshID != "" && rec.MeshID != "" && rec.MeshID != s.config.MeshID {
+	if rec.MeshID != s.config.MeshID {
 		writeError(w, http.StatusBadRequest, receipt.ErrMeshMismatch.Error())
 		return
 	}
@@ -541,7 +538,7 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if s.config.MeshID != "" && stored.MeshID != "" && stored.MeshID != s.config.MeshID {
+	if stored.MeshID != s.config.MeshID {
 		writeError(w, http.StatusBadRequest, receipt.ErrMeshMismatch.Error())
 		return
 	}
@@ -623,7 +620,7 @@ func (s *Server) handleDispute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "parse receipt: "+err.Error())
 		return
 	}
-	if s.config.MeshID != "" && rec.MeshID != "" && rec.MeshID != s.config.MeshID {
+	if rec.MeshID != s.config.MeshID {
 		writeError(w, http.StatusBadRequest, receipt.ErrMeshMismatch.Error())
 		return
 	}
@@ -639,7 +636,7 @@ func (s *Server) handleDispute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if s.config.MeshID != "" && stored.MeshID != "" && stored.MeshID != s.config.MeshID {
+	if stored.MeshID != s.config.MeshID {
 		writeError(w, http.StatusBadRequest, receipt.ErrMeshMismatch.Error())
 		return
 	}
@@ -767,7 +764,7 @@ func (s *Server) handleGetReceipt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if s.config.MeshID != "" && rec.MeshID != "" && rec.MeshID != s.config.MeshID {
+	if rec.MeshID != s.config.MeshID {
 		writeError(w, http.StatusBadRequest, receipt.ErrMeshMismatch.Error())
 		return
 	}
@@ -836,7 +833,7 @@ func (s *Server) handleVerifyReceipt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if s.config.MeshID != "" && rec.MeshID != "" && rec.MeshID != s.config.MeshID {
+	if rec.MeshID != s.config.MeshID {
 		writeError(w, http.StatusBadRequest, receipt.ErrMeshMismatch.Error())
 		return
 	}

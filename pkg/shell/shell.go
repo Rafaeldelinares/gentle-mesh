@@ -25,7 +25,7 @@ import (
 
 // Config holds shell configuration.
 type Config struct {
-	MeshID          string        // Mesh network identity (defaults to "gentle-mesh" if empty)
+	MeshID          string        // Mesh network identity (required, cannot be empty)
 	AgentID         string        // Local agent identity (e.g., "pi-local", "pi-emitter")
 	WorkspaceDir    string        // Working directory for command execution
 	ChainDBPath     string        // Path to SQLite receipt chain database
@@ -47,6 +47,9 @@ type Shell struct {
 // New creates a new Shell. In local mode (RemoteURL == ""), gentle-mesh
 // settlement runs embedded. In remote mode, commands are submitted via HTTPS.
 func New(cfg Config) (*Shell, error) {
+	if cfg.MeshID == "" {
+		return nil, fmt.Errorf("MeshID is required")
+	}
 	if cfg.ChainDBPath == "" {
 		return nil, fmt.Errorf("ChainDBPath is required")
 	}
@@ -216,7 +219,7 @@ func (s *Shell) Execute(ctx context.Context, assertions []envelope.Assertion) (*
 
 	meshID := s.config.MeshID
 	if meshID == "" {
-		meshID = "gentle-mesh"
+		return nil, fmt.Errorf("MeshID is required")
 	}
 
 	// Build receipt.

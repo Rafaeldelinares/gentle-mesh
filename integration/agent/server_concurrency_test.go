@@ -20,7 +20,8 @@ import (
 // to verify thread-safety of Server.leases.
 //
 // Under go test -race (or high concurrency), an unprotected map will trigger:
-//   WARNING: DATA RACE or fatal error: concurrent map writes
+//
+//	WARNING: DATA RACE or fatal error: concurrent map writes
 func TestServer_ConcurrentLeaseWrites(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "gentle-mesh-concurrency-*")
 	if err != nil {
@@ -35,6 +36,7 @@ func TestServer_ConcurrentLeaseWrites(t *testing.T) {
 
 	cfg := Config{
 		AgentID:      "test-executor",
+		MeshID:       "gentle-mesh-test",
 		Role:         RoleExecutor,
 		ChainDBPath:  filepath.Join(tmpDir, "chain.db"),
 		WorkspaceDir: workspaceDir,
@@ -54,6 +56,8 @@ func TestServer_ConcurrentLeaseWrites(t *testing.T) {
 
 	// Build a valid envelope.
 	baseEnv := &envelope.CognitiveTaskEnvelope{
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-test",
 		EnvelopeID:      "01923456-789a-7bc0-8123-456789abcdef",
 		EmitterAgentID:  "agent-emitter",
 		ExecutorAgentID: "test-executor",
@@ -75,8 +79,6 @@ func TestServer_ConcurrentLeaseWrites(t *testing.T) {
 		TimeoutSeconds:  30,
 		MaxRemediations: 0,
 		CreatedAt:       time.Now().UTC(),
-		ProtocolVersion: envelope.CurrentProtocolVersion,
-		MeshID:          "gentle-mesh-dev",
 	}
 
 	client := ts.Client()

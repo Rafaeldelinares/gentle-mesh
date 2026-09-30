@@ -296,7 +296,7 @@ func (s *ShellServer) executeLocal(ctx context.Context, assertions []envelope.As
 
 	meshID := s.meshID
 	if meshID == "" {
-		meshID = "gentle-mesh"
+		return nil, errors.New("mesh_id is required")
 	}
 
 	signedAt := time.Now().UTC()

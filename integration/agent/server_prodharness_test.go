@@ -39,12 +39,13 @@ func TestEndpointsAbsentInProduction(t *testing.T) {
 	}
 
 	cfg := Config{
-		AgentID:     "prodharness-test",
-		Role:        RoleExecutor,
-		ChainDBPath: dbPath,
+		AgentID:      "prodharness-test",
+		MeshID:       "gentle-mesh-test",
+		Role:         RoleExecutor,
+		ChainDBPath:  dbPath,
 		WorkspaceDir: workspaceDir,
-		EvalTimeout: 5 * time.Second,
-		MaxRemed:    1,
+		EvalTimeout:  5 * time.Second,
+		MaxRemed:     1,
 	}
 
 	srv, err := NewServer(cfg)

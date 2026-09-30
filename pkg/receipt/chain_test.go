@@ -197,7 +197,7 @@ func TestUpdateReceipt_ValidationFailure(t *testing.T) {
 	}
 }
 
-func TestUpdateReceipt_LegacyReceiptAllowed(t *testing.T) {
+func TestUpdateReceipt_LegacyReceiptRejected(t *testing.T) {
 	cs, _ := setupChain(t)
 
 	// Insert legacy receipt (no protocol_version, no mesh_id) directly
@@ -208,18 +208,15 @@ func TestUpdateReceipt_LegacyReceiptAllowed(t *testing.T) {
 		t.Fatalf("save legacy receipt: %v", err)
 	}
 
-	// Updating a legacy receipt (e.g. for accept/dispute) should succeed
+	// Updating a legacy receipt (e.g. for accept/dispute) MUST fail with ErrInvalidReceipt
 	r.EmitterAcceptance = AcceptanceAccepted
-	if err := cs.UpdateReceipt(context.Background(), r); err != nil {
-		t.Errorf("UpdateReceipt on legacy receipt failed: %v", err)
+	if err := cs.UpdateReceipt(context.Background(), r); !errors.Is(err, ErrInvalidReceipt) {
+		t.Errorf("UpdateReceipt on legacy receipt err = %v, want ErrInvalidReceipt", err)
 	}
 
-	updated, err := cs.GetReceipt(context.Background(), r.ReceiptID)
-	if err != nil {
-		t.Fatalf("GetReceipt failed: %v", err)
-	}
-	if updated.EmitterAcceptance != AcceptanceAccepted {
-		t.Errorf("EmitterAcceptance = %q, want %q", updated.EmitterAcceptance, AcceptanceAccepted)
+	// Injecting a legacy receipt MUST fail with ErrInvalidReceipt
+	if err := cs.InjectReceipt(context.Background(), r); !errors.Is(err, ErrInvalidReceipt) {
+		t.Errorf("InjectReceipt on legacy receipt err = %v, want ErrInvalidReceipt", err)
 	}
 }
 
