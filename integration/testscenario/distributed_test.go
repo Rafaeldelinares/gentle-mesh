@@ -31,7 +31,7 @@ import (
 // It generates TLS certificates on the host, builds the images, then brings up the containers.
 // Returns a cleanup function. The Go test harness runs on the HOST (not in Docker network),
 // so all agent access uses localhost with published ports.
-func composeUp(t *testing.T, composeDir string) func() {
+func composeUp(t *testing.T, composeDir string) (func(), string) {
 	t.Helper()
 
 	composeFile := filepath.Join(composeDir, "docker-compose.yml")
@@ -123,7 +123,7 @@ func composeUp(t *testing.T, composeDir string) func() {
 		}{{"agent-a", 18443}, {"agent-b", 28443}, {"agent-c", 38443}} {
 			client, err := agent.NewHTTPClientTLS(
 				fmt.Sprintf("https://localhost:%d", ep.port),
-				agent.WithDevInsecureTLS(),
+				agent.WithCACert(filepath.Join(certsDir, "ca.crt")),
 			)
 			if err != nil {
 				t.Logf("[setup]   %s: client error: %v", ep.name, err)
@@ -162,7 +162,7 @@ func composeUp(t *testing.T, composeDir string) func() {
 		t.Fatalf("timeout waiting for agents. Logs:\n%s", string(logsOut))
 	}
 
-	return cleanup
+	return cleanup, certsDir
 }
 
 // findComposeDir returns the path to the integration directory.
@@ -194,9 +194,15 @@ func findComposeDir(t *testing.T) string {
 	return ""
 }
 
-// newInsecureTLSClient creates an HTTP client that skips TLS verification (dev only).
-func newInsecureTLSClient(baseURL string) *agent.HTTPClient {
-	client, _ := agent.NewHTTPClientTLS(baseURL, agent.WithDevInsecureTLS())
+// newTestTLSClient creates an HTTP client that validates the server certificate
+// using the test CA certificate generated for the container cluster.
+func newTestTLSClient(t *testing.T, baseURL, certsDir string) *agent.HTTPClient {
+	t.Helper()
+	caCertPath := filepath.Join(certsDir, "ca.crt")
+	client, err := agent.NewHTTPClientTLS(baseURL, agent.WithCACert(caCertPath))
+	if err != nil {
+		t.Fatalf("create TLS client for %s: %v", baseURL, err)
+	}
 	return client
 }
 
@@ -215,7 +221,7 @@ func TestDistributed_OneToOneOverHTTPS(t *testing.T) {
 	}
 
 	composeDir := findComposeDir(t)
-	cleanup := composeUp(t, composeDir)
+	cleanup, certsDir := composeUp(t, composeDir)
 	defer cleanup()
 
 
@@ -242,8 +248,8 @@ def subtract(a, b):
 	t.Log("=== Distributed 1-to-1: Agent A → Agent B over HTTPS ===")
 
 	ctx := context.Background()
-	aClient := newInsecureTLSClient("https://localhost:18443")
-	bClient := newInsecureTLSClient("https://localhost:28443")
+	aClient := newTestTLSClient(t, "https://localhost:18443", certsDir)
+	bClient := newTestTLSClient(t, "https://localhost:28443", certsDir)
 
 	// Step 1: Get baseline SHA-256 of calculator.py from agent-b's workspace.
 	cmd := exec.Command("docker", "exec", "agent-b", "sh", "-c",
@@ -437,15 +443,15 @@ func TestDistributed_FanOutOneToMany(t *testing.T) {
 	}
 
 	composeDir := findComposeDir(t)
-	cleanup := composeUp(t, composeDir)
+	cleanup, certsDir := composeUp(t, composeDir)
 	defer cleanup()
 
 	t.Log("=== Distributed Fan-out: Agent A → Agent B + Agent C ===")
 
 	ctx := context.Background()
-	aClient := newInsecureTLSClient("https://localhost:18443")
-	bClient := newInsecureTLSClient("https://localhost:28443")
-	cClient := newInsecureTLSClient("https://localhost:38443")
+	aClient := newTestTLSClient(t, "https://localhost:18443", certsDir)
+	bClient := newTestTLSClient(t, "https://localhost:28443", certsDir)
+	cClient := newTestTLSClient(t, "https://localhost:38443", certsDir)
 
 	aSigner, _ := signing.GenerateSigner("agent-a")
 
@@ -649,7 +655,7 @@ func TestDistributed_ChainIntegrityPerExecutor(t *testing.T) {
 	}
 
 	composeDir := findComposeDir(t)
-	cleanup := composeUp(t, composeDir)
+	cleanup, certsDir := composeUp(t, composeDir)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -658,8 +664,8 @@ func TestDistributed_ChainIntegrityPerExecutor(t *testing.T) {
 		executorID string
 		client     *agent.HTTPClient
 	}{
-		{"agent-b", newInsecureTLSClient("https://localhost:28443")},
-		{"agent-c", newInsecureTLSClient("https://localhost:38443")},
+		{"agent-b", newTestTLSClient(t, "https://localhost:28443", certsDir)},
+		{"agent-c", newTestTLSClient(t, "https://localhost:38443", certsDir)},
 	} {
 		t.Run(tc.executorID, func(t *testing.T) {
 			chainResp, err := tc.client.GetChain(ctx, "agent-a", tc.executorID)

@@ -21,17 +21,18 @@ type MeshClient struct {
 }
 
 // NewMeshClient creates a MeshClient for the given executor URL.
-func NewMeshClient(baseURL string, signer *signing.BasicSigner) (*MeshClient, error) {
-	// Use HTTP client with TLS skip verify (development/dev certificates).
-	// In production, use proper TLS with the CA certificate.
-	client, err := agent.NewHTTPClientTLS(baseURL, agent.WithDevInsecureTLS())
+// By default, it performs standard TLS verification against system roots.
+// Custom TLS options (such as agent.WithCACert or agent.WithDevInsecureTLS)
+// can be provided explicitly via opts.
+func NewMeshClient(baseURL string, signer *signing.BasicSigner, opts ...agent.TLSClientOption) (*MeshClient, error) {
+	client, err := agent.NewHTTPClientTLS(baseURL, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("create HTTP client: %w", err)
 	}
 	return &MeshClient{
 		httpClient: client,
-		signer:    signer,
-		baseURL:   baseURL,
+		signer:     signer,
+		baseURL:    baseURL,
 	}, nil
 }
 

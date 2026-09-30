@@ -22,6 +22,9 @@ SHELL_PATTERN='exec\.Command.*"sh".*"-c"|exec\.Command.*"bash".*"-c"'
 # S1: InsecureSkipVerify (client-side TLS bypass)
 INSECURE_PATTERN='InsecureSkipVerify'
 
+# S1-LITERAL: ApplyDevInsecure(..., true) or DevInsecureConfig(true) with literal true
+DEV_INSECURE_LITERAL_TRUE_PATTERN='(ApplyDevInsecure|DevInsecureConfig|DevInsecureConfigWithOutput)\([^)]*\btrue\b'
+
 # Versioned DB artifacts (must not be in git)
 DB_PATTERN='\.db$|\.db-wal$|\.db-shm$'
 
@@ -31,6 +34,13 @@ DB_PATTERN='\.db$|\.db-wal$|\.db-shm$'
 is_exempt_file() {
     grep -qE "^//go:build.*(testharness|redteam)" "$1" 2>/dev/null || \
     grep -qE "^// \+build.*(testharness|redteam)" "$1" 2>/dev/null
+}
+
+# is_exempt_test_or_harness returns 0 if the file is a _test.go or has a testharness/redteam build tag.
+is_exempt_test_or_harness() {
+    local file="$1"
+    [[ "$file" =~ _test\.go$ ]] && return 0
+    is_exempt_file "$file"
 }
 
 # in_allowlist returns 0 if (file, pattern, phase) matches an allowlist entry.
@@ -133,6 +143,39 @@ run_check() {
     return $violations
 }
 
+# run_dev_insecure_literal_check checks that DevInsecureConfig or ApplyDevInsecure
+# are not called with literal 'true' outside _test.go or testharness/redteam files.
+run_dev_insecure_literal_check() {
+    local pattern="$1"; shift
+    local message="$1"; shift
+    local phase="${1:-v1.0.2}"
+
+    echo "Checking: $message"
+    local violations=0
+
+    while IFS=: read -r file line _; do
+        [[ -z "$file" ]] && continue
+        file="${file#./}"
+        [[ "$file" =~ \.git/ ]] && continue
+
+        if is_exempt_test_or_harness "$file"; then
+            continue
+        fi
+
+        if in_allowlist "$file" "$phase"; then
+            continue
+        fi
+
+        echo "  VIOLATION: $file:$line"
+        echo "    -> $message"
+        ((violations++)) || true
+    done < <(grep -rnE --include="*.go" "$pattern" . 2>/dev/null || true)
+
+    echo "  -> $violations violation(s)"
+    echo ""
+    return $violations
+}
+
 # ── Main ─────────────────────────────────────────────────────────────────
 
 echo "============================================================"
@@ -156,6 +199,12 @@ run_check "$SHELL_PATTERN" \
 # S1: InsecureSkipVerify
 run_check "$INSECURE_PATTERN" \
     "S1: InsecureSkipVerify — gate behind --dev-insecure flag (Issue #15 / v1.0.2)" \
+    "v1.0.2" || ((total+=$?))
+
+# S1-LITERAL: Prohibit ApplyDevInsecure(..., true) or DevInsecureConfig(true) with literal true
+# outside _test.go or testharness/redteam files.
+run_dev_insecure_literal_check "$DEV_INSECURE_LITERAL_TRUE_PATTERN" \
+    "S1-LITERAL: ApplyDevInsecure/DevInsecureConfig with literal true is forbidden outside _test.go or testharness/redteam" \
     "v1.0.2" || ((total+=$?))
 
 # DB artifacts versioned (must NEVER be in git)

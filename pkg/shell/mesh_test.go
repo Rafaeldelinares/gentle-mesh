@@ -5,14 +5,26 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/gentleman-programming/gentle-mesh/integration/agent"
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
 	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
 )
+
+func testTLSOption(t *testing.T, srv *httptest.Server) agent.TLSClientOption {
+	t.Helper()
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return agent.WithCACert(caFile)
+}
 
 // TestMeshClient_Health verifies that Health() returns agent info from the remote server.
 func TestMeshClient_Health(t *testing.T) {
@@ -76,7 +88,7 @@ func TestMeshClient_SubmitEnvelope(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := NewMeshClient(srv.URL, signer)
+	client, err := NewMeshClient(srv.URL, signer, testTLSOption(t, srv))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +142,7 @@ func TestMeshClient_Check(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := NewMeshClient(srv.URL, signer)
+	client, err := NewMeshClient(srv.URL, signer, testTLSOption(t, srv))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,3 +180,27 @@ func TestMeshClient_CheckUnreachable(t *testing.T) {
 		t.Error("Check() should return error for unreachable executor")
 	}
 }
+
+// TestMeshClient_DefaultVerifiesTLS verifies that NewMeshClient without options
+// performs standard TLS certificate verification and rejects untrusted certs.
+func TestMeshClient_DefaultVerifiesTLS(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	_, privKey, _ := ed25519.GenerateKey(nil)
+	signer, _ := signing.NewBasicSigner(privKey, "test-agent")
+
+	// Calling NewMeshClient without options must NOT bypass TLS verification.
+	client, err := NewMeshClient(srv.URL, signer)
+	if err != nil {
+		t.Fatalf("unexpected client creation error: %v", err)
+	}
+
+	_, err = client.Health(context.Background())
+	if err == nil {
+		t.Fatal("expected TLS certificate verification error for untrusted self-signed server, got nil")
+	}
+}
+
