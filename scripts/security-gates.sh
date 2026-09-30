@@ -60,9 +60,11 @@ in_allowlist() {
         entry_phase="${entry_phase#${entry_phase%%[![:space:]]*}}"
         entry_phase="${entry_phase%${entry_phase##*[![:space:]]}}"
 
-        # Match exact phase or equivalent phase aliases (F1 <-> v1.0.2)
+        # Match exact phase, permanent entries, or equivalent phase aliases (F1 <-> v1.0.2)
         local phase_match=0
-        if [[ "$phase" == "$entry_phase" ]]; then
+        if [[ "$entry_phase" == "permanent" ]]; then
+            phase_match=1
+        elif [[ "$phase" == "$entry_phase" ]]; then
             phase_match=1
         elif [[ ("$phase" == "F1" || "$phase" == "v1.0.2") && ("$entry_phase" == "F1" || "$entry_phase" == "v1.0.2") ]]; then
             phase_match=1
@@ -174,12 +176,8 @@ echo ""
 echo "============================================================"
 if [[ $total -eq 0 ]]; then
     echo "OK: 0 violations"
-    echo "============================================================"
     exit 0
 else
-    echo "FAIL: $total violation(s)"
-    echo ""
-    echo "Add exceptions to $ALLOWLIST"
-    echo "============================================================"
+    echo "FAILED: $total violation(s) found"
     exit 1
 fi

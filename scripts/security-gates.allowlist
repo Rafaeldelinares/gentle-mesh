@@ -1,8 +1,8 @@
-# security-gates.allowlist — Gentle Mesh & RFC-002
+# security-gates.allowlist — Gentle Mesh & RFC-002 Security Gate Allowlist
 # Format: path:grep_pattern || phase || reason
 # path         = directory prefix or file, matched by prefix
 # grep_pattern = ERE matched against file content with grep -E
-# phase        = milestone/phase that eliminates this violation (v1.0.2 / F1 o F2)
+# phase        = milestone (v1.0.2, v1.0.3), phase (F1, F2), or "permanent"
 # reason       = human-readable justification
 # Lines starting with # and blank lines are ignored.
 #
@@ -10,13 +10,13 @@
 # entries. They must be fixed at the source with git rm --cached and .gitignore.
 # The DB/artifact gate checks git ls-files --cached regardless of allowlist.
 
+# ── Permanent Gate Exceptions (S1: InsecureSkipVerify) ──────────────────────
+pkg/tlsutil/:InsecureSkipVerify                  || permanent || centralized dev-insecure TLS configuration
+
 # ── Milestone v1.0.2 / Phase F1 (S1): InsecureSkipVerify ──────────────────────
-# Eliminated when explicit --dev-insecure gate is added (Issue #15).
-cmd/gentle-mesh/main.go:InsecureSkipVerify       || v1.0.2 || flag TLSInsecureSkipVerify en cliente/servidor CLI
-pkg/client/bridge.go:InsecureSkipVerify           || v1.0.2 || bridge de cliente local sin verificación TLS estricta
-integration/testscenario/:InsecureSkipVerify           || F1 || test harness: self-signed certs
-integration/agent/client.go:InsecureSkipVerify        || F1 || WithInsecureSkipVerify dev helper
-integration/agent/tls_test.go:InsecureSkipVerify     || F1 || test verifies TLS 1.1 rejection (S9)
+integration/testscenario/:InsecureSkipVerify     || F1 || test harness: self-signed certs
+integration/agent/client.go:InsecureSkipVerify   || F1 || WithInsecureSkipVerify dev helper
+integration/agent/tls_test.go:InsecureSkipVerify || F1 || test verifies TLS 1.1 rejection (S9)
 pkg/shell/mesh.go:InsecureSkipVerify             || F1 || dev stub: file not imported in any binary
 
 # ── Phase F2: exec sh -c (eliminated in F2 by direct exec.Command) ─────────────
