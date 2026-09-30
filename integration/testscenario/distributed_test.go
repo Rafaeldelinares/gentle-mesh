@@ -123,7 +123,7 @@ func composeUp(t *testing.T, composeDir string) func() {
 		}{{"agent-a", 18443}, {"agent-b", 28443}, {"agent-c", 38443}} {
 			client, err := agent.NewHTTPClientTLS(
 				fmt.Sprintf("https://localhost:%d", ep.port),
-				agent.WithInsecureSkipVerify(),
+				agent.WithDevInsecureTLS(),
 			)
 			if err != nil {
 				t.Logf("[setup]   %s: client error: %v", ep.name, err)
@@ -196,7 +196,7 @@ func findComposeDir(t *testing.T) string {
 
 // newInsecureTLSClient creates an HTTP client that skips TLS verification (dev only).
 func newInsecureTLSClient(baseURL string) *agent.HTTPClient {
-	client, _ := agent.NewHTTPClientTLS(baseURL, agent.WithInsecureSkipVerify())
+	client, _ := agent.NewHTTPClientTLS(baseURL, agent.WithDevInsecureTLS())
 	return client
 }
 

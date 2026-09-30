@@ -13,12 +13,6 @@
 # ── Permanent Gate Exceptions (S1: InsecureSkipVerify) ──────────────────────
 pkg/tlsutil/:InsecureSkipVerify                  || permanent || centralized dev-insecure TLS configuration
 
-# ── Milestone v1.0.2 / Phase F1 (S1): InsecureSkipVerify ──────────────────────
-integration/testscenario/:InsecureSkipVerify     || F1 || test harness: self-signed certs
-integration/agent/client.go:InsecureSkipVerify   || F1 || WithInsecureSkipVerify dev helper
-integration/agent/tls_test.go:InsecureSkipVerify || F1 || test verifies TLS 1.1 rejection (S9)
-pkg/shell/mesh.go:InsecureSkipVerify             || F1 || dev stub: file not imported in any binary
-
 # ── Phase F2: exec sh -c (eliminated in F2 by direct exec.Command) ─────────────
 # All sh -c calls are replaced with direct exec.Command in Phase F2.
 # Phase 0b resolves this for test infrastructure by adding //go:build testharness,

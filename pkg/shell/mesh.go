@@ -24,7 +24,7 @@ type MeshClient struct {
 func NewMeshClient(baseURL string, signer *signing.BasicSigner) (*MeshClient, error) {
 	// Use HTTP client with TLS skip verify (development/dev certificates).
 	// In production, use proper TLS with the CA certificate.
-	client, err := agent.NewHTTPClientTLS(baseURL, agent.WithInsecureSkipVerify())
+	client, err := agent.NewHTTPClientTLS(baseURL, agent.WithDevInsecureTLS())
 	if err != nil {
 		return nil, fmt.Errorf("create HTTP client: %w", err)
 	}

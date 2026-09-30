@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/gentleman-programming/gentle-mesh/pkg/tlsutil"
 )
 
 // HTTPClient is a simple HTTP client that implements the Client interface.
@@ -59,17 +61,17 @@ func WithClientCert(certFile, keyFile string) TLSClientOption {
 	}
 }
 
-// WithInsecureSkipVerify disables server certificate verification.
+// WithDevInsecureTLS configures dev/test TLS using tlsutil.ApplyDevInsecure.
 // WARNING: Use only for local development with self-signed certificates.
 // Never use in production.
-func WithInsecureSkipVerify() TLSClientOption {
+func WithDevInsecureTLS() TLSClientOption {
 	return func(cfg *tls.Config) {
-		cfg.InsecureSkipVerify = true
+		_ = tlsutil.ApplyDevInsecure(cfg, true)
 	}
 }
 
 // NewHTTPClientTLS creates an HTTPS client with TLS configuration.
-// Pass TLS options like WithCACert, WithClientCert, or WithInsecureSkipVerify.
+// Pass TLS options like WithCACert, WithClientCert, or WithDevInsecureTLS.
 // In production, always use WithCACert to verify the server certificate.
 func NewHTTPClientTLS(baseURL string, opts ...TLSClientOption) (*HTTPClient, error) {
 	tlsConfig := &tls.Config{

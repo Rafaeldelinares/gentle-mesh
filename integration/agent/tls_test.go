@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/gentleman-programming/gentle-mesh/pkg/tlsutil"
 )
 
 // TestTLS_HTTPSServer verifies that the agent server can serve HTTPS requests.
@@ -225,10 +227,12 @@ func TestTLS_MinVersionTLS12(t *testing.T) {
 	defer ts.Close()
 
 	// Try to connect with TLS 1.1 (should be rejected).
-	conn, err := tls.Dial("tcp", ts.Listener.Addr().String(), &tls.Config{
-		InsecureSkipVerify: true,
-		MaxVersion:         tls.VersionTLS11,
-	})
+	badTLSConfig, err := tlsutil.DevInsecureConfig(true)
+	if err != nil {
+		t.Fatalf("failed to create dev insecure config: %v", err)
+	}
+	badTLSConfig.MaxVersion = tls.VersionTLS11
+	conn, err := tls.Dial("tcp", ts.Listener.Addr().String(), badTLSConfig)
 	if err == nil {
 		conn.Close()
 		t.Errorf("TLS 1.1 should be rejected (MinVersion = TLS12)")

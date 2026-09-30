@@ -41,7 +41,7 @@ func NewScenarioTLS(aURL, bURL, cURL, workspace, caCertPath string, insecure boo
 		opts = append(opts, agent.WithCACert(caCertPath))
 	}
 	if insecure {
-		opts = append(opts, agent.WithInsecureSkipVerify())
+		opts = append(opts, agent.WithDevInsecureTLS())
 		log.Printf("[WARN] TLS verification DISABLED — development only")
 	}
 	aClient, err := agent.NewHTTPClientTLS(aURL, opts...)

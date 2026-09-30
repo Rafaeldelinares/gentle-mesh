@@ -404,7 +404,7 @@ func (s *ShellServer) handleDispatch(w http.ResponseWriter, r *http.Request) {
 func (s *ShellServer) dispatchOne(ctx context.Context, idx int, env envelope.CognitiveTaskEnvelope, executorURL string) DispatchResult {
 	result := DispatchResult{ExecutorID: env.ExecutorAgentID}
 
-	executorClient, err := NewHTTPClientTLS(executorURL, WithInsecureSkipVerify())
+	executorClient, err := NewHTTPClientTLS(executorURL, WithDevInsecureTLS())
 	if err != nil {
 		result.Error = fmt.Sprintf("create client: %v", err)
 		return result
