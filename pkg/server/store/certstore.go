@@ -34,7 +34,6 @@ type CertRecord struct {
 	CommonName string
 	Serial     string
 	CertPEM    string
-	KeyPEM     string // Only stored if needed, or could be empty for security
 	IssuedAt   time.Time
 	ExpiresAt  time.Time
 	Revoked    bool
@@ -62,7 +61,6 @@ func InitCertSchema(db *sql.DB) error {
 			common_name TEXT NOT NULL,
 			serial TEXT UNIQUE NOT NULL,
 			cert_pem TEXT NOT NULL,
-			key_pem TEXT,
 			issued_at INTEGER NOT NULL,
 			expires_at INTEGER NOT NULL,
 			revoked INTEGER NOT NULL DEFAULT 0,
@@ -75,6 +73,42 @@ func InitCertSchema(db *sql.DB) error {
 	for _, stmt := range ddlStatements {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("failed to initialize cert schema: %w", err)
+		}
+	}
+
+	// Migration: ensure legacy schema does not retain key_pem
+	rows, err := db.Query("PRAGMA table_info(node_certs);")
+	if err != nil {
+		return fmt.Errorf("failed to query table info for node_certs: %w", err)
+	}
+
+	hasLegacyKey := false
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dfltValue sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("failed to scan table info for node_certs: %w", err)
+		}
+		if name == "key_pem" {
+			hasLegacyKey = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("failed during table info iteration for node_certs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("failed to close table info rows: %w", err)
+	}
+
+	if hasLegacyKey {
+		if _, dropErr := db.Exec("ALTER TABLE node_certs DROP COLUMN key_pem;"); dropErr != nil {
+			if _, updateErr := db.Exec("UPDATE node_certs SET key_pem = NULL;"); updateErr != nil {
+				return fmt.Errorf("failed to drop or sanitize legacy private key column: drop failed (%v), update failed (%w)", dropErr, updateErr)
+			}
 		}
 	}
 
@@ -104,14 +138,13 @@ func (s *SQLiteCertStore) IssueCert(ctx context.Context, cert *CertRecord) error
 
 	query := `
 	INSERT INTO node_certs (
-		node_id, common_name, serial, cert_pem, key_pem,
+		node_id, common_name, serial, cert_pem,
 		issued_at, expires_at, revoked
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(node_id) DO UPDATE SET
 		common_name = excluded.common_name,
 		serial = excluded.serial,
 		cert_pem = excluded.cert_pem,
-		key_pem = excluded.key_pem,
 		issued_at = excluded.issued_at,
 		expires_at = excluded.expires_at,
 		revoked = 0,
@@ -123,7 +156,6 @@ func (s *SQLiteCertStore) IssueCert(ctx context.Context, cert *CertRecord) error
 		cert.CommonName,
 		cert.Serial,
 		cert.CertPEM,
-		cert.KeyPEM,
 		cert.IssuedAt.Unix(),
 		cert.ExpiresAt.Unix(),
 		0, // Not revoked on issue
@@ -147,7 +179,7 @@ func (s *SQLiteCertStore) GetCert(ctx context.Context, nodeID string) (*CertReco
 		return nil, errors.New("cert store is closed")
 	}
 
-	query := `SELECT node_id, common_name, serial, cert_pem, key_pem, 
+	query := `SELECT node_id, common_name, serial, cert_pem, 
 		issued_at, expires_at, revoked, revoked_at 
 		FROM node_certs WHERE node_id = ?`
 
@@ -163,7 +195,6 @@ func (s *SQLiteCertStore) GetCert(ctx context.Context, nodeID string) (*CertReco
 		&cert.CommonName,
 		&cert.Serial,
 		&cert.CertPEM,
-		&cert.KeyPEM,
 		&issuedAt,
 		&expiresAt,
 		&revoked,
@@ -199,7 +230,7 @@ func (s *SQLiteCertStore) ListCerts(ctx context.Context) ([]*CertRecord, error) 
 		return nil, errors.New("cert store is closed")
 	}
 
-	query := `SELECT node_id, common_name, serial, cert_pem, key_pem,
+	query := `SELECT node_id, common_name, serial, cert_pem,
 		issued_at, expires_at, revoked, revoked_at 
 		FROM node_certs ORDER BY issued_at DESC`
 
@@ -221,7 +252,6 @@ func (s *SQLiteCertStore) ListCerts(ctx context.Context) ([]*CertRecord, error) 
 			&cert.CommonName,
 			&cert.Serial,
 			&cert.CertPEM,
-			&cert.KeyPEM,
 			&issuedAt,
 			&expiresAt,
 			&revoked,

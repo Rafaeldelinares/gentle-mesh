@@ -31,6 +31,7 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/worker"
+	"github.com/gentleman-programming/gentle-mesh/pkg/tlsutil"
 )
 
 func main() {
@@ -158,6 +159,9 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		}
 		fmt.Fprintf(stdout, "TLS initialized in %s\n", tlsDirPath)
 		fmt.Fprintf(stdout, "  CA certificate: %s\n", filepath.Join(tlsDirPath, pki.CAPemFile))
+		if caCert, err := pki.LoadCACertOnly(filepath.Join(tlsDirPath, pki.CAPemFile)); err == nil {
+			fmt.Fprintf(stdout, "  CA fingerprint: %s\n", pki.CertFingerprint(caCert))
+		}
 		fmt.Fprintf(stdout, "  Server cert:    %s\n", filepath.Join(tlsDirPath, pki.CertPemFile))
 		fmt.Fprintf(stdout, "\nShare %s with nodes to enable TLS\n", filepath.Join(tlsDirPath, pki.CAPemFile))
 		return nil
@@ -203,6 +207,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		serverConfig.MeshCA = ca
 		serverConfig.MeshCAPemFile = filepath.Join(tlsDirPath, pki.CAPemFile)
 		fmt.Fprintf(stdout, "TLS ready: CA=%s\n", ca.Cert.Subject.CommonName)
+		fmt.Fprintf(stdout, "  CA fingerprint: %s\n", pki.CertFingerprint(ca.Cert))
 		fmt.Fprintf(stdout, "Server cert expires: %s\n", serverCert.Cert.NotAfter.Format("2006-01-02"))
 
 		// Initialize token store for enrollment
@@ -309,6 +314,24 @@ func buildRunner(name, workspace string) (runner.Runner, error) {
 	}
 }
 
+// getNodeConfigDir returns the node-specific configuration directory (~/.config/gentle-mesh/nodes/<id>)
+// with permissions 0700.
+func getNodeConfigDir(nodeID string) (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil || configDir == "" {
+		home, hErr := os.UserHomeDir()
+		if hErr != nil || home == "" {
+			return "", fmt.Errorf("failed to determine user config or home directory: %v", err)
+		}
+		configDir = filepath.Join(home, ".config")
+	}
+	dir := filepath.Join(configDir, "gentle-mesh", "nodes", nodeID)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("failed to create node configuration directory %q: %w", dir, err)
+	}
+	return dir, nil
+}
+
 // runWorker runs a worker node that registers with the coordinator and sends heartbeats.
 func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
@@ -323,7 +346,8 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	heartbeatInterval := fs.Duration("heartbeat-interval", 10*time.Second, "Heartbeat ping interval")
 	token := fs.String("token", "", "Optional bearer authentication token")
 	addr := fs.String("addr", "", "Listen address for worker HTTP server (default: port from endpoint or :8081)")
-	caCert := fs.String("ca", "", "Path to mesh CA certificate for TLS verification (downloads from coordinator if not provided)")
+	caCert := fs.String("ca", "", "Path to mesh CA certificate for TLS verification")
+	caCertHash := fs.String("ca-cert-hash", "", "Expected SHA-256 fingerprint of the CA certificate (format: sha256:<hex>)")
 	insecureSkipTLS := fs.Bool("insecure-skip-tls-verify", false, "Skip TLS verification (for development only)")
 	clientCert := fs.String("cert", "", "Path to client certificate for mTLS authentication (requires -key)")
 	clientKey := fs.String("key", "", "Path to client private key for mTLS authentication (requires -cert)")
@@ -371,69 +395,79 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	heartbeatURL := coordURL + "/v1/mesh/heartbeat"
 	caURL := coordURL + "/v1/mesh/ca"
 
+	isHTTPS := strings.HasPrefix(strings.ToLower(coordURL), "https://")
+	caPath := *caCert
+
+	// Enforce secure CA trust when connecting over HTTPS or requesting auto-enrollment
+	if isHTTPS || *joinToken != "" {
+		if caPath == "" {
+			if *caCertHash == "" && !*insecureSkipTLS {
+				return errors.New("secure connection to coordinator requires either -ca <path> or -ca-cert-hash sha256:<hex> (or -insecure-skip-tls-verify for development)")
+			}
+
+			if *caCertHash != "" {
+				fmt.Fprintf(stdout, "Downloading mesh CA for verification (pin: %s)...\n", *caCertHash)
+				u, err := url.Parse(coordURL)
+				if err != nil {
+					return fmt.Errorf("invalid coordinator URL %q: %w", coordURL, err)
+				}
+				serverName := u.Hostname()
+				bootstrapClient, err := newPinnedTLSClient(serverName, *caCertHash)
+				if err != nil {
+					return fmt.Errorf("failed to create pinned bootstrap TLS client: %w", err)
+				}
+				caData, err := downloadCA(ctx, bootstrapClient, caURL)
+				if err != nil {
+					return fmt.Errorf("failed to download CA from coordinator: %w", err)
+				}
+				if err := pki.VerifyCACertHash(caData, *caCertHash); err != nil {
+					return fmt.Errorf("CA verification failed: %w", err)
+				}
+				nodeConfigDir, err := getNodeConfigDir(id)
+				if err != nil {
+					return fmt.Errorf("failed to determine node config directory: %w", err)
+				}
+				caPath = filepath.Join(nodeConfigDir, "ca.pem")
+				if err := os.WriteFile(caPath, caData, 0600); err != nil {
+					return fmt.Errorf("failed to save CA certificate: %w", err)
+				}
+				fmt.Fprintf(stdout, "CA certificate verified and saved to %s\n", caPath)
+			} else if *insecureSkipTLS {
+				insecureClient := newTLSClient("", true)
+				caData, err := downloadCA(ctx, insecureClient, caURL)
+				if err == nil {
+					nodeConfigDir, _ := getNodeConfigDir(id)
+					if nodeConfigDir != "" {
+						caPath = filepath.Join(nodeConfigDir, "ca.pem")
+						_ = os.WriteFile(caPath, caData, 0600)
+					}
+				}
+			}
+		} else if *caCertHash != "" {
+			// -ca and -ca-cert-hash both provided: verify local file matches hash
+			caData, err := os.ReadFile(caPath)
+			if err != nil {
+				return fmt.Errorf("failed to read CA certificate at %s: %w", caPath, err)
+			}
+			if err := pki.VerifyCACertHash(caData, *caCertHash); err != nil {
+				return fmt.Errorf("CA verification failed: %w", err)
+			}
+		}
+	}
+
 	// Build HTTP client with TLS configuration
-	httpClient, err := newMTLSClient(*caCert, *clientCert, *clientKey, *insecureSkipTLS)
+	httpClient, err := newMTLSClient(caPath, *clientCert, *clientKey, *insecureSkipTLS)
 	if err != nil {
 		return fmt.Errorf("failed to create TLS client: %w", err)
 	}
 	httpClient.Timeout = 10 * time.Second
 
-	// Auto-download CA from coordinator if not provided
-	caPath := *caCert
-	if caPath == "" && !*insecureSkipTLS {
-		// Use insecure client for initial download (self-signed certs)
-		tempClient := newTLSClient("", true) // skip verification
-
-		// Check if coordinator is using TLS by probing health
-		healthURL := coordURL + "/healthz"
-		healthReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		healthResp, err := tempClient.Do(healthReq)
-		if err == nil {
-			healthResp.Body.Close()
-			// If TLS is enabled on coordinator, download CA
-			var healthData struct {
-				TLS string `json:"tls"`
-			}
-			if healthResp.StatusCode == 200 {
-				_ = json.NewDecoder(healthResp.Body).Decode(&healthData)
-			}
-			if healthData.TLS == "enabled" {
-				fmt.Fprintf(stdout, "Coordinator has TLS enabled, downloading CA...\n")
-				caData, err := downloadCA(ctx, tempClient, caURL)
-				if err != nil {
-					return fmt.Errorf("failed to download CA from coordinator: %w\nTIP: Use -ca flag or run with -insecure-skip-tls-verify for development", err)
-				}
-				caPath = filepath.Join(os.TempDir(), "gentle-mesh-ca.pem")
-				if err := os.WriteFile(caPath, caData, 0644); err != nil {
-					return fmt.Errorf("failed to save CA: %w", err)
-				}
-				fmt.Fprintf(stdout, "CA saved to %s\n", caPath)
-			}
-		}
-	}
-
-	// If we need enrollment, download CA first (if not already done)
-	if *joinToken != "" && (*clientCert == "" || *clientKey == "") && caPath == "" {
-		fmt.Fprintf(stdout, "Downloading CA for enrollment...\n")
-		// Use insecure client for downloading CA (skips cert verification)
-		tempClient := newTLSClient("", true) // true = skip verification
-		caData, err := downloadCA(ctx, tempClient, caURL)
-		if err != nil {
-			return fmt.Errorf("failed to download CA for enrollment: %w", err)
-		}
-		caPath = filepath.Join(os.TempDir(), "gentle-mesh-ca.pem")
-		if err := os.WriteFile(caPath, caData, 0644); err != nil {
-			return fmt.Errorf("failed to save CA: %w", err)
-		}
-		fmt.Fprintf(stdout, "CA saved to %s\n", caPath)
-	}
-
 	// Auto-enrollment via token: generate CSR and get certificate from coordinator
 	if *joinToken != "" && (*clientCert == "" || *clientKey == "") {
 		fmt.Fprintf(stdout, "Auto-enrollment via token...\n")
 
-		// For enrollment, use insecure client (skips cert verification for self-signed)
-		enrollClient := newTLSClient("", true) // skip verification
+		// For enrollment, verify coordinator cert against the validated CA
+		enrollClient := newTLSClient(caPath, *insecureSkipTLS)
 
 		// Generate CSR locally (private key never leaves the node)
 		fmt.Fprintf(stdout, "Generating CSR locally (private key stays here)...\n")
@@ -473,14 +507,14 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			return fmt.Errorf("failed to parse enrollment response: %w", err)
 		}
 
-		// Save certificate and key to temp directory
-		certDir := filepath.Join(os.TempDir(), "gentle-mesh", id)
-		if err := os.MkdirAll(certDir, 0700); err != nil {
-			return fmt.Errorf("failed to create cert directory: %w", err)
+		// Save certificate and key to node configuration directory (0700)
+		nodeConfigDir, err := getNodeConfigDir(id)
+		if err != nil {
+			return fmt.Errorf("failed to determine node config directory: %w", err)
 		}
 
-		certPath := filepath.Join(certDir, "cert.pem")
-		keyPath := filepath.Join(certDir, "key.pem")
+		certPath := filepath.Join(nodeConfigDir, "cert.pem")
+		keyPath := filepath.Join(nodeConfigDir, "key.pem")
 
 		if err := os.WriteFile(certPath, []byte(enrollResult.CertPEM), 0600); err != nil {
 			return fmt.Errorf("failed to save certificate: %w", err)
@@ -498,8 +532,7 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		*clientKey = keyPath
 
 		// Re-create HTTP client with proper CA for mTLS
-		// If we have CA, use it for server verification; otherwise use system CAs
-		httpClient, err = newMTLSClient(caPath, certPath, keyPath, caPath == "")
+		httpClient, err = newMTLSClient(caPath, certPath, keyPath, *insecureSkipTLS)
 		if err != nil {
 			return fmt.Errorf("failed to create mTLS client: %w", err)
 		}
@@ -897,11 +930,42 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
+// errorRoundTripper rejects any HTTP request with a pre-configured error.
+type errorRoundTripper struct {
+	err error
+}
+
+func (e *errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, e.err
+}
+
+// newPinnedTLSClient creates an HTTP client with TLS pinned to an expected CA/cert hash
+// and ServerName configured for hostname verification during the handshake.
+// This is permitted in production and does not emit insecure warnings because verification
+// occurs cryptographically during the TLS handshake via PinnedBootstrapConfigWithServerName.
+func newPinnedTLSClient(serverName string, expectedHash string) (*http.Client, error) {
+	tlsConfig, err := tlsutil.PinnedBootstrapConfigWithServerName(serverName, expectedHash)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+		},
+	}, nil
+}
+
 // newTLSClient creates an HTTP client with optional TLS configuration.
 func newTLSClient(caCertPath string, insecureSkipVerify bool) *http.Client {
 	if insecureSkipVerify || caCertPath != "" {
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: insecureSkipVerify,
+		tlsConfig := &tls.Config{}
+		if insecureSkipVerify {
+			if err := tlsutil.ApplyDevInsecure(tlsConfig, insecureSkipVerify); err != nil {
+				fmt.Fprintf(os.Stderr, "Security error: %v\n", err)
+				return &http.Client{
+					Transport: &errorRoundTripper{err: err},
+				}
+			}
 		}
 		if caCertPath != "" && !insecureSkipVerify {
 			caCert, err := os.ReadFile(caCertPath)
@@ -928,8 +992,11 @@ func newMTLSClient(caCertPath, certPath, keyPath string, insecureSkipVerify bool
 		return nil, errors.New("both -cert and -key must be provided for mTLS authentication")
 	}
 
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: insecureSkipVerify,
+	tlsConfig := &tls.Config{}
+	if insecureSkipVerify {
+		if err := tlsutil.ApplyDevInsecure(tlsConfig, insecureSkipVerify); err != nil {
+			return nil, err
+		}
 	}
 
 	// Load CA for server verification
@@ -1357,24 +1424,13 @@ func runCertRevoke(ctx context.Context, args []string, stdout, stderr io.Writer)
 	fs.SetOutput(stderr)
 
 	fs.String("tls-dir", "", "TLS directory with CA (required)")
-	nodeID := fs.String("node-id", "", "Node identifier to revoke (required)")
+	fs.String("node-id", "", "Node identifier to revoke (required)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	if *nodeID == "" {
-		return errors.New("-node-id is required")
-	}
-
-	// Revocation is handled via the database, not filesystem
-	// For now, we just print a warning since we don't have DB access here
-	fmt.Fprintf(stdout, "⚠️  To revoke a certificate, you need to:")
-	fmt.Fprintf(stdout, "\n  1. Delete the certificate files from the node")
-	fmt.Fprintf(stdout, "\n  2. Issue a new certificate with a different serial")
-	fmt.Fprintf(stdout, "\n\nFor production revocation lists, implement CRL distribution.\n")
-
-	return nil
+	return errors.New("la revocación de certificados no está implementada en esta versión; ver issue #25")
 }
 
 // runCertList lists all issued certificates.
@@ -1441,6 +1497,7 @@ func runGenToken(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	dbPath := fs.String("db-path", "", "Path to SQLite database (required)")
 	maxUses := fs.Int("max-uses", 1, "Maximum number of times the token can be used (0 = unlimited)")
 	validDays := fs.Int("valid-days", 30, "Number of days until the token expires (0 = never)")
+	caCert := fs.String("ca", "", "Path to mesh CA certificate to compute and display pinning fingerprint")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1448,6 +1505,19 @@ func runGenToken(ctx context.Context, args []string, stdout, stderr io.Writer) e
 
 	if *dbPath == "" || *dbPath == "none" {
 		return errors.New("-db-path is required (e.g., /tmp/mesh/gentle-mesh.db)")
+	}
+
+	var caFingerprint string
+	if *caCert != "" {
+		caBytes, err := os.ReadFile(*caCert)
+		if err != nil {
+			return fmt.Errorf("failed to read CA certificate at %s: %w", *caCert, err)
+		}
+		fp, err := pki.CertFingerprintFromPEM(caBytes)
+		if err != nil {
+			return fmt.Errorf("failed to parse CA certificate at %s: %w", *caCert, err)
+		}
+		caFingerprint = fp
 	}
 
 	// Open database
@@ -1487,6 +1557,9 @@ func runGenToken(ctx context.Context, args []string, stdout, stderr io.Writer) e
 
 	fmt.Fprintln(stdout, "✅ Enrollment token generated")
 	fmt.Fprintf(stdout, "  Token: %s\n", token)
+	if caFingerprint != "" {
+		fmt.Fprintf(stdout, "  CA fingerprint: %s\n", caFingerprint)
+	}
 	if *maxUses > 0 {
 		fmt.Fprintf(stdout, "  Max uses: %d\n", *maxUses)
 	} else {
@@ -1500,7 +1573,11 @@ func runGenToken(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	fmt.Fprintln(stdout, "")
 	fmt.Fprintf(stdout, "Share this token with a node to auto-enroll.\n")
 	fmt.Fprintf(stdout, "The node will use it like:\n")
-	fmt.Fprintf(stdout, "  gentle-mesh worker -join-token %s -coordinator https://...\n", token)
+	if caFingerprint != "" {
+		fmt.Fprintf(stdout, "  gentle-mesh worker -join-token %s -ca-cert-hash %s -coordinator https://...\n", token, caFingerprint)
+	} else {
+		fmt.Fprintf(stdout, "  gentle-mesh worker -join-token %s -ca-cert-hash sha256:<ca-fingerprint> -coordinator https://...\n", token)
+	}
 
 	return nil
 }

@@ -22,6 +22,9 @@ SHELL_PATTERN='exec\.Command.*"sh".*"-c"|exec\.Command.*"bash".*"-c"'
 # S1: InsecureSkipVerify (client-side TLS bypass)
 INSECURE_PATTERN='InsecureSkipVerify'
 
+# S1-LITERAL: ApplyDevInsecure(..., true), DevInsecureConfig(true), or WithDevInsecureTLS(true) with literal true
+DEV_INSECURE_LITERAL_TRUE_PATTERN='(ApplyDevInsecure|DevInsecureConfig|DevInsecureConfigWithOutput|WithDevInsecureTLS)\([^)]*\btrue\b'
+
 # Versioned DB artifacts (must not be in git)
 DB_PATTERN='\.db$|\.db-wal$|\.db-shm$'
 
@@ -33,6 +36,13 @@ is_exempt_file() {
     grep -qE "^// \+build.*(testharness|redteam)" "$1" 2>/dev/null
 }
 
+# is_exempt_test_or_harness returns 0 if the file is a _test.go or has a testharness/redteam build tag.
+is_exempt_test_or_harness() {
+    local file="$1"
+    [[ "$file" =~ _test\.go$ ]] && return 0
+    is_exempt_file "$file"
+}
+
 # in_allowlist returns 0 if (file, pattern, phase) matches an allowlist entry.
 # Format of each entry in security-gates.allowlist:
 #   path:grep_pattern || phase || reason
@@ -41,15 +51,15 @@ is_exempt_file() {
 # phase is the phase/milestone that eliminates this violation.
 # Lines starting with # and blank lines are ignored.
 in_allowlist() {
-    local file="$1"; shift
-    local phase="$1"
+    local file="$1"
+    local phase="$2"
+    local line="" entry="" entry_phase=""
 
     while IFS= read -r line || [[ -n "$line" ]]; do
         [[ "$line" =~ ^#.*$ ]] && continue       # comment
         [[ -z "${line// }" ]] && continue       # blank
 
         # Parse: path:grep_pattern || phase || reason
-        local entry entry_phase
         entry="${line%% || *}"
         entry_phase="${line#*|| }"
         entry_phase="${entry_phase%% || *}"
@@ -60,9 +70,11 @@ in_allowlist() {
         entry_phase="${entry_phase#${entry_phase%%[![:space:]]*}}"
         entry_phase="${entry_phase%${entry_phase##*[![:space:]]}}"
 
-        # Match exact phase or equivalent phase aliases (F1 <-> v1.0.2)
+        # Match exact phase, permanent entries, or equivalent phase aliases (F1 <-> v1.0.2)
         local phase_match=0
-        if [[ "$phase" == "$entry_phase" ]]; then
+        if [[ "$entry_phase" == "permanent" ]]; then
+            phase_match=1
+        elif [[ "$phase" == "$entry_phase" ]]; then
             phase_match=1
         elif [[ ("$phase" == "F1" || "$phase" == "v1.0.2") && ("$entry_phase" == "F1" || "$entry_phase" == "v1.0.2") ]]; then
             phase_match=1
@@ -131,6 +143,97 @@ run_check() {
     return $violations
 }
 
+# run_dev_insecure_literal_check checks that DevInsecureConfig or ApplyDevInsecure
+# are not called with literal 'true' outside _test.go or testharness/redteam files.
+run_dev_insecure_literal_check() {
+    local pattern="$1"; shift
+    local message="$1"; shift
+    local phase="${1:-v1.0.2}"
+
+    echo "Checking: $message"
+    local violations=0
+
+    while IFS=: read -r file line _; do
+        [[ -z "$file" ]] && continue
+        file="${file#./}"
+        [[ "$file" =~ \.git/ ]] && continue
+
+        if is_exempt_test_or_harness "$file"; then
+            continue
+        fi
+
+        if in_allowlist "$file" "$phase"; then
+            continue
+        fi
+
+        echo "  VIOLATION: $file:$line"
+        echo "    -> $message"
+        ((violations++)) || true
+    done < <(grep -rnE --include="*.go" "$pattern" . 2>/dev/null || true)
+
+    echo "  -> $violations violation(s)"
+    echo ""
+    return $violations
+}
+
+# ── Self Tests (--test) ──────────────────────────────────────────────────
+run_self_tests() {
+    echo "============================================================"
+    echo "Running Security Gates Self-Tests"
+    echo "============================================================"
+    local tmp_dir
+    tmp_dir="$(mktemp -d -p "$SCRIPT_DIR/.." .gate-test-XXXXXX)"
+    trap 'rm -rf "$tmp_dir"' EXIT
+
+    echo "1. Testing WithDevInsecureTLS(true) in prod file (must fail)..."
+    cat << 'EOF' > "$tmp_dir/bad_prod.go"
+package main
+func Bad() { _ = agent.WithDevInsecureTLS(true) }
+EOF
+    if run_dev_insecure_literal_check "$DEV_INSECURE_LITERAL_TRUE_PATTERN" "test" "v1.0.2" >/dev/null 2>&1; then
+        echo "FAILED: WithDevInsecureTLS(true) was not flagged as violation!"
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+    echo "   -> Caught correctly."
+
+    echo "2. Testing WithDevInsecureTLS(insecure) in prod file (must pass)..."
+    cat << 'EOF' > "$tmp_dir/bad_prod.go"
+package main
+func Good(insecure bool) { _ = agent.WithDevInsecureTLS(insecure); _ = agent.WithDevInsecureTLS(false) }
+EOF
+    if ! run_dev_insecure_literal_check "$DEV_INSECURE_LITERAL_TRUE_PATTERN" "test" "v1.0.2" >/dev/null 2>&1; then
+        echo "FAILED: non-literal WithDevInsecureTLS was incorrectly flagged!"
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+    echo "   -> Allowed correctly."
+
+    echo "3. Testing WithDevInsecureTLS(true) in _test.go (must pass)..."
+    rm -f "$tmp_dir/bad_prod.go"
+    cat << 'EOF' > "$tmp_dir/good_test.go"
+package main
+func TestBad() { _ = agent.WithDevInsecureTLS(true) }
+EOF
+    if ! run_dev_insecure_literal_check "$DEV_INSECURE_LITERAL_TRUE_PATTERN" "test" "v1.0.2" >/dev/null 2>&1; then
+        echo "FAILED: WithDevInsecureTLS(true) in _test.go was incorrectly flagged!"
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+    echo "   -> Allowed correctly."
+
+    rm -rf "$tmp_dir"
+    trap - EXIT
+    echo "============================================================"
+    echo "OK: All security-gates self-tests passed"
+    echo "============================================================"
+}
+
+if [[ "${1:-}" == "--test" ]]; then
+    run_self_tests
+    exit 0
+fi
+
 # ── Main ─────────────────────────────────────────────────────────────────
 
 echo "============================================================"
@@ -156,6 +259,12 @@ run_check "$INSECURE_PATTERN" \
     "S1: InsecureSkipVerify — gate behind --dev-insecure flag (Issue #15 / v1.0.2)" \
     "v1.0.2" || ((total+=$?))
 
+# S1-LITERAL: Prohibit ApplyDevInsecure(..., true), DevInsecureConfig(true), or WithDevInsecureTLS(true) with literal true
+# outside _test.go or testharness/redteam files.
+run_dev_insecure_literal_check "$DEV_INSECURE_LITERAL_TRUE_PATTERN" \
+    "S1-LITERAL: ApplyDevInsecure/DevInsecureConfig/WithDevInsecureTLS with literal true is forbidden outside _test.go or testharness/redteam" \
+    "v1.0.2" || ((total+=$?))
+
 # DB artifacts versioned (must NEVER be in git)
 echo "Checking: versioned database artifacts (*.db, *.db-wal, *.db-shm)"
 db_violations=0
@@ -174,12 +283,8 @@ echo ""
 echo "============================================================"
 if [[ $total -eq 0 ]]; then
     echo "OK: 0 violations"
-    echo "============================================================"
     exit 0
 else
-    echo "FAIL: $total violation(s)"
-    echo ""
-    echo "Add exceptions to $ALLOWLIST"
-    echo "============================================================"
+    echo "FAILED: $total violation(s) found"
     exit 1
 fi

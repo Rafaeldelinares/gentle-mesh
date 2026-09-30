@@ -58,7 +58,7 @@ create_leaf() {
     echo "[TLS] Generating $name CSR..."
     openssl req -new -key "$key" -out "$csr" \
         -subj "/C=US/ST=Development/L=Internet/O=Gentleman Programming/CN=$name" \
-        -addext "subjectAltName=DNS:localhost,DNS:$name,DNS:agent-a,DNS:agent-b,IP:127.0.0.1,IP:::1"
+        -addext "subjectAltName=DNS:localhost,DNS:$name,DNS:agent-a,DNS:agent-b,DNS:agent-c,IP:127.0.0.1,IP:::1"
 
     # Write extension file to disk (avoids process substitution).
     cat > "$extfile" << EOFEXT
@@ -67,6 +67,7 @@ keyUsage=critical,digitalSignature,keyEncipherment
 extendedKeyUsage=$usage
 subjectKeyIdentifier=hash
 authorityKeyIdentifier=keyid:always
+subjectAltName=DNS:localhost,DNS:$name,DNS:agent-a,DNS:agent-b,DNS:agent-c,IP:127.0.0.1,IP:::1
 EOFEXT
 
     echo "[TLS] Signing $name certificate..."

@@ -7,11 +7,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/gentleman-programming/gentle-mesh/pkg/tlsutil"
 )
 
 // HTTPClient is a simple HTTP client that implements the Client interface.
@@ -32,51 +35,57 @@ func NewHTTPClient(baseURL string) *HTTPClient {
 }
 
 // TLSClientOption configures TLS settings for NewHTTPClientTLS.
-type TLSClientOption func(*tls.Config)
+type TLSClientOption func(*tls.Config) error
 
 // WithCACert adds a root CA certificate for server verification.
 // Use this in production or when using self-signed certificates.
 func WithCACert(caCertPath string) TLSClientOption {
-	return func(cfg *tls.Config) {
+	return func(cfg *tls.Config) error {
 		caPEM, err := os.ReadFile(caCertPath)
 		if err != nil {
-			return // Let caller handle the error at dial time
+			return fmt.Errorf("read CA cert file: %w", err)
 		}
 		pool := x509.NewCertPool()
-		if pool.AppendCertsFromPEM(caPEM) {
-			cfg.RootCAs = pool
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return errors.New("failed to parse CA certificate from PEM")
 		}
+		cfg.RootCAs = pool
+		return nil
 	}
 }
 
 // WithClientCert adds a client certificate for mTLS.
 func WithClientCert(certFile, keyFile string) TLSClientOption {
-	return func(cfg *tls.Config) {
+	return func(cfg *tls.Config) error {
 		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-		if err == nil {
-			cfg.Certificates = []tls.Certificate{cert}
+		if err != nil {
+			return fmt.Errorf("load client certificate: %w", err)
 		}
+		cfg.Certificates = []tls.Certificate{cert}
+		return nil
 	}
 }
 
-// WithInsecureSkipVerify disables server certificate verification.
+// WithDevInsecureTLS configures dev/test TLS using tlsutil.ApplyDevInsecure.
 // WARNING: Use only for local development with self-signed certificates.
 // Never use in production.
-func WithInsecureSkipVerify() TLSClientOption {
-	return func(cfg *tls.Config) {
-		cfg.InsecureSkipVerify = true
+func WithDevInsecureTLS(explicit bool) TLSClientOption {
+	return func(cfg *tls.Config) error {
+		return tlsutil.ApplyDevInsecure(cfg, explicit)
 	}
 }
 
 // NewHTTPClientTLS creates an HTTPS client with TLS configuration.
-// Pass TLS options like WithCACert, WithClientCert, or WithInsecureSkipVerify.
+// Pass TLS options like WithCACert, WithClientCert, or WithDevInsecureTLS.
 // In production, always use WithCACert to verify the server certificate.
 func NewHTTPClientTLS(baseURL string, opts ...TLSClientOption) (*HTTPClient, error) {
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 	}
 	for _, opt := range opts {
-		opt(tlsConfig)
+		if err := opt(tlsConfig); err != nil {
+			return nil, fmt.Errorf("configure TLS option: %w", err)
+		}
 	}
 
 	transport := &http.Transport{

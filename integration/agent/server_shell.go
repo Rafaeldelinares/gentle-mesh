@@ -35,6 +35,7 @@ type ShellServer struct {
 	db         *sql.DB
 	signer     *signing.BasicSigner
 	agentID    string
+	tlsOpts    []TLSClientOption
 }
 
 // shellWrapper holds shell configuration (mirrors pkg/shell.Config).
@@ -44,7 +45,7 @@ type shellWrapper struct {
 }
 
 // NewShellServer creates a shell-based HTTP server.
-func NewShellServer(agentID, workspace, chainDBPath string, evalTimeout time.Duration) (*ShellServer, error) {
+func NewShellServer(agentID, workspace, chainDBPath string, evalTimeout time.Duration, opts ...TLSClientOption) (*ShellServer, error) {
 	if err := os.MkdirAll(filepath.Dir(chainDBPath), 0755); err != nil {
 		return nil, fmt.Errorf("create chain db dir: %w", err)
 	}
@@ -79,6 +80,7 @@ func NewShellServer(agentID, workspace, chainDBPath string, evalTimeout time.Dur
 		db:         db,
 		signer:     signer,
 		agentID:    agentID,
+		tlsOpts:    opts,
 	}, nil
 }
 
@@ -404,7 +406,7 @@ func (s *ShellServer) handleDispatch(w http.ResponseWriter, r *http.Request) {
 func (s *ShellServer) dispatchOne(ctx context.Context, idx int, env envelope.CognitiveTaskEnvelope, executorURL string) DispatchResult {
 	result := DispatchResult{ExecutorID: env.ExecutorAgentID}
 
-	executorClient, err := NewHTTPClientTLS(executorURL, WithInsecureSkipVerify())
+	executorClient, err := NewHTTPClientTLS(executorURL, s.tlsOpts...)
 	if err != nil {
 		result.Error = fmt.Sprintf("create client: %v", err)
 		return result
