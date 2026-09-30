@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
@@ -36,7 +37,8 @@ type Server struct {
 	signer     *signing.BasicSigner
 
 	// In-memory state for the integration test.
-	leases map[string]*envelope.Lease // leaseID → Lease
+	leasesMu sync.RWMutex
+	leases   map[string]*envelope.Lease // leaseID → Lease
 }
 
 // NewServer creates a new agent server with the given configuration.
@@ -244,6 +246,14 @@ func (s *Server) ChainStore() *receipt.ChainStore {
 	return s.chainStore
 }
 
+// GetLease retrieves a lease by ID with read lock.
+func (s *Server) GetLease(leaseID string) (*envelope.Lease, bool) {
+	s.leasesMu.RLock()
+	defer s.leasesMu.RUnlock()
+	l, ok := s.leases[leaseID]
+	return l, ok
+}
+
 // ─────────────────────────────────────────────────────────────────
 // HTTP handlers
 // ─────────────────────────────────────────────────────────────────
@@ -320,7 +330,9 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 	leaseSig, _ := s.signer.Sign(leaseBytes)
 	lease.ExecutorSignature = leaseSig
 
+	s.leasesMu.Lock()
 	s.leases[lease.LeaseID] = lease
+	s.leasesMu.Unlock()
 
 	log.Printf("[%s] Lease %s: accepted=%v (%d preconditions)",
 		s.config.AgentID, lease.LeaseID, lease.Accepted, len(precondResults))
@@ -340,7 +352,9 @@ func (s *Server) handleCreateLease(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	var req struct{ EnvelopeJSON []byte }
+	var req struct {
+		EnvelopeJSON []byte `json:"envelope_json"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -374,7 +388,9 @@ func (s *Server) handleCreateLease(w http.ResponseWriter, r *http.Request) {
 	leaseSig, _ := s.signer.Sign(leaseBytes)
 	lease.ExecutorSignature = leaseSig
 
+	s.leasesMu.Lock()
 	s.leases[lease.LeaseID] = lease
+	s.leasesMu.Unlock()
 	writeJSON(w, http.StatusOK, lease)
 }
 
