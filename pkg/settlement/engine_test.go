@@ -53,7 +53,8 @@ func validEnvelope() *envelope.CognitiveTaskEnvelope {
 		ProtocolVersion: envelope.CurrentProtocolVersion,
 		MeshID:          "gentle-mesh-dev",
 		EnvelopeID:      "contract-001",
-		EnvelopeHash:    "abc123def456",
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
 			Branch:        "main",
@@ -78,7 +79,8 @@ func failingEnvelope() *envelope.CognitiveTaskEnvelope {
 		ProtocolVersion: envelope.CurrentProtocolVersion,
 		MeshID:          "gentle-mesh-dev",
 		EnvelopeID:      "contract-fail",
-		EnvelopeHash:    "fail123",
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
 			Branch:        "main",
@@ -103,7 +105,8 @@ func errorEnvelope() *envelope.CognitiveTaskEnvelope {
 		ProtocolVersion: envelope.CurrentProtocolVersion,
 		MeshID:          "gentle-mesh-dev",
 		EnvelopeID:      "contract-error",
-		EnvelopeHash:    "err123",
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
 			Branch:        "main",
@@ -233,7 +236,8 @@ func TestSettle_SecondReceipt_ChainLink(t *testing.T) {
 			ProtocolVersion: envelope.CurrentProtocolVersion,
 			MeshID:          "gentle-mesh-dev",
 			EnvelopeID:      "contract-002",
-			EnvelopeHash:    "def456",
+			EmitterAgentID:  "agent-a",
+			ExecutorAgentID: "agent-b",
 			Territory: envelope.Territory{
 				Repository:    "github.com/gentleman-programming/gentle-mesh",
 				Branch:        "main",
@@ -352,7 +356,8 @@ func TestSettle_ExitCodeMismatch(t *testing.T) {
 		ProtocolVersion: envelope.CurrentProtocolVersion,
 		MeshID:          "gentle-mesh-dev",
 		EnvelopeID:      "contract-exit-mismatch",
-		EnvelopeHash:    "hash123",
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
 			Branch:        "main",
@@ -418,7 +423,8 @@ func TestSettle_FileHashMismatch(t *testing.T) {
 		ProtocolVersion: envelope.CurrentProtocolVersion,
 		MeshID:          "gentle-mesh-dev",
 		EnvelopeID:      "contract-hash-mismatch",
-		EnvelopeHash:    "hash456",
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
 			Branch:        "main",
@@ -487,7 +493,8 @@ func TestSettle_AssertionTimeout(t *testing.T) {
 		ProtocolVersion: envelope.CurrentProtocolVersion,
 		MeshID:          "gentle-mesh-dev",
 		EnvelopeID:      "contract-timeout",
-		EnvelopeHash:    "hash789",
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
 			Branch:        "main",
@@ -554,7 +561,8 @@ func TestSettle_RemediationMaxReached(t *testing.T) {
 		ProtocolVersion: envelope.CurrentProtocolVersion,
 		MeshID:          "gentle-mesh-dev",
 		EnvelopeID:      "contract-remed-fail",
-		EnvelopeHash:    "hash-fail",
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
 			Branch:        "main",
@@ -613,7 +621,8 @@ func TestSettle_ErrorRemediation(t *testing.T) {
 		ProtocolVersion: envelope.CurrentProtocolVersion,
 		MeshID:          "gentle-mesh-dev",
 		EnvelopeID:      "contract-error",
-		EnvelopeHash:    "hash-error",
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
 			Branch:        "main",
@@ -672,7 +681,8 @@ func TestSettle_AllAssertionsFail(t *testing.T) {
 		ProtocolVersion: envelope.CurrentProtocolVersion,
 		MeshID:          "gentle-mesh-dev",
 		EnvelopeID:      "contract-multi-fail",
-		EnvelopeHash:    "hash-multi",
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
 			Branch:        "main",
@@ -742,7 +752,8 @@ func TestSettle_MixedResults(t *testing.T) {
 		ProtocolVersion: envelope.CurrentProtocolVersion,
 		MeshID:          "gentle-mesh-dev",
 		EnvelopeID:      "contract-mixed",
-		EnvelopeHash:    "hash-mixed",
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
 			Branch:        "main",
@@ -858,8 +869,36 @@ func TestSettle_EmptyEnvelopeHash_ComputedAutomatically(t *testing.T) {
 	if out.Receipt.EnvelopeHash == "" {
 		t.Error("Receipt.EnvelopeHash should not be empty")
 	}
-	if env.EnvelopeHash == "" {
-		t.Error("Envelope.EnvelopeHash should be populated")
+	expectedHash, _ := envelope.ComputeEnvelopeHash(env)
+	if out.Receipt.EnvelopeHash != expectedHash {
+		t.Errorf("Receipt.EnvelopeHash = %q, want %q", out.Receipt.EnvelopeHash, expectedHash)
+	}
+	if env.EnvelopeHash != "" {
+		t.Error("Envelope.EnvelopeHash should not be mutated by Settle")
+	}
+}
+
+func TestSettle_InputValidation_Adversarial(t *testing.T) {
+	eng, _, cleanup := setupEngine(t)
+	defer cleanup()
+
+	env := validEnvelope()
+
+	// Emitter mismatch
+	if _, err := eng.Settle(context.Background(), SettlementInput{Envelope: env, EmitterAgentID: "agent-other", ExecutorAgentID: "agent-b"}); err == nil {
+		t.Error("Settle(emitter mismatch) should fail")
+	}
+
+	// Executor mismatch
+	if _, err := eng.Settle(context.Background(), SettlementInput{Envelope: env, EmitterAgentID: "agent-a", ExecutorAgentID: "agent-other"}); err == nil {
+		t.Error("Settle(executor mismatch) should fail")
+	}
+
+	// Hash mismatch
+	envForged := *env
+	envForged.EnvelopeHash = "forged-hash"
+	if _, err := eng.Settle(context.Background(), SettlementInput{Envelope: &envForged, EmitterAgentID: "agent-a", ExecutorAgentID: "agent-b"}); err == nil {
+		t.Error("Settle(envelope hash mismatch) should fail")
 	}
 }
 
@@ -1148,7 +1187,8 @@ func TestSettle_FileBasedAssertion(t *testing.T) {
 		ProtocolVersion: envelope.CurrentProtocolVersion,
 		MeshID:          "gentle-mesh-dev",
 		EnvelopeID:      "contract-file",
-		EnvelopeHash:    "file123",
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
 			Branch:        "main",
@@ -1228,7 +1268,8 @@ func TestSettle_GitCleanWorktree(t *testing.T) {
 		ProtocolVersion: envelope.CurrentProtocolVersion,
 		MeshID:          "gentle-mesh-dev",
 		EnvelopeID:      "contract-git",
-		EnvelopeHash:    "git123",
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
 			Branch:        "main",
@@ -1281,7 +1322,8 @@ func TestSettle_GitDirtyWorktree(t *testing.T) {
 		ProtocolVersion: envelope.CurrentProtocolVersion,
 		MeshID:          "gentle-mesh-dev",
 		EnvelopeID:      "contract-git-dirty",
-		EnvelopeHash:    "git456",
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
 			Branch:        "main",

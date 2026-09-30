@@ -79,27 +79,21 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 	if in.EmitterAgentID == "" {
 		return nil, errors.New("emitter agent ID is required")
 	}
-	if in.Envelope.EmitterAgentID == "" {
-		in.Envelope.EmitterAgentID = in.EmitterAgentID
-	}
-	if in.Envelope.ExecutorAgentID == "" {
-		in.Envelope.ExecutorAgentID = in.ExecutorAgentID
-	}
 	if err := envelope.Validate(in.Envelope); err != nil {
 		return nil, fmt.Errorf("envelope validation failed: %w", err)
 	}
-	if in.Envelope.EnvelopeHash == "" {
-		if in.Envelope.EmitterAgentID == "" {
-			in.Envelope.EmitterAgentID = in.EmitterAgentID
-		}
-		if in.Envelope.ExecutorAgentID == "" {
-			in.Envelope.ExecutorAgentID = in.ExecutorAgentID
-		}
-		h, err := envelope.ComputeEnvelopeHash(in.Envelope)
-		if err != nil {
-			return nil, fmt.Errorf("envelope hash required: %w", err)
-		}
-		in.Envelope.EnvelopeHash = h
+	if in.Envelope.EmitterAgentID != in.EmitterAgentID {
+		return nil, fmt.Errorf("emitter agent ID mismatch: input %q != envelope %q", in.EmitterAgentID, in.Envelope.EmitterAgentID)
+	}
+	if in.ExecutorAgentID != "" && in.Envelope.ExecutorAgentID != in.ExecutorAgentID {
+		return nil, fmt.Errorf("executor agent ID mismatch: input %q != envelope %q", in.ExecutorAgentID, in.Envelope.ExecutorAgentID)
+	}
+	expectedHash, err := envelope.ComputeEnvelopeHash(in.Envelope)
+	if err != nil {
+		return nil, fmt.Errorf("compute envelope hash: %w", err)
+	}
+	if in.Envelope.EnvelopeHash != "" && in.Envelope.EnvelopeHash != expectedHash {
+		return nil, fmt.Errorf("envelope hash mismatch: input %q != computed %q", in.Envelope.EnvelopeHash, expectedHash)
 	}
 
 	// 1. prev_hash is computed inside ChainStore.SaveReceipt (under mutex) to ensure
@@ -127,9 +121,9 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 		MeshID:           in.Envelope.MeshID,
 		ReceiptID:        generateReceiptID(),
 		ContractID:       in.Envelope.EnvelopeID,
-		EnvelopeHash:     in.Envelope.EnvelopeHash,
-		EmitterAgentID:   in.EmitterAgentID,
-		ExecutorAgentID:  in.ExecutorAgentID,
+		EnvelopeHash:     expectedHash,
+		EmitterAgentID:   in.Envelope.EmitterAgentID,
+		ExecutorAgentID:  in.Envelope.ExecutorAgentID,
 		Verdict:          verdict,
 		Territory:        eng.convertTerritory(in.Envelope.Territory),
 		Assertions:       eng.convertResults(results),

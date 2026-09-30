@@ -410,3 +410,32 @@ func TestServer_LegacyReceipt_Rejected(t *testing.T) {
 		t.Error("chainStore.UpdateReceipt on legacy receipt should have failed, got nil")
 	}
 }
+
+func TestShellServer_MeshAndAgentValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+	chainDB := filepath.Join(tmpDir, "chain.db")
+
+	if _, err := NewShellServer("", "test-mesh", tmpDir, chainDB, 5*time.Second); err == nil {
+		t.Fatal("expected error on empty agent_id")
+	}
+	if _, err := NewShellServer("agent-1", "", tmpDir, chainDB, 5*time.Second); err == nil {
+		t.Fatal("expected error on empty mesh_id")
+	}
+
+	srv, err := NewShellServer("agent-1", "test-mesh", tmpDir, chainDB, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewShellServer: %v", err)
+	}
+	defer srv.Close()
+
+	assertions := []envelope.Assertion{{ID: "a1", Type: envelope.AssertionCommandExitCode, Params: envelope.AssertionParams{Command: "true"}}}
+	rec, err := srv.executeLocal(context.Background(), assertions)
+	if err != nil || rec.MeshID != "test-mesh" || rec.ProtocolVersion != receipt.CurrentProtocolVersion {
+		t.Fatalf("executeLocal failed or mismatch: rec=%+v, err=%v", rec, err)
+	}
+
+	srvNoMesh := &ShellServer{agentID: "agent-1", shell: &shellWrapper{workspace: tmpDir, evalTimeout: time.Second}}
+	if _, err = srvNoMesh.executeLocal(context.Background(), assertions); err == nil {
+		t.Fatal("expected error for empty meshID on executeLocal")
+	}
+}

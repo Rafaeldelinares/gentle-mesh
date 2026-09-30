@@ -1,5 +1,3 @@
-//go:build testharness
-
 package agent
 
 import (
@@ -8,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -46,7 +45,13 @@ type shellWrapper struct {
 }
 
 // NewShellServer creates a shell-based HTTP server.
-func NewShellServer(agentID, workspace, chainDBPath string, evalTimeout time.Duration, opts ...TLSClientOption) (*ShellServer, error) {
+func NewShellServer(agentID, meshID, workspace, chainDBPath string, evalTimeout time.Duration, opts ...TLSClientOption) (*ShellServer, error) {
+	if agentID == "" {
+		return nil, errors.New("agent_id is required")
+	}
+	if meshID == "" {
+		return nil, errors.New("mesh_id is required")
+	}
 	if err := os.MkdirAll(filepath.Dir(chainDBPath), 0755); err != nil {
 		return nil, fmt.Errorf("create chain db dir: %w", err)
 	}
@@ -81,6 +86,7 @@ func NewShellServer(agentID, workspace, chainDBPath string, evalTimeout time.Dur
 		db:         db,
 		signer:     signer,
 		agentID:    agentID,
+		meshID:     meshID,
 		tlsOpts:    opts,
 	}, nil
 }
@@ -167,14 +173,13 @@ func (s *ShellServer) evalPrecondition(ctx context.Context, p envelope.Precondit
 			result.Message = "tool parameter missing"
 			return result
 		}
-		cmd := exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf("command -v %s", tool))
-		cmd.Dir = s.shell.workspace
-		if err := cmd.Run(); err != nil {
+		path, err := exec.LookPath(tool)
+		if err != nil {
 			result.Passed = false
 			result.Message = fmt.Sprintf("tool not found: %s", tool)
 		} else {
 			result.Passed = true
-			result.Message = fmt.Sprintf("tool available: %s", tool)
+			result.Message = fmt.Sprintf("tool available: %s (%s)", tool, path)
 		}
 
 	case envelope.PreconditionGitCleanWorktree:
@@ -198,7 +203,13 @@ func (s *ShellServer) evalPrecondition(ctx context.Context, p envelope.Precondit
 			result.Message = "command parameter missing"
 			return result
 		}
-		cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
+		parts := strings.Fields(cmdStr)
+		if len(parts) == 0 {
+			result.Passed = false
+			result.Message = "command parameter empty"
+			return result
+		}
+		cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 		cmd.Dir = s.shell.workspace
 		if err := cmd.Run(); err != nil {
 			result.Passed = false
