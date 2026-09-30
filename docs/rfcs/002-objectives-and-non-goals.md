@@ -86,6 +86,7 @@ Lo que RFC-002 **no** pretende resolver. Declararlo evita prometer lo que no se 
 | N6 | **Ser un protocolo de transporte general ni de descubrimiento de agentes.** | Protocolos existentes (p. ej. A2A, MCP); gentle-mesh se sitúa como capa de confianza y liquidación. |
 | N7 | **Reinventar criptografía, delegación o sandboxing.** | Primitivas y modelos estándar (Ed25519, RFC 8785, macaroons/UCAN/biscuit, logs de transparencia, gVisor/nsjail). |
 | N8 | **Compatibilidad con envelopes v1.** | Migración explícita; v2 rechaza v1 (S9). |
+| N9 | **Albergar cognición compartida no gobernada.** La red no es una "mente colectiva": no ofrece canales libres de memoria o coordinación entre agentes. Cualquier estado compartido futuro será un *tablón gobernado* (escritura por capacidad, entradas firmadas y encadenadas, lectura por ámbito, revocación, solo datos tipados). | Extensión futura (RFC-004) bajo este modelo. |
 
 ## 5. Perfil mínimo conforme
 

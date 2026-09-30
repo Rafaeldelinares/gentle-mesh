@@ -43,6 +43,10 @@ Sin embargo, al operar con agentes autónomos en hardware real, despachar tareas
 2. **El costo del fallo tardío (*Falta de Pre-flight Handshake*):** Tareas que queman tokens y tiempo para descubrir a los 3 minutos que faltaba una dependencia en el host remoto.
 3. **La falacia del "Green Checkbox" (*Ausencia de Settlement*):** El agente concluye con exit code 0 y afirma *"Todo implementado con éxito"*, pero en la práctica el código está roto o alucinado.
 
+> **Definición de "Red Cognitiva" y Frontera (No-Objetivo N9):**  
+> Una "red cognitiva" en RFC-002 **no** es una mente colectiva ni un canal desgobernado de memoria compartida entre LLMs (ver no-objetivo **[N9](002-objectives-and-non-goals.md#4-no-objetivos)**).  
+> Es una red donde los mensajes transportan **intención semántica, precondiciones de recursos y aserciones deterministas**, gobernadas por un arnés Go nativo que audita y liquida cada tarea con evidencia criptográfica falsable.
+
 ---
 
 ## 3. La Propuesta: Red Cognitiva de Agentes
