@@ -345,7 +345,8 @@ def subtract(a, b):
 		MaxRemediations: 1,
 		NoSubdelegation: true,
 		CreatedAt:       time.Now().UTC(),
-		Version:         "1.0",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
 	}
 
 	hash, err := envelope.ComputeEnvelopeHash(env)
@@ -597,7 +598,8 @@ func buildEnvelope(emitterID, executorID, id, workspace, filePath, expectedHash 
 		MaxRemediations: 0,
 		NoSubdelegation: true,
 		CreatedAt:       time.Now().UTC(),
-		Version:         "1.0",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
 	}
 	hash, _ := envelope.ComputeEnvelopeHash(env)
 	env.EnvelopeHash = hash

@@ -1,7 +1,18 @@
 package receipt
 
 import (
+	"errors"
+	"strings"
 	"time"
+)
+
+// CurrentProtocolVersion defines the strict protocol version supported (S9).
+const CurrentProtocolVersion = "2"
+
+// Validation errors for receipts.
+var (
+	ErrUnknownProtocolVersion = errors.New("protocol_version: must be strictly \"2\"")
+	ErrInvalidMeshID          = errors.New("mesh_id: must be non-empty")
 )
 
 // ─────────────────────────────────────────────────────────────────
@@ -11,6 +22,12 @@ import (
 // SettlementReceipt is the verifiable record of a completed contract settlement.
 // It is emitted by the executor (B) after evaluating all assertions.
 type SettlementReceipt struct {
+	// ProtocolVersion is the protocol version (S9: must be strictly "2").
+	ProtocolVersion string `json:"protocol_version"`
+
+	// MeshID is the network identifier this receipt belongs to.
+	MeshID string `json:"mesh_id"`
+
 	// ReceiptID uniquely identifies this receipt (UUIDv7).
 	ReceiptID string `json:"receipt_id"`
 
@@ -64,6 +81,35 @@ type SettlementReceipt struct {
 	// EmitterSignature is A's Ed25519 signature over the JCS hash of the
 	// receipt with both signatures set to "".
 	EmitterSignature string `json:"emitter_signature,omitempty"`
+}
+
+// ValidateReceipt checks that a receipt is structurally valid under S9.
+func ValidateReceipt(r *SettlementReceipt) error {
+	if r == nil {
+		return errors.New("receipt: nil")
+	}
+	if r.ProtocolVersion != CurrentProtocolVersion {
+		return ErrUnknownProtocolVersion
+	}
+	if strings.TrimSpace(r.MeshID) == "" {
+		return ErrInvalidMeshID
+	}
+	if r.ReceiptID == "" {
+		return errors.New("receipt_id: must be non-empty")
+	}
+	if r.ContractID == "" {
+		return errors.New("contract_id: must be non-empty")
+	}
+	if r.EnvelopeHash == "" {
+		return errors.New("envelope_hash: must be non-empty")
+	}
+	if r.EmitterAgentID == "" {
+		return errors.New("emitter_agent_id: must be non-empty")
+	}
+	if r.ExecutorAgentID == "" {
+		return errors.New("executor_agent_id: must be non-empty")
+	}
+	return nil
 }
 
 // Territory mirrors the envelope's Territory for full auditability.

@@ -295,6 +295,8 @@ func (s *ShellServer) executeLocal(ctx context.Context, assertions []envelope.As
 
 	signedAt := time.Now().UTC()
 	rec := &receipt.SettlementReceipt{
+		ProtocolVersion:  receipt.CurrentProtocolVersion,
+		MeshID:           "gentle-mesh",
 		ReceiptID:        fmt.Sprintf("rcpt-%d", time.Now().UnixNano()),
 		ExecutorAgentID: s.agentID,
 		Verdict:         verdict,

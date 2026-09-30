@@ -213,6 +213,8 @@ func (s *Shell) Execute(ctx context.Context, assertions []envelope.Assertion) (*
 	// Build receipt.
 	signedAt := time.Now().UTC()
 	rec := &receipt.SettlementReceipt{
+		ProtocolVersion:  receipt.CurrentProtocolVersion,
+		MeshID:           "gentle-mesh",
 		ReceiptID:        fmt.Sprintf("rcpt-%d", time.Now().UnixNano()),
 		ExecutorAgentID: s.config.AgentID,
 		Verdict:         verdict,

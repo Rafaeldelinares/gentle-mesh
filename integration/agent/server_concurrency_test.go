@@ -75,7 +75,8 @@ func TestServer_ConcurrentLeaseWrites(t *testing.T) {
 		TimeoutSeconds:  30,
 		MaxRemediations: 0,
 		CreatedAt:       time.Now().UTC(),
-		Version:         "1.0",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
 	}
 
 	client := ts.Client()

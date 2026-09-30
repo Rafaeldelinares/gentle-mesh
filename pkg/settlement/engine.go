@@ -101,6 +101,8 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 	// 6. Build receipt. Leave PreviousReceiptHash empty; SaveReceipt computes it
 	// atomically under mutex to ensure correct chain linkage under concurrent load.
 	r := &receipt.SettlementReceipt{
+		ProtocolVersion:  receipt.CurrentProtocolVersion,
+		MeshID:           in.Envelope.MeshID,
 		ReceiptID:        generateReceiptID(),
 		ContractID:       in.Envelope.EnvelopeID,
 		EnvelopeHash:     in.Envelope.EnvelopeHash,

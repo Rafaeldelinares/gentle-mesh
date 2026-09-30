@@ -4,6 +4,9 @@ import (
 	"time"
 )
 
+// CurrentProtocolVersion defines the strict protocol version supported (S9).
+const CurrentProtocolVersion = "2"
+
 // ─────────────────────────────────────────────────────────────────
 // Identity
 // ─────────────────────────────────────────────────────────────────
@@ -12,6 +15,12 @@ import (
 // All fields are set before hashing and signing. The envelope_hash field
 // is populated by the emitter after computing the JCS canonical hash.
 type CognitiveTaskEnvelope struct {
+	// ProtocolVersion is the protocol version (S9: must be strictly "2").
+	ProtocolVersion string `json:"protocol_version"`
+
+	// MeshID is the network identifier this envelope belongs to.
+	MeshID string `json:"mesh_id"`
+
 	// EnvelopeID is the unique identifier for this contract (UUIDv7).
 	EnvelopeID string `json:"envelope_id"`
 
@@ -57,9 +66,6 @@ type CognitiveTaskEnvelope struct {
 	// (with both signature fields set to ""), computed by the emitter.
 	// This hash appears in the final SettlementReceipt for correlation.
 	EnvelopeHash string `json:"envelope_hash,omitempty"`
-
-	// Version is the protocol version (currently "1.0").
-	Version string `json:"version"`
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -246,6 +252,12 @@ func (s ContractStatus) String() string { return string(s) }
 // Lease is the executor's response to a pre-flight handshake.
 // It commits the executor to the contract within the timeout window.
 type Lease struct {
+	// ProtocolVersion is the protocol version (S9: must be strictly "2").
+	ProtocolVersion string `json:"protocol_version"`
+
+	// MeshID is the network identifier this lease is bound to.
+	MeshID string `json:"mesh_id"`
+
 	// LeaseID uniquely identifies this lease.
 	LeaseID string `json:"lease_id"`
 

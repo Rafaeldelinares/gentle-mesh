@@ -246,7 +246,8 @@ func fanDispatchLeg(ctx context.Context, aClient, executorClient *agent.HTTPClie
 		MaxRemediations: 0,
 		NoSubdelegation: true,
 		CreatedAt:       time.Now().UTC(),
-		Version:         "1.0",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
 	}
 
 	hash, err := envelope.ComputeEnvelopeHash(env)
@@ -503,7 +504,8 @@ func TestWU13_DispatchEndpointFanOut(t *testing.T) {
 			TimeoutSeconds:  60,
 			MaxRemediations: 0,
 			CreatedAt:       time.Now().UTC(),
-			Version:         "1.0",
+			ProtocolVersion: envelope.CurrentProtocolVersion,
+			MeshID:          "gentle-mesh-dev",
 		}
 		hash, _ := envelope.ComputeEnvelopeHash(env)
 		env.EnvelopeHash = hash
@@ -664,7 +666,8 @@ func TestWU13_PreFlightRejectsDirtyWorktree(t *testing.T) {
 		TimeoutSeconds:  60,
 		MaxRemediations: 0,
 		CreatedAt:       time.Now().UTC(),
-		Version:         "1.0",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
 	}
 
 	hash, _ := envelope.ComputeEnvelopeHash(env)
@@ -772,7 +775,8 @@ func TestWU13_ChainStressTenReceipts(t *testing.T) {
 					TimeoutSeconds:  60,
 					MaxRemediations: 0,
 					CreatedAt:       time.Now().UTC(),
-					Version:         "1.0",
+					ProtocolVersion: envelope.CurrentProtocolVersion,
+					MeshID:          "gentle-mesh-dev",
 				}
 
 				hash, _ := envelope.ComputeEnvelopeHash(env)
@@ -925,7 +929,8 @@ func TestWU14_AcceptReceiptE2E(t *testing.T) {
 		MaxRemediations: 0,
 		NoSubdelegation: true,
 		CreatedAt:       time.Now().UTC(),
-		Version:         "1.0",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
 	}
 
 	envHash, err := envelope.ComputeEnvelopeHash(env)
@@ -1592,7 +1597,8 @@ func TestWU16_DisputeReceiptE2E(t *testing.T) {
 		MaxRemediations: 0,
 		NoSubdelegation: true,
 		CreatedAt:       time.Now().UTC(),
-		Version:         "1.0",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
 	}
 
 	envHash, err := envelope.ComputeEnvelopeHash(env)
@@ -1925,7 +1931,8 @@ func TestWU17_VerifyChain_WrongExecutorKey(t *testing.T) {
 		MaxRemediations: 0,
 		NoSubdelegation: true,
 		CreatedAt:       time.Now().UTC(),
-		Version:         "1.0",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
 	}
 
 	envHash, err := envelope.ComputeEnvelopeHash(env)

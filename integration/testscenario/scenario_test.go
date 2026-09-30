@@ -123,7 +123,8 @@ func TestScenario_FullFlow(t *testing.T) {
 		MaxRemediations: 1,
 		NoSubdelegation: true,
 		CreatedAt:       time.Now().UTC(),
-		Version:         "1.0",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
 	}
 
 	hash, err := envelope.ComputeEnvelopeHash(env)
@@ -289,7 +290,8 @@ class TestNewFunctions:
 		MaxRemediations: 0,
 		NoSubdelegation: true,
 		CreatedAt:       time.Now().UTC(),
-		Version:         "1.0",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
 	}
 	hash2, _ := envelope.ComputeEnvelopeHash(env2)
 	env2.EnvelopeHash = hash2

@@ -14,7 +14,9 @@ import (
 
 // Validation errors.
 var (
-	ErrInvalidEnvelopeID    = errors.New("envelope_id: must be a non-empty UUID")
+	ErrUnknownProtocolVersion = errors.New("protocol_version: must be strictly \"2\"")
+	ErrInvalidMeshID          = errors.New("mesh_id: must be non-empty")
+	ErrInvalidEnvelopeID      = errors.New("envelope_id: must be a non-empty UUID")
 	ErrInvalidEmitter       = errors.New("emitter_agent_id: must be non-empty")
 	ErrInvalidExecutor      = errors.New("executor_agent_id: must be non-empty")
 	ErrSameAgent            = errors.New("emitter and executor must differ")
@@ -31,6 +33,16 @@ var (
 func Validate(env *CognitiveTaskEnvelope) error {
 	if env == nil {
 		return errors.New("envelope: nil")
+	}
+
+	// Protocol version (S9: must be strictly "2")
+	if env.ProtocolVersion != CurrentProtocolVersion {
+		return ErrUnknownProtocolVersion
+	}
+
+	// MeshID (S9: must be non-empty)
+	if strings.TrimSpace(env.MeshID) == "" {
+		return ErrInvalidMeshID
 	}
 
 	// ID
@@ -77,6 +89,29 @@ func Validate(env *CognitiveTaskEnvelope) error {
 		return ErrNegativeRemediations
 	}
 
+	return nil
+}
+
+// ValidateLease checks that a lease is structurally and semantically valid under S9.
+func ValidateLease(l *Lease) error {
+	if l == nil {
+		return errors.New("lease: nil")
+	}
+	if l.ProtocolVersion != CurrentProtocolVersion {
+		return ErrUnknownProtocolVersion
+	}
+	if strings.TrimSpace(l.MeshID) == "" {
+		return ErrInvalidMeshID
+	}
+	if l.LeaseID == "" {
+		return errors.New("lease_id: must be non-empty")
+	}
+	if l.EnvelopeID == "" {
+		return errors.New("envelope_id: must be non-empty")
+	}
+	if l.ExecutorAgentID == "" {
+		return errors.New("executor_agent_id: must be non-empty")
+	}
 	return nil
 }
 
@@ -249,6 +284,8 @@ func ComputeEnvelopeHash(env *CognitiveTaskEnvelope) (string, error) {
 	repo := strings.TrimSuffix(strings.TrimSuffix(env.Territory.Repository, "/"), ".git")
 
 	signable := &CognitiveTaskEnvelope{
+		ProtocolVersion:  env.ProtocolVersion,
+		MeshID:           env.MeshID,
 		EnvelopeID:       env.EnvelopeID,
 		EmitterAgentID:   env.EmitterAgentID,
 		ExecutorAgentID:  env.ExecutorAgentID,
@@ -264,7 +301,6 @@ func ComputeEnvelopeHash(env *CognitiveTaskEnvelope) (string, error) {
 		NoSubdelegation: env.NoSubdelegation,
 		CreatedAt:       env.CreatedAt,
 		// Signature fields intentionally omitted (defaults to "").
-		Version: env.Version,
 	}
 
 	// Marshal and canonicalize.
