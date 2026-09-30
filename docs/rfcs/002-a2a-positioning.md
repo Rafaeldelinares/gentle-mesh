@@ -16,10 +16,10 @@
 | **A2A Issue #1575 (APS)** | `https://github.com/a2aproject/A2A/issues/1575` | 2026-09-30 | **Accesible** (Agent Passport System v5.0.3, delegación Ed25519, 3 firmas). |
 | **A2A Issue #2236 (Artifact Receipts)** | `https://github.com/a2aproject/A2A/issues/2236` | 2026-09-30 | **Accesible** (Cerrada como `NOT_PLANNED` el 2026-09-15 por Math1987). |
 | **AP2 Specification** | `https://ap2-protocol.org/` | 2026-09-30 | **Accesible** (Agent Payments Protocol v0.2 / FIDO Alliance, mandatos VDC). |
-| **A2A Issue #2150 (signed-receipts/v1)** | `https://github.com/a2aproject/A2A/issues/2150` | 2026-09-30 | **HTTP 404** (No accesible / eliminado o renombrado en upstream). |
-| **CSOAI a2a-signed-receipts** | `https://github.com/CSOAI-ORG/a2a-signed-receipts` | 2026-09-30 | **HTTP 404** (No accesible / repositorio privado o inexistente). |
+| **A2A Issue #2150 (signed-receipts/v1)** | `https://github.com/a2aproject/A2A/issues/2150` | 2026-09-30 | **NO VERIFICADA (404 a fecha 2026-09-30)** (Inaccesible en upstream). |
+| **CSOAI a2a-signed-receipts** | `https://github.com/CSOAI-ORG/a2a-signed-receipts` | 2026-09-30 | **NO VERIFICADA (404 a fecha 2026-09-30)** (Inaccesible en upstream). |
 
-*Nota metodológica sobre fuentes no accesibles:* Las referencias a `a2aproject/A2A#2150` y `CSOAI-ORG/a2a-signed-receipts` devolvieron HTTP 404. La investigación cruzada identificó que CSOAI Ltd publica `inspect-signed-receipt` (recibos Ed25519 sobre evaluaciones de Inspect AI con `did:web`) y que el repositorio A2A debatió recibos en PR #1915 (`scoped authorization receipt`), Issue #1769 e Issue #2236. No se asumen datos no verificados del repositorio 404.
+*Nota metodológica sobre fuentes no accesibles:* Las referencias a `a2aproject/A2A#2150` y `CSOAI-ORG/a2a-signed-receipts` arrojaron HTTP 404. La investigación cruzada identificó que CSOAI Ltd publica el paquete `inspect-signed-receipt` (recibos Ed25519 sobre evaluaciones de Inspect AI con `did:web`) y que en A2A se debatieron recibos en el PR #1915 (`scoped authorization receipt`), Issue #1769 e Issue #2236. No se asumen datos no verificados de las fuentes con error 404.
 
 ---
 
@@ -28,12 +28,12 @@
 ### a. Mapa de Capas: Qué cubre A2A y qué cubre exclusivamente Gentle Mesh
 
 **Hipótesis:** Gentle Mesh cubre de forma exclusiva el pre-flight handshake con lease, las aserciones de liquidación deterministas, el ciclo de aceptación/disputa bilateral y la cadena criptográfica inmutable.  
-**Veredicto:** **HIPÓTESIS CONFIRMADA AL 100%.**
+**Veredicto:** **No se ha encontrado, en las fuentes consultadas, nada que cubra** el pre-flight territorial con lease, las aserciones de liquidación deterministas, la aceptación/disputa bilateral ni la cadena criptográfica de recibos.
 
-- **A2A Core (v1.0.0):** Resuelve el transporte interoperable, descubrimiento dinámico (`AgentCard`), catálogo de habilidades (`AgentSkill`), streaming reactivo (SSE) y mensajería en turnos (`Message`, `Part`, `Artifact`). Opera bajo el principio explícito de **"Opaque Execution"** (Sección 1.2): los agentes no comparten estado interno, razonamiento ni herramientas. El protocolo confía ciegamente en la finalización declarada por el agente.
+- **A2A Core (v1.0.0):** Resuelve el transporte interoperable, descubrimiento dinámico (`AgentCard`), catálogo de habilidades (`AgentSkill`), streaming reactivo (SSE) y mensajería en turnos (`Message`, `Part`, `Artifact`). Opera bajo el principio explícito de **"Opaque Execution"** (Sección 1.2): los agentes no comparten estado interno, razonamiento ni herramientas. El protocolo confía en la finalización declarada por el agente.
 - **Propuestas A2A analizadas:**
   - *APS (#1575):* Identidad Ed25519, atenuación de permisos (narrowing) y atestación de valores (*Values Floor*).
-  - *Artifact Receipts (#2236 - rechazada):* Acuse de entrega/recepción de artefactos ("yo envié / yo recibí"), admitiendo explícitamente que no valida la calidad ni el cumplimiento.
+  - *Artifact Receipts (#2236 - cerrada NOT_PLANNED):* Acuse de entrega/recepción de artefactos ("yo envié / yo recibí"), admitiendo explícitamente que no valida la calidad ni el cumplimiento.
   - *AP2:* Mandatos de pago e intención de compra (VDCs) para transacciones comerciales.
 - **Lo que SOLO cubre Gentle Mesh:**
   1. **Pre-flight Handshake territorial:** Verificación síncrona local de precondiciones (`repo:branch`, herramientas de sistema, VRAM, estado de árbol de trabajo) *antes* de aceptar la tarea y gastar tokens.
@@ -51,7 +51,7 @@
 │  - Ed25519 Delegation Chains        - Scoped Capabilities   │
 ├─────────────────────────────────────────────────────────────┤
 │ Capa 2: Coordinación y Tareas (A2A Protocol v1.0.0)         │
-│  - Task Lifecycle (SUBMITTED, WORKING, COMPLETED)           │
+│  - Task Lifecycle (SUBMITTED, WORKING, COMPLETED, etc.)     │
 │  - SSE Streaming, Artifacts, AgentCard Discovery            │
 ├─────────────────────────────────────────────────────────────┤
 │ Capa 1: Transporte y Red (mTLS, HTTP/2, WebSockets, SSE)    │
@@ -62,23 +62,12 @@
 
 ### b. Compatibilidad con Recibos Firmados y Modelo de Metadatos
 
-La especificación A2A prohíbe alterar las estructuras base de Protobuf (`Task`, `TaskStatus`, `Artifact`), pero habilita explícitamente la extensibilidad mediante mapas `metadata` (`map<string, string>` / JSON object).
+Dado que la propuesta upstream `a2aproject/A2A#2150` no estuvo accesible (HTTP 404 a fecha 2026-09-30), la compatibilidad exacta campo a campo con `signed-receipts/v1` queda clasificada como **HIPÓTESIS PENDIENTE DE VERIFICAR**.
 
-`SettlementReceipt` de Gentle Mesh es **100% integrable como superconjunto compatible** embebido en `Task.metadata`:
-
-| Campo Base / Extensión | Semántica en A2A (`Task.metadata`) | Semántica en Gentle Mesh (`SettlementReceipt`) | Compatibilidad |
-|---|---|---|---|
-| `receipt_id` | Identificador único del recibo | `ReceiptID` (UUIDv7) | Idéntico |
-| `task_id` | `Task.id` | `TaskID` (UUID o URI canónico) | Mapeo 1:1 |
-| `issued_at` | Timestamp ISO 8601 | `Timestamp` (Unix epoch UTC) | Conversión trivial |
-| `executor_id` | DID o clave pública del emisor | `ExecutorID` (Node ID / Key Fingerprint) | Compatible |
-| `outcome` | `TaskStatus.state` (`COMPLETED`/`FAILED`) | `SettlementStatus` (`SETTLED_CLEAN`, etc.) | Superconjunto |
-| `canonical_jcs` | JSON Canónico (RFC 8785) | `pkg/jcs` (RFC 8785 estricto) | Idéntico |
-| `signature` | Firma Ed25519 base64 | Firma Ed25519 base64 | Idéntico |
-| **`seq` + `prev_receipt_hash`** | *No contemplado en A2A* | Cadena criptográfica secuencial monótona | **Adición Gentle Mesh** |
-| **`assertions_evaluated`** | *No contemplado en A2A* | Matriz de aserciones con veredicto booleano | **Adición Gentle Mesh** |
-| **`envelope_hash`** | *No contemplado en A2A* | Hash SHA-256 JCS del contrato original | **Adición Gentle Mesh** |
-| **`emitter_signature`** | *No contemplado en A2A* | Contrafirma bilateral de cierre | **Adición Gentle Mesh** |
+**Lo que sí está comprobado técnicamente:**
+1. Ambos modelos convergen en los mismos fundamentos criptográficos: serialización canónica **JCS (RFC 8785)** y firmas asimétricas **Ed25519**.
+2. La especificación A2A prohíbe alterar los esquemas Protobuf centrales (`Task`, `TaskStatus`, `Artifact`), pero habilita de forma normativa el transporte de datos estructurados arbitrarios mediante mapas `metadata` (`map<string, string>` / JSON object).
+3. `SettlementReceipt` puede viajar íntegramente dentro de `Task.metadata["settlement_receipt"]`, preservando compatibilidad absoluta con clientes A2A estándar que desconozcan la extensión, al tiempo que clientes compatibles con Gentle Mesh pueden verificar las aserciones, la firma del ejecutor, la contrafirma del emisor y el enlace a la cadena criptográfica (`prev_receipt_hash`, `seq`).
 
 ---
 
@@ -86,9 +75,12 @@ La especificación A2A prohíbe alterar las estructuras base de Protobuf (`Task`
 
 - **Ecosistema A2A:** Emplea DIDs (`did:web` para servidores con dominio público y `.well-known/did.json`; `did:key` para identidades efímeras autónomas).
 - **Gentle Mesh Actual:** Emplea mTLS Zero-Trust con CA pinning en el transporte (`pkg/tlsutil`, S1) y un almacén de claves local (`pkg/keystore`) que mapea `node_id` a pares Ed25519 locales con permisos de archivo 0600.
-- **Conclusión y Coexistencia:**
-  1. *Separación de capas:* mTLS y CA pinning aseguran la capa de transporte (Capa 1). La firma del recibo asegura la capa de aplicación (Capa 4).
-  2. *Resolución de Identidad:* Se recomienda **mantener el Keystore propio como autoridad primaria local** (cero dependencias de red o DNS externos, óptimo para entornos aislados/air-gapped) y exponer opcionalmente un resolver `did:web` / `did:key` como interfaz de compatibilidad cuando un nodo de Gentle Mesh deba autenticarse ante un cliente A2A estándar.
+- **Resolución de la tensión entre Identidad Local y DIDs (c vs d):**  
+  Existe una tensión aparente entre recomendar el Keystore local propio (sin dependencias de red ni DNS externos) y adoptar UCAN o APS (que operan con DIDs).  
+  **Solución de encaje:** Los nodos de Gentle Mesh adoptan **`did:key` derivado determinísticamente de su clave pública Ed25519** almacenada en el Keystore local (`did:key:z6M...`).
+  - `did:key` es un método DID completamente autónomo y estático: la clave pública está codificada en el propio identificador (multicodec + base58btc).
+  - No requiere ninguna resolución por red, consultas HTTP ni infraestructura DNS (`did:web`).
+  - Permite que el Keystore local siga siendo la autoridad primaria autónoma (operable en entornos aislados o air-gapped) manteniendo al mismo tiempo compatibilidad nativa con tokens de delegación UCAN y firmas del ecosistema A2A.
 
 ---
 
@@ -100,9 +92,9 @@ La especificación A2A prohíbe alterar las estructuras base de Protobuf (`Task`
 | **Macaroons** | Caveats rápidos, compactos. | Criptografía simétrica (HMAC); requiere compartir secreto del emisor. Inadecuado para federación abierta. | **Descartado** |
 | **Biscuit** | Atenuación criptográfica asimétrica basada en Datalog. Gran expresividad lógica. | Requiere incorporar un runtime de Datalog en Go; complejidad operativa alta. | **Alternativa futura** |
 | **Agent Passport (APS #1575)** | Específico para agentes AI; soporte de *Values Floor* y atenuación de alcance; Ed25519 nativo. | Implementación monolítica en TypeScript (v5.0.3); la revocación en cascada original fue rediseñada a listas provistas por el caller. | **Referencia conceptual** |
-| **UCAN (RFC 021)** | Estándar formalizado IETF/W3C; JWT asimétrico Ed25519; DIDs; atenuación matemática pura; librerías activas en Go. | Carga útil JWT más verbosa. | **RECOMENDADO para Fase 2** |
+| **UCAN (RFC 021)** | Estándar formalizado IETF/W3C; JWT asimétrico Ed25519; DIDs (`did:key`); atenuación matemática pura; librerías activas en Go. | Carga útil JWT más verbosa. | **RECOMENDADO para Fase 2** |
 
-*Recomendación:* Adoptar el estándar **UCAN** o la semántica de atenuación de **APS** sobre el canonicalizador JCS RFC 8785 de Gentle Mesh, sin reinventar esquemas de delegación ad-hoc.
+*Recomendación:* Basar la delegación en **UCAN** o en la semántica de atenuación de **APS**, descartando inventar criptografía ad-hoc.
 
 ---
 
@@ -121,25 +113,31 @@ A2A prohíbe añadir valores a su enum `TaskState` (`TASK_STATE_*`). En consecue
 | `SETTLED_CLEAN` | `TASK_STATE_COMPLETED` | `SettlementReceipt` adjunto en `metadata` |
 | `SETTLEMENT_FAILED` | `TASK_STATE_FAILED` | `SettlementReceipt` (con fallos) en `metadata` |
 | `DISPUTED` | `TASK_STATE_FAILED` | `dispute_record` en `metadata` |
-| `ABORTED` / `SETTLEMENT_TIMEOUT` | `TASK_STATE_CANCELED` | `reason: "lease_expired"` |
+| `SETTLEMENT_TIMEOUT` | `TASK_STATE_FAILED` | `reason: "timeout"`, `error: "lease_expired"` |
+| `ABORTED` | `TASK_STATE_CANCELED` | `reason: "canceled_by_client"` |
+
+*Nota sobre `SETTLEMENT_TIMEOUT`:* En A2A, `TASK_STATE_CANCELED` está reservado exclusivamente para cancelaciones explícitas; cuando una tarea expira por vencimiento de lease o falta de latidos, la terminación corresponde normativamente a `TASK_STATE_FAILED` con motivo `timeout`.
 
 ---
 
 ### f. Tipo de Extensión A2A y URI Canónica
 
-De acuerdo a la guía de extensiones de A2A:
-1. **Tipo de Extensión:** **Profile Extension** (Perfil de Protocolo).  
-   *Justificación:* No requiere modificar los esquemas Protobuf centrales. Establece un perfil estricto sobre `SendMessage`, `GetTask` y los eventos SSE de `TaskStatusUpdateEvent`, exigiendo la inclusión del `CognitiveTaskEnvelope` en el envío y devolviendo el `SettlementReceipt` en la finalización. Opcionalmente actúa como **Method Extension** al exponer endpoints RPC auxiliares (`tasks/settle`, `tasks/dispute`).
-2. **URI Canónica:**
-   - Dominio independiente: `https://gentleman-programming.io/a2a/ext/settlement/v1`
-   - Si se propone al registro oficial de A2A: `https://a2a-protocol.org/extensions/settlement/v1`
+1. **Tipo de Extensión:** **Profile Extension** (Perfil de Protocolo). Establece un perfil estricto sobre `SendMessage`, `GetTask` y eventos SSE de `TaskStatusUpdateEvent`, exigiendo el sobre cognitivo y devolviendo el `SettlementReceipt` en la finalización. Opcionalmente actúa como **Method Extension** al exponer endpoints RPC auxiliares (`tasks/settle`, `tasks/dispute`).
+2. **Propuesta de URIs:**
+   - **URI canónica primaria propuesta:**  
+     `https://github.com/Rafaeldelinares/gentle-mesh/tree/main/docs/rfcs/extensions/settlement/v1`  
+     (Espacio de nombres bajo control del repositorio).
+   - **Opción comunitaria sujeta a aprobación:**  
+     `https://gentleman-programming.io/a2a/ext/settlement/v1`  
+     (Sujeta a la previa autorización explícita de Alan Buscaglia como titular del dominio).
+   - **Propuesta oficial upstream (futuro):**  
+     `https://a2a-protocol.org/extensions/settlement/v1`
 
 ---
 
-### g. Propuesta de Extensión de Liquidación para la Comunidad A2A
+### g. Oportunidad: Propuesta de Extensión de Liquidación para la Comunidad A2A
 
 Existe una oportunidad estratégica clara para liderar la especificación en la comunidad de A2A:
-
 - **Nombre de la propuesta:** *A2A Task Settlement & Verifiable Receipts Extension* (`ext-settlement`).
 - **Problema en A2A:** El protocolo asume que si un agente remoto responde `TASK_STATE_COMPLETED`, el trabajo está hecho satisfactoriamente. Esto introduce riesgo de alucinación, fallos no detectados o salidas falsas positivas en flujos multi-agente desatendidos.
 - **Solución propuesta:**
@@ -163,27 +161,34 @@ Existe una oportunidad estratégica clara para liderar la especificación en la 
 
 ### i. Ciclo de Vida de Tareas: Resolución de Issues #7 y #8 mediante Semántica A2A
 
-El análisis de A2A v1.0.0 arroja respuestas directas a los problemas detectados en los Issues #7 y #8 de Gentle Mesh:
+El análisis de A2A v1.0.0 aporta soluciones estructurales directas a los problemas detectados en los Issues #7 y #8:
 
 1. **Resolución del Issue #7 (Timeout total mata tareas largas en RFC-001):**
-   - *Modelo A2A:* A2A maneja tareas desacoplando el tiempo de transporte del ciclo de vida de la tarea. La conexión SSE puede interrumpirse y el cliente puede consultar el estado vía `GetTask` o reconectarse mediante `SubscribeToTask(taskId)`.
+   - *Modelo A2A:* Desacopla el transporte HTTP/SSE del ciclo de vida de la tarea. La conexión de red puede reiniciarse mientras la tarea continúa en ejecución en background (`TASK_STATE_WORKING`), permitiendo al cliente reconectarse vía `SubscribeToTask(taskId)` o consultar `GetTask(taskId)`.
    - *Adopción:* Sustituir el timeout total monolítico de 300s por los tres relojes propuestos en el Issue #7:
      - `heartbeat_timeout`: latido de vida del ejecutor.
      - `stall_timeout`: tiempo máximo sin eventos de progreso o checkpoint.
      - `max_duration`: presupuesto total máximo de la tarea.
-   - Si la conexión se cae, el runner continúa en background (`TASK_STATE_WORKING`) y el cliente se reconecta con un nuevo contexto de streaming sin reiniciar la tarea.
 
 2. **Resolución del Issue #8 (Lease renovable y presupuesto decreciente en RFC-002 / R2):**
-   - *Modelo A2A:* La emisión periódica de `TaskStatusUpdateEvent` o `TaskArtifactUpdateEvent` permite renovar el lease de ejecución de forma activa.
-   - *Adopción:* Cada latido de progreso firmado por el ejecutor renueva el lease temporal hasta el límite fijado por `max_duration`.
-   - Si una tarea requiere autorización de gasto adicional o decisión humana, pasa al estado interrumpido `TASK_STATE_INPUT_REQUIRED` (o `TASK_STATE_AUTH_REQUIRED`), pausando el consumo de presupuesto hasta recibir el mensaje de continuación.
+   - *Modelo A2A:* Emisión periódica de eventos de progreso que renuevan el lease de ejecución de forma activa.
+   - *Adopción e Invariante de Seguridad:* Cada latido de progreso firmado por el ejecutor renueva el lease temporal. Si una tarea requiere autorización de gasto o decisión humana, pasa al estado interrumpido `TASK_STATE_INPUT_REQUIRED` (o `TASK_STATE_AUTH_REQUIRED`).
+   - **Invariante crítica contra estiramiento de presupuesto:** El estado `TASK_STATE_INPUT_REQUIRED` puede pausar el consumo del presupuesto de cómputo del runner, **pero el tope de tiempo total (`max_duration`) sigue corriendo SIEMPRE en tiempo real (wall-clock)**. Este invariante impide de forma determinista que un agente malicioso o desalineado pueda eludir el vencimiento de la tarea entrando en estados de espera en bucle.
 
 ---
 
-## 3. Conclusiones y Próximos Pasos
+## 3. Conclusiones
 
 1. Gentle Mesh no compite con A2A: se posiciona como su **motor de liquidación determinista indispensable**.
 2. La arquitectura actual (`pkg/jcs`, `pkg/receipt`, `pkg/settlement`) es 100% compatible con la estrategia de extensiones de A2A.
 3. El ciclo de vida de tareas de A2A v1.0.0 aporta la base conceptual idónea para cerrar limpiamente los Issues #7 y #8.
 
-*Fin del documento — Detenido para revisión humana antes de cualquier implementación de código.*
+---
+
+## 4. Decisión (humano, 2026-09-30)
+
+- gentle-mesh funciona SOBRE A2A.
+- No se introduce el SDK de A2A (gRPC/Protobuf) en el núcleo hasta el puente (fin de Fase 2 o Fase 3).
+- Desde YA, los tipos nuevos se diseñan para mapear 1:1 con A2A: estados de tarea de A2A (WORKING, INPUT_REQUIRED, COMPLETED, FAILED, CANCELED, REJECTED) y el detalle de gentle-mesh en metadata (substate, recibo).
+- Los issues #7 y #8 se diseñan con el ciclo de vida de A2A.
+- La delegación de la Fase 2 se basará en UCAN o en la semántica de APS, no en un diseño propio.
