@@ -329,3 +329,61 @@ func TestCertStore_MigrationDropsKeyPEMFromLegacySchema(t *testing.T) {
 	}
 }
 
+func TestCertStore_MigrationFailureReturnsError(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	// 1. Create legacy table with key_pem column
+	legacyDDL := `CREATE TABLE node_certs (
+		node_id TEXT PRIMARY KEY,
+		common_name TEXT NOT NULL,
+		serial TEXT UNIQUE NOT NULL,
+		cert_pem TEXT NOT NULL,
+		key_pem TEXT,
+		issued_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL,
+		revoked INTEGER NOT NULL DEFAULT 0,
+		revoked_at INTEGER
+	);`
+	if _, err := db.Exec(legacyDDL); err != nil {
+		t.Fatalf("failed to create legacy schema: %v", err)
+	}
+
+	// 2. Add an index referencing key_pem so `ALTER TABLE node_certs DROP COLUMN key_pem;` fails in SQLite
+	if _, err := db.Exec("CREATE INDEX idx_legacy_key ON node_certs(key_pem);"); err != nil {
+		t.Fatalf("failed to create index on key_pem: %v", err)
+	}
+
+	// 3. Add a trigger blocking UPDATE of key_pem so `UPDATE node_certs SET key_pem = NULL;` also fails
+	triggerDDL := `CREATE TRIGGER trg_block_update BEFORE UPDATE OF key_pem ON node_certs
+	BEGIN
+		SELECT RAISE(FAIL, 'update forbidden');
+	END;`
+	if _, err := db.Exec(triggerDDL); err != nil {
+		t.Fatalf("failed to create trigger on key_pem: %v", err)
+	}
+
+	// 4. Insert a record so the update trigger executes on row update
+	_, err = db.Exec(`INSERT INTO node_certs (
+		node_id, common_name, serial, cert_pem, key_pem, issued_at, expires_at, revoked
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"node-1", "node-1", "serial-1", "cert", "key", 0, 0, 0,
+	)
+	if err != nil {
+		t.Fatalf("failed to insert legacy record: %v", err)
+	}
+
+	// 5. InitCertSchema must return an error when both DROP COLUMN and fallback UPDATE fail
+	err = InitCertSchema(db)
+	if err == nil {
+		t.Fatal("expected InitCertSchema to return error when both DROP COLUMN and fallback UPDATE fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to drop or sanitize") {
+		t.Errorf("expected error message mentioning migration failure, got: %v", err)
+	}
+}
+
+

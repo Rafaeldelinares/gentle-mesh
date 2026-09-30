@@ -78,25 +78,36 @@ func InitCertSchema(db *sql.DB) error {
 
 	// Migration: ensure legacy schema does not retain key_pem
 	rows, err := db.Query("PRAGMA table_info(node_certs);")
-	if err == nil {
-		hasLegacyKey := false
-		for rows.Next() {
-			var cid int
-			var name, ctype string
-			var notnull, pk int
-			var dfltValue sql.NullString
-			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err == nil {
-				if name == "key_pem" {
-					hasLegacyKey = true
-					break
-				}
-			}
-		}
-		rows.Close()
+	if err != nil {
+		return fmt.Errorf("failed to query table info for node_certs: %w", err)
+	}
 
-		if hasLegacyKey {
-			if _, err := db.Exec("ALTER TABLE node_certs DROP COLUMN key_pem;"); err != nil {
-				_, _ = db.Exec("UPDATE node_certs SET key_pem = NULL;")
+	hasLegacyKey := false
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dfltValue sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("failed to scan table info for node_certs: %w", err)
+		}
+		if name == "key_pem" {
+			hasLegacyKey = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("failed during table info iteration for node_certs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("failed to close table info rows: %w", err)
+	}
+
+	if hasLegacyKey {
+		if _, dropErr := db.Exec("ALTER TABLE node_certs DROP COLUMN key_pem;"); dropErr != nil {
+			if _, updateErr := db.Exec("UPDATE node_certs SET key_pem = NULL;"); updateErr != nil {
+				return fmt.Errorf("failed to drop or sanitize legacy private key column: drop failed (%v), update failed (%w)", dropErr, updateErr)
 			}
 		}
 	}
