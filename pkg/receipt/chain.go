@@ -207,24 +207,12 @@ func (cs *ChainStore) GetReceipt(ctx context.Context, receiptID string) (*Settle
 }
 
 // GetChain returns all receipts for an agent pair in chronological order.
-// If emitterID is empty, it returns all receipts for the given executorID (and vice-versa).
 func (cs *ChainStore) GetChain(ctx context.Context, emitterID, executorID string) ([]*SettlementReceipt, error) {
-	var query string
-	var args []any
-	switch {
-	case emitterID == "" && executorID != "":
-		query = "SELECT data FROM receipts WHERE executor_agent_id = ? ORDER BY executor_signed_at ASC"
-		args = []any{executorID}
-	case emitterID != "" && executorID == "":
-		query = "SELECT data FROM receipts WHERE emitter_agent_id = ? ORDER BY executor_signed_at ASC"
-		args = []any{emitterID}
-	case emitterID == "" && executorID == "":
-		query = "SELECT data FROM receipts ORDER BY executor_signed_at ASC"
-	default:
-		query = "SELECT data FROM receipts WHERE emitter_agent_id = ? AND executor_agent_id = ? ORDER BY executor_signed_at ASC"
-		args = []any{emitterID, executorID}
-	}
-	rows, err := cs.db.QueryContext(ctx, query, args...)
+	rows, err := cs.db.QueryContext(ctx, `
+		SELECT data FROM receipts
+		WHERE emitter_agent_id = ? AND executor_agent_id = ?
+		ORDER BY executor_signed_at ASC
+	`, emitterID, executorID)
 	if err != nil {
 		return nil, err
 	}
@@ -252,8 +240,16 @@ func (cs *ChainStore) UpdateReceipt(ctx context.Context, r *SettlementReceipt) e
 	if r == nil {
 		return ErrInvalidReceipt
 	}
-	if err := ValidateReceipt(r); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidReceipt, err)
+	if r.ReceiptID == "" || r.ContractID == "" {
+		return fmt.Errorf("%w: missing receipt_id or contract_id", ErrInvalidReceipt)
+	}
+	// For protocol v2 receipts, validate the full schema.
+	// Legacy receipts (persisted before protocol v2) lack protocol_version and mesh_id;
+	// allow them to be updated for accept/dispute without failing validation.
+	if r.ProtocolVersion != "" {
+		if err := ValidateReceipt(r); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidReceipt, err)
+		}
 	}
 	data, err := json.Marshal(r)
 	if err != nil {

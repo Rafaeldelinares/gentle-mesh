@@ -21,15 +21,15 @@ const DefaultRemediationLimit = 1
 // Engine runs the settlement process for a CognitiveTaskEnvelope.
 type Engine struct {
 	evaluator      *Evaluator
-	chainStore    *receipt.ChainStore
+	chainStore     *receipt.ChainStore
 	executorSigner signing.Signer
-	remMax        int
+	remMax         int
 }
 
 // EngineConfig holds the dependencies for the settlement engine.
 type EngineConfig struct {
 	Evaluator      *Evaluator
-	ChainStore    *receipt.ChainStore
+	ChainStore     *receipt.ChainStore
 	ExecutorSigner signing.Signer
 	RemediationMax int // defaults to DefaultRemediationLimit
 }
@@ -59,15 +59,15 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 
 // SettlementInput is the input for a settlement run.
 type SettlementInput struct {
-	Envelope         *envelope.CognitiveTaskEnvelope
-	EmitterAgentID   string
+	Envelope        *envelope.CognitiveTaskEnvelope
+	EmitterAgentID  string
 	ExecutorAgentID string
 }
 
 // SettlementOutput is the outcome of a settlement run.
 type SettlementOutput struct {
-	Receipt          *receipt.SettlementReceipt
-	RemediationUsed  int
+	Receipt         *receipt.SettlementReceipt
+	RemediationUsed int
 }
 
 // Settle runs the full settlement process: convert assertions, evaluate,
@@ -78,6 +78,19 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 	}
 	if in.EmitterAgentID == "" {
 		return nil, errors.New("emitter agent ID is required")
+	}
+	if in.Envelope.EnvelopeHash == "" {
+		if in.Envelope.EmitterAgentID == "" {
+			in.Envelope.EmitterAgentID = in.EmitterAgentID
+		}
+		if in.Envelope.ExecutorAgentID == "" {
+			in.Envelope.ExecutorAgentID = in.ExecutorAgentID
+		}
+		h, err := envelope.ComputeEnvelopeHash(in.Envelope)
+		if err != nil {
+			return nil, fmt.Errorf("envelope hash required: %w", err)
+		}
+		in.Envelope.EnvelopeHash = h
 	}
 
 	// 1. prev_hash is computed inside ChainStore.SaveReceipt (under mutex) to ensure
@@ -223,7 +236,7 @@ func (eng *Engine) convertResults(results []*AssertionResult) []receipt.Assertio
 	out := make([]receipt.AssertionResult, len(results))
 	for i, r := range results {
 		ev := receipt.AssertionEvidence{
-			Command:      r.Evidence.Command,
+			Command:     r.Evidence.Command,
 			ExitCode:    r.Evidence.ExitCode,
 			StdoutHash:  r.Evidence.Stdout,
 			StderrHash:  r.Evidence.Stderr,
@@ -250,11 +263,11 @@ func (eng *Engine) convertResults(results []*AssertionResult) []receipt.Assertio
 		}
 		out[i] = receipt.AssertionResult{
 			AssertionIndex: r.AssertionIndex,
-			AssertionID:   r.AssertionID,
-			AssertionType: string(r.AssertionType),
-			Result:        eng.convertResult(r.Result),
-			Evidence:      ev,
-			Message:       r.Message,
+			AssertionID:    r.AssertionID,
+			AssertionType:  string(r.AssertionType),
+			Result:         eng.convertResult(r.Result),
+			Evidence:       ev,
+			Message:        r.Message,
 		}
 	}
 	return out
@@ -278,7 +291,7 @@ func (eng *Engine) convertResult(r Result) receipt.Result {
 func (eng *Engine) convertTerritory(t envelope.Territory) receipt.Territory {
 	return receipt.Territory{
 		Repository:    t.Repository,
-		Branch:       t.Branch,
+		Branch:        t.Branch,
 		WorkspacePath: t.WorkspacePath,
 	}
 }

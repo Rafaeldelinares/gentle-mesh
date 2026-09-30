@@ -797,6 +797,50 @@ func TestSettle_EmptyEmitterID(t *testing.T) {
 	}
 }
 
+func TestSettle_EmptyEnvelopeHash_ComputedAutomatically(t *testing.T) {
+	eng, _, cleanup := setupEngine(t)
+	defer cleanup()
+
+	env := validEnvelope()
+	env.EnvelopeHash = "" // Empty hash: engine must compute it upfront and settle cleanly
+	env.TimeoutSeconds = 60
+	env.EmitterAgentID = "agent-a"
+	env.ExecutorAgentID = "agent-b"
+
+	out, err := eng.Settle(context.Background(), SettlementInput{
+		Envelope:        env,
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+	})
+	if err != nil {
+		t.Fatalf("Settle(empty envelope_hash) error = %v, want nil", err)
+	}
+	if out.Receipt.EnvelopeHash == "" {
+		t.Error("Receipt.EnvelopeHash should not be empty")
+	}
+	if env.EnvelopeHash == "" {
+		t.Error("Envelope.EnvelopeHash should be populated")
+	}
+}
+
+func TestSettle_InvalidEnvelope_FailsBeforeEvaluating(t *testing.T) {
+	eng, _, cleanup := setupEngine(t)
+	defer cleanup()
+
+	env := validEnvelope()
+	env.EnvelopeHash = ""
+	env.ProtocolVersion = "invalid-version"
+
+	_, err := eng.Settle(context.Background(), SettlementInput{
+		Envelope:        env,
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+	})
+	if err == nil {
+		t.Error("Settle(invalid envelope) should fail upfront")
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────
 // VerifyReceipt
 // ─────────────────────────────────────────────────────────────────

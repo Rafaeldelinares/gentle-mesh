@@ -267,7 +267,11 @@ func (s *Shell) Execute(ctx context.Context, assertions []envelope.Assertion) (*
 }
 
 // GetChain returns the receipt chain for an emitter/executor pair.
+// In a local shell context, an empty emitterID defaults to the shell's own agentID.
 func (s *Shell) GetChain(emitterID, executorID string) ([]*receipt.SettlementReceipt, error) {
+	if emitterID == "" {
+		emitterID = s.config.AgentID
+	}
 	return s.chainStore.GetChain(context.Background(), emitterID, executorID)
 }
 

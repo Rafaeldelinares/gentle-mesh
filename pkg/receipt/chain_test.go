@@ -197,6 +197,32 @@ func TestUpdateReceipt_ValidationFailure(t *testing.T) {
 	}
 }
 
+func TestUpdateReceipt_LegacyReceiptAllowed(t *testing.T) {
+	cs, _ := setupChain(t)
+
+	// Insert legacy receipt (no protocol_version, no mesh_id) directly
+	r := validReceipt()
+	r.ProtocolVersion = ""
+	r.MeshID = ""
+	if err := cs.saveReceiptOnce(context.Background(), r); err != nil {
+		t.Fatalf("save legacy receipt: %v", err)
+	}
+
+	// Updating a legacy receipt (e.g. for accept/dispute) should succeed
+	r.EmitterAcceptance = AcceptanceAccepted
+	if err := cs.UpdateReceipt(context.Background(), r); err != nil {
+		t.Errorf("UpdateReceipt on legacy receipt failed: %v", err)
+	}
+
+	updated, err := cs.GetReceipt(context.Background(), r.ReceiptID)
+	if err != nil {
+		t.Fatalf("GetReceipt failed: %v", err)
+	}
+	if updated.EmitterAcceptance != AcceptanceAccepted {
+		t.Errorf("EmitterAcceptance = %q, want %q", updated.EmitterAcceptance, AcceptanceAccepted)
+	}
+}
+
 func TestGetReceipt_NotFound(t *testing.T) {
 	cs, _ := setupChain(t)
 	_, err := cs.GetReceipt(context.Background(), "nonexistent")
