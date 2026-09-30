@@ -4,7 +4,10 @@ package shell
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,12 +25,13 @@ import (
 
 // Config holds shell configuration.
 type Config struct {
-	AgentID          string        // Local agent identity (e.g., "pi-local", "pi-emitter")
-	WorkspaceDir     string        // Working directory for command execution
-	ChainDBPath      string        // Path to SQLite receipt chain database
-	EvalTimeout      time.Duration // Maximum time for a single assertion evaluation
-	MaxRemediations  int           // Maximum number of remediation loops
-	RemoteURL        string        // Remote executor URL (empty = local mode)
+	MeshID          string        // Mesh network identity (defaults to "gentle-mesh" if empty)
+	AgentID         string        // Local agent identity (e.g., "pi-local", "pi-emitter")
+	WorkspaceDir    string        // Working directory for command execution
+	ChainDBPath     string        // Path to SQLite receipt chain database
+	EvalTimeout     time.Duration // Maximum time for a single assertion evaluation
+	MaxRemediations int           // Maximum number of remediation loops
+	RemoteURL       string        // Remote executor URL (empty = local mode)
 }
 
 // Shell is a contract-aware shell execution layer.
@@ -210,15 +214,32 @@ func (s *Shell) Execute(ctx context.Context, assertions []envelope.Assertion) (*
 		verdict = receipt.VerdictFailed
 	}
 
+	meshID := s.config.MeshID
+	if meshID == "" {
+		meshID = "gentle-mesh"
+	}
+
 	// Build receipt.
 	signedAt := time.Now().UTC()
+	assertionsJSON, _ := json.Marshal(assertions)
+	h := sha256.Sum256(assertionsJSON)
+	envHash := hex.EncodeToString(h[:])
+
+	agentID := s.config.AgentID
+	if agentID == "" {
+		agentID = "local-shell"
+	}
+
 	rec := &receipt.SettlementReceipt{
 		ProtocolVersion:  receipt.CurrentProtocolVersion,
-		MeshID:           "gentle-mesh",
-		ReceiptID:        fmt.Sprintf("rcpt-%d", time.Now().UnixNano()),
-		ExecutorAgentID: s.config.AgentID,
-		Verdict:         verdict,
-		Assertions:      ConvertResults(results),
+		MeshID:           meshID,
+		ReceiptID:        fmt.Sprintf("rcpt-%d", signedAt.UnixNano()),
+		ContractID:       fmt.Sprintf("contract-%d", signedAt.UnixNano()),
+		EnvelopeHash:     envHash,
+		EmitterAgentID:   agentID,
+		ExecutorAgentID:  agentID,
+		Verdict:          verdict,
+		Assertions:       ConvertResults(results),
 		ExecutorSignedAt: signedAt,
 	}
 

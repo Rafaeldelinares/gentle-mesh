@@ -18,9 +18,9 @@ import (
 // Errors for chain operations.
 var (
 	ErrReceiptNotFound         = errors.New("receipt not found")
-	ErrChainBroken            = errors.New("receipt chain is broken")
+	ErrChainBroken             = errors.New("receipt chain is broken")
 	ErrChainVerificationFailed = errors.New("chain verification failed")
-	ErrInvalidReceipt         = errors.New("invalid receipt")
+	ErrInvalidReceipt          = errors.New("invalid receipt")
 )
 
 // ChainStore manages the receipt chain for an agent pair.
@@ -80,6 +80,9 @@ const maxSaveRetries = 3
 func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) error {
 	if r == nil {
 		return ErrInvalidReceipt
+	}
+	if err := ValidateReceipt(r); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidReceipt, err)
 	}
 
 	cs.mu.Lock()
@@ -204,12 +207,24 @@ func (cs *ChainStore) GetReceipt(ctx context.Context, receiptID string) (*Settle
 }
 
 // GetChain returns all receipts for an agent pair in chronological order.
+// If emitterID is empty, it returns all receipts for the given executorID (and vice-versa).
 func (cs *ChainStore) GetChain(ctx context.Context, emitterID, executorID string) ([]*SettlementReceipt, error) {
-	rows, err := cs.db.QueryContext(ctx, `
-		SELECT data FROM receipts
-		WHERE emitter_agent_id = ? AND executor_agent_id = ?
-		ORDER BY executor_signed_at ASC
-	`, emitterID, executorID)
+	var query string
+	var args []any
+	switch {
+	case emitterID == "" && executorID != "":
+		query = "SELECT data FROM receipts WHERE executor_agent_id = ? ORDER BY executor_signed_at ASC"
+		args = []any{executorID}
+	case emitterID != "" && executorID == "":
+		query = "SELECT data FROM receipts WHERE emitter_agent_id = ? ORDER BY executor_signed_at ASC"
+		args = []any{emitterID}
+	case emitterID == "" && executorID == "":
+		query = "SELECT data FROM receipts ORDER BY executor_signed_at ASC"
+	default:
+		query = "SELECT data FROM receipts WHERE emitter_agent_id = ? AND executor_agent_id = ? ORDER BY executor_signed_at ASC"
+		args = []any{emitterID, executorID}
+	}
+	rows, err := cs.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +250,10 @@ func (cs *ChainStore) GetChain(ctx context.Context, emitterID, executorID string
 // (prev_hash is not recalculated for an update).
 func (cs *ChainStore) UpdateReceipt(ctx context.Context, r *SettlementReceipt) error {
 	if r == nil {
-		return errors.New("receipt is nil")
+		return ErrInvalidReceipt
+	}
+	if err := ValidateReceipt(r); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidReceipt, err)
 	}
 	data, err := json.Marshal(r)
 	if err != nil {
@@ -268,6 +286,9 @@ func (cs *ChainStore) UpdateReceipt(ctx context.Context, r *SettlementReceipt) e
 func (cs *ChainStore) InjectReceipt(ctx context.Context, r *SettlementReceipt) error {
 	if r == nil {
 		return ErrInvalidReceipt
+	}
+	if err := ValidateReceipt(r); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidReceipt, err)
 	}
 	data, err := json.Marshal(r)
 	if err != nil {
@@ -355,8 +376,8 @@ func (cs *ChainStore) VerifyChain(
 
 	for i, r := range chain {
 		result := VerificationResult{
-			ReceiptID:   r.ReceiptID,
-			ContractID:  r.ContractID,
+			ReceiptID:  r.ReceiptID,
+			ContractID: r.ContractID,
 			Verdict:    r.Verdict,
 			Index:      i,
 		}
@@ -429,14 +450,14 @@ func (cs *ChainStore) VerifyChain(
 // VerificationResult is the result of verifying a single receipt in the chain.
 type VerificationResult struct {
 	ReceiptID              string
-	ContractID            string
-	Verdict              Verdict
-	Index                int
-	PreviousHashValid    bool
+	ContractID             string
+	Verdict                Verdict
+	Index                  int
+	PreviousHashValid      bool
 	ExecutorSignatureValid bool
 	EmitterSignatureValid  bool
-	Valid                 bool
-	Error                string
+	Valid                  bool
+	Error                  string
 }
 
 // ComputeReceiptHash computes the JCS canonical SHA-256 hash of a receipt

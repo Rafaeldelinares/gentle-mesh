@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -165,6 +166,37 @@ func TestSaveReceipt_Nil(t *testing.T) {
 	}
 }
 
+func TestSaveReceipt_ValidationFailure(t *testing.T) {
+	cs, _ := setupChain(t)
+
+	// Receipt with invalid protocol_version
+	r1 := validReceipt()
+	r1.ProtocolVersion = "1.0"
+	r1.MeshID = "gentle-mesh-dev"
+	if err := cs.SaveReceipt(context.Background(), r1); !errors.Is(err, ErrInvalidReceipt) {
+		t.Errorf("SaveReceipt(invalid protocol_version) err = %v, want ErrInvalidReceipt", err)
+	}
+
+	// Receipt with empty mesh_id
+	r2 := validReceipt()
+	r2.ProtocolVersion = CurrentProtocolVersion
+	r2.MeshID = ""
+	if err := cs.SaveReceipt(context.Background(), r2); !errors.Is(err, ErrInvalidReceipt) {
+		t.Errorf("SaveReceipt(empty mesh_id) err = %v, want ErrInvalidReceipt", err)
+	}
+}
+
+func TestUpdateReceipt_ValidationFailure(t *testing.T) {
+	cs, _ := setupChain(t)
+
+	r := validReceipt()
+	r.ProtocolVersion = "1.0"
+	r.MeshID = "gentle-mesh-dev"
+	if err := cs.UpdateReceipt(context.Background(), r); !errors.Is(err, ErrInvalidReceipt) {
+		t.Errorf("UpdateReceipt(invalid protocol_version) err = %v, want ErrInvalidReceipt", err)
+	}
+}
+
 func TestGetReceipt_NotFound(t *testing.T) {
 	cs, _ := setupChain(t)
 	_, err := cs.GetReceipt(context.Background(), "nonexistent")
@@ -300,30 +332,30 @@ func TestComputeReceiptHash_ClearsSignatures(t *testing.T) {
 	fixedTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	r := &SettlementReceipt{
-		ReceiptID:          "test-001",
-		ContractID:         "contract-001",
-		EnvelopeHash:        "abc123",
-		EmitterAgentID:      "agent-a",
-		ExecutorAgentID:     "agent-b",
+		ReceiptID:         "test-001",
+		ContractID:        "contract-001",
+		EnvelopeHash:      "abc123",
+		EmitterAgentID:    "agent-a",
+		ExecutorAgentID:   "agent-b",
 		Verdict:           VerdictSettledClean,
-		ExecutorSignature:   "sig-a",
-		ExecutorSignedAt:   fixedTime,
-		EmitterSignature:    "sig-b",
+		ExecutorSignature: "sig-a",
+		ExecutorSignedAt:  fixedTime,
+		EmitterSignature:  "sig-b",
 	}
 
 	hash1, _ := ComputeReceiptHash(r)
 
 	// Same content, signatures cleared: hash must be identical.
 	r2 := &SettlementReceipt{
-		ReceiptID:          "test-001",
-		ContractID:         "contract-001",
-		EnvelopeHash:        "abc123",
-		EmitterAgentID:      "agent-a",
-		ExecutorAgentID:     "agent-b",
+		ReceiptID:         "test-001",
+		ContractID:        "contract-001",
+		EnvelopeHash:      "abc123",
+		EmitterAgentID:    "agent-a",
+		ExecutorAgentID:   "agent-b",
 		Verdict:           VerdictSettledClean,
-		ExecutorSignature:   "",
-		ExecutorSignedAt:   fixedTime,
-		EmitterSignature:    "",
+		ExecutorSignature: "",
+		ExecutorSignedAt:  fixedTime,
+		EmitterSignature:  "",
 	}
 
 	hash2, _ := ComputeReceiptHash(r2)

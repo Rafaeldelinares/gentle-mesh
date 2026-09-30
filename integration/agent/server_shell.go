@@ -35,6 +35,7 @@ type ShellServer struct {
 	db         *sql.DB
 	signer     *signing.BasicSigner
 	agentID    string
+	meshID     string
 	tlsOpts    []TLSClientOption
 }
 
@@ -112,8 +113,8 @@ type CheckRequest struct {
 
 // CheckResponse is the POST /check response body.
 type CheckResponse struct {
-	Passed           bool                        `json:"passed"`
-	RejectionReason string                      `json:"rejection_reason,omitempty"`
+	Passed          bool                          `json:"passed"`
+	RejectionReason string                        `json:"rejection_reason,omitempty"`
 	Results         []envelope.PreconditionResult `json:"results"`
 }
 
@@ -147,7 +148,7 @@ func (s *ShellServer) handleCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, CheckResponse{
-		Passed:           allPassed,
+		Passed:          allPassed,
 		RejectionReason: reason,
 		Results:         results,
 	})
@@ -228,9 +229,9 @@ type ExecuteLocalRequest struct {
 // ExecuteLocalResponse is the POST /execute-local response body.
 type ExecuteLocalResponse struct {
 	ReceiptJSON []byte `json:"receipt_json,omitempty"`
-	ReceiptID  string `json:"receipt_id,omitempty"`
-	Verdict   string `json:"verdict,omitempty"`
-	Error     string `json:"error,omitempty"`
+	ReceiptID   string `json:"receipt_id,omitempty"`
+	Verdict     string `json:"verdict,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 // handleExecuteLocal runs assertions via the local shell executor.
@@ -263,8 +264,8 @@ func (s *ShellServer) handleExecuteLocal(w http.ResponseWriter, r *http.Request)
 	receiptJSON, _ := json.Marshal(rec)
 	writeJSON(w, http.StatusOK, ExecuteLocalResponse{
 		ReceiptJSON: receiptJSON,
-		ReceiptID:  rec.ReceiptID,
-		Verdict:   string(rec.Verdict),
+		ReceiptID:   rec.ReceiptID,
+		Verdict:     string(rec.Verdict),
 	})
 }
 
@@ -293,14 +294,31 @@ func (s *ShellServer) executeLocal(ctx context.Context, assertions []envelope.As
 		verdict = receipt.VerdictFailed
 	}
 
+	meshID := s.meshID
+	if meshID == "" {
+		meshID = "gentle-mesh"
+	}
+
 	signedAt := time.Now().UTC()
+	assertionsJSON, _ := json.Marshal(assertions)
+	h := sha256.Sum256(assertionsJSON)
+	envHash := hex.EncodeToString(h[:])
+
+	agentID := s.agentID
+	if agentID == "" {
+		agentID = "local-shell"
+	}
+
 	rec := &receipt.SettlementReceipt{
 		ProtocolVersion:  receipt.CurrentProtocolVersion,
-		MeshID:           "gentle-mesh",
-		ReceiptID:        fmt.Sprintf("rcpt-%d", time.Now().UnixNano()),
-		ExecutorAgentID: s.agentID,
-		Verdict:         verdict,
-		Assertions:      convertResults(results),
+		MeshID:           meshID,
+		ReceiptID:        fmt.Sprintf("rcpt-%d", signedAt.UnixNano()),
+		ContractID:       fmt.Sprintf("contract-%d", signedAt.UnixNano()),
+		EnvelopeHash:     envHash,
+		EmitterAgentID:   agentID,
+		ExecutorAgentID:  agentID,
+		Verdict:          verdict,
+		Assertions:       convertResults(results),
 		ExecutorSignedAt: signedAt,
 	}
 
@@ -347,9 +365,9 @@ type DispatchResponse struct {
 // DispatchResult is the result for one executor leg.
 type DispatchResult struct {
 	ExecutorID string `json:"executor_id"`
-	ReceiptID string `json:"receipt_id,omitempty"`
-	Verdict  string `json:"verdict,omitempty"`
-	Error    string `json:"error,omitempty"`
+	ReceiptID  string `json:"receipt_id,omitempty"`
+	Verdict    string `json:"verdict,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 // handleDispatch orchestrates fan-out dispatch to multiple executors concurrently.
@@ -454,7 +472,7 @@ func (s *ShellServer) dispatchOne(ctx context.Context, idx int, env envelope.Cog
 
 	settleResp, err := executorClient.Settle(ctx, &SettleRequest{
 		EnvelopeJSON: envJSON,
-		LeaseID:     leaseResp.LeaseID,
+		LeaseID:      leaseResp.LeaseID,
 	})
 	if err != nil {
 		result.Error = fmt.Sprintf("settle: %v", err)
@@ -508,12 +526,12 @@ func (s *ShellServer) handleGetChainByPair(w http.ResponseWriter, r *http.Reques
 	entries := make([]ChainReceiptEntry, len(chain))
 	for i, rec := range chain {
 		entries[i] = ChainReceiptEntry{
-			ReceiptID:            rec.ReceiptID,
+			ReceiptID:           rec.ReceiptID,
 			ContractID:          rec.ContractID,
 			EnvelopeHash:        rec.EnvelopeHash,
 			Verdict:             string(rec.Verdict),
 			ExecutorSignedAt:    rec.ExecutorSignedAt.Format(time.RFC3339),
-			ExecutorSignature:    rec.ExecutorSignature,
+			ExecutorSignature:   rec.ExecutorSignature,
 			PreviousReceiptHash: rec.PreviousReceiptHash,
 		}
 		if rec.EmitterAcceptanceAt != nil {
@@ -587,19 +605,19 @@ func convertResults(sr []*settlement.AssertionResult) []receipt.AssertionResult 
 		}
 		result[i] = receipt.AssertionResult{
 			AssertionIndex: s.AssertionIndex,
-			AssertionID:   s.AssertionID,
-			AssertionType: string(s.AssertionType),
-			Result:       rcptResult,
+			AssertionID:    s.AssertionID,
+			AssertionType:  string(s.AssertionType),
+			Result:         rcptResult,
 			Evidence: receipt.AssertionEvidence{
 				Command:         s.Evidence.Command,
-				ExitCode:       s.Evidence.ExitCode,
-				StdoutHash:     sha256Hex(s.Evidence.Stdout),
-				StderrHash:     sha256Hex(s.Evidence.Stderr),
-				ExpectedSHA256:   s.Evidence.ExpectedHash,
-				ActualSHA256:     s.Evidence.ActualHash,
+				ExitCode:        s.Evidence.ExitCode,
+				StdoutHash:      sha256Hex(s.Evidence.Stdout),
+				StderrHash:      sha256Hex(s.Evidence.Stderr),
+				ExpectedSHA256:  s.Evidence.ExpectedHash,
+				ActualSHA256:    s.Evidence.ActualHash,
 				FileWasModified: s.Evidence.FileExists,
-				GitStatus:      s.Evidence.GitStatus,
-				PortWasFree:    s.Evidence.PortAvailable,
+				GitStatus:       s.Evidence.GitStatus,
+				PortWasFree:     s.Evidence.PortAvailable,
 			},
 			Message: s.Message,
 		}

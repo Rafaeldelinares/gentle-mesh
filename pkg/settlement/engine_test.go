@@ -35,7 +35,7 @@ func setupEngine(t *testing.T) (*Engine, *receipt.ChainStore, func()) {
 	}
 	eng, err := NewEngine(EngineConfig{
 		Evaluator:      ev,
-		ChainStore:    cs,
+		ChainStore:     cs,
 		ExecutorSigner: signer,
 	})
 	if err != nil {
@@ -50,11 +50,13 @@ func setupEngine(t *testing.T) (*Engine, *receipt.ChainStore, func()) {
 
 func validEnvelope() *envelope.CognitiveTaskEnvelope {
 	return &envelope.CognitiveTaskEnvelope{
-		EnvelopeID:   "contract-001",
-		EnvelopeHash: "abc123def456",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
+		EnvelopeID:      "contract-001",
+		EnvelopeHash:    "abc123def456",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
-			Branch:       "main",
+			Branch:        "main",
 			WorkspacePath: "/tmp/workspace",
 		},
 		Assertions: []envelope.Assertion{
@@ -72,8 +74,10 @@ func validEnvelope() *envelope.CognitiveTaskEnvelope {
 
 func failingEnvelope() *envelope.CognitiveTaskEnvelope {
 	return &envelope.CognitiveTaskEnvelope{
-		EnvelopeID:   "contract-fail",
-		EnvelopeHash: "fail123",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
+		EnvelopeID:      "contract-fail",
+		EnvelopeHash:    "fail123",
 		Assertions: []envelope.Assertion{
 			{
 				ID:   "fail-test",
@@ -89,8 +93,10 @@ func failingEnvelope() *envelope.CognitiveTaskEnvelope {
 
 func errorEnvelope() *envelope.CognitiveTaskEnvelope {
 	return &envelope.CognitiveTaskEnvelope{
-		EnvelopeID:   "contract-error",
-		EnvelopeHash: "err123",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
+		EnvelopeID:      "contract-error",
+		EnvelopeHash:    "err123",
 		Assertions: []envelope.Assertion{
 			{
 				ID:   "bad-cmd",
@@ -113,7 +119,7 @@ func TestNewEngine_MissingEvaluator(t *testing.T) {
 	s, _ := signing.GenerateSigner("x")
 	_, err := NewEngine(EngineConfig{
 		Evaluator:      nil,
-		ChainStore:    cs,
+		ChainStore:     cs,
 		ExecutorSigner: s,
 	})
 	if err == nil {
@@ -125,7 +131,7 @@ func TestNewEngine_MissingChainStore(t *testing.T) {
 	s, _ := signing.GenerateSigner("x")
 	_, err := NewEngine(EngineConfig{
 		Evaluator:      NewEvaluator("/tmp"),
-		ChainStore:    nil,
+		ChainStore:     nil,
 		ExecutorSigner: s,
 	})
 	if err == nil {
@@ -137,7 +143,7 @@ func TestNewEngine_MissingSigner(t *testing.T) {
 	cs := receipt.NewChainStore(nil)
 	_, err := NewEngine(EngineConfig{
 		Evaluator:      NewEvaluator("/tmp"),
-		ChainStore:    cs,
+		ChainStore:     cs,
 		ExecutorSigner: nil,
 	})
 	if err == nil {
@@ -150,7 +156,7 @@ func TestNewEngine_DefaultsRemediation(t *testing.T) {
 	s, _ := signing.GenerateSigner("x")
 	eng, err := NewEngine(EngineConfig{
 		Evaluator:      NewEvaluator("/tmp"),
-		ChainStore:    cs,
+		ChainStore:     cs,
 		ExecutorSigner: s,
 	})
 	if err != nil {
@@ -211,8 +217,10 @@ func TestSettle_SecondReceipt_ChainLink(t *testing.T) {
 	// Second receipt with different assertions.
 	in2 := SettlementInput{
 		Envelope: &envelope.CognitiveTaskEnvelope{
-			EnvelopeID:   "contract-002",
-			EnvelopeHash: "def456",
+			ProtocolVersion: envelope.CurrentProtocolVersion,
+			MeshID:          "gentle-mesh-dev",
+			EnvelopeID:      "contract-002",
+			EnvelopeHash:    "def456",
 			Assertions: []envelope.Assertion{
 				{
 					ID:   "test-pass2",
@@ -322,8 +330,10 @@ func TestSettle_ExitCodeMismatch(t *testing.T) {
 
 	// Create envelope that expects exit code 0, but command exits with 1.
 	env := &envelope.CognitiveTaskEnvelope{
-		EnvelopeID:   "contract-exit-mismatch",
-		EnvelopeHash: "hash123",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
+		EnvelopeID:      "contract-exit-mismatch",
+		EnvelopeHash:    "hash123",
 		Territory: envelope.Territory{
 			WorkspacePath: dir,
 		},
@@ -345,7 +355,7 @@ func TestSettle_ExitCodeMismatch(t *testing.T) {
 	ev := NewEvaluator(dir)
 	signer, _ := signing.GenerateSigner("agent-b")
 	eng, _ := NewEngine(EngineConfig{
-		Evaluator:       ev,
+		Evaluator:      ev,
 		ChainStore:     cs,
 		ExecutorSigner: signer,
 	})
@@ -383,8 +393,10 @@ func TestSettle_FileHashMismatch(t *testing.T) {
 
 	// Envelope expects a WRONG hash — the assertion must fail.
 	env := &envelope.CognitiveTaskEnvelope{
-		EnvelopeID:   "contract-hash-mismatch",
-		EnvelopeHash: "hash456",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
+		EnvelopeID:      "contract-hash-mismatch",
+		EnvelopeHash:    "hash456",
 		Territory: envelope.Territory{
 			WorkspacePath: dir,
 		},
@@ -406,7 +418,7 @@ func TestSettle_FileHashMismatch(t *testing.T) {
 	ev := NewEvaluator(dir)
 	signer, _ := signing.GenerateSigner("agent-b")
 	eng, _ := NewEngine(EngineConfig{
-		Evaluator:       ev,
+		Evaluator:      ev,
 		ChainStore:     cs,
 		ExecutorSigner: signer,
 	})
@@ -447,8 +459,10 @@ func TestSettle_AssertionTimeout(t *testing.T) {
 
 	// Envelope with a command that sleeps longer than its timeout.
 	env := &envelope.CognitiveTaskEnvelope{
-		EnvelopeID:   "contract-timeout",
-		EnvelopeHash: "hash789",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
+		EnvelopeID:      "contract-timeout",
+		EnvelopeHash:    "hash789",
 		Territory: envelope.Territory{
 			WorkspacePath: dir,
 		},
@@ -471,7 +485,7 @@ func TestSettle_AssertionTimeout(t *testing.T) {
 	ev := NewEvaluator(dir)
 	signer, _ := signing.GenerateSigner("agent-b")
 	eng, _ := NewEngine(EngineConfig{
-		Evaluator:       ev,
+		Evaluator:      ev,
 		ChainStore:     cs,
 		ExecutorSigner: signer,
 	})
@@ -509,8 +523,10 @@ func TestSettle_RemediationMaxReached(t *testing.T) {
 
 	// Create envelope that always fails (exit code 1).
 	env := &envelope.CognitiveTaskEnvelope{
-		EnvelopeID:   "contract-remed-fail",
-		EnvelopeHash: "hash-fail",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
+		EnvelopeID:      "contract-remed-fail",
+		EnvelopeHash:    "hash-fail",
 		Territory: envelope.Territory{
 			WorkspacePath: dir,
 		},
@@ -532,7 +548,7 @@ func TestSettle_RemediationMaxReached(t *testing.T) {
 	ev := NewEvaluator(dir)
 	signer, _ := signing.GenerateSigner("agent-b")
 	eng, _ := NewEngine(EngineConfig{
-		Evaluator:       ev,
+		Evaluator:      ev,
 		ChainStore:     cs,
 		ExecutorSigner: signer,
 		RemediationMax: 2, // try up to 2 times
@@ -563,8 +579,10 @@ func TestSettle_ErrorRemediation(t *testing.T) {
 	dir := t.TempDir()
 
 	env := &envelope.CognitiveTaskEnvelope{
-		EnvelopeID:   "contract-error",
-		EnvelopeHash: "hash-error",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
+		EnvelopeID:      "contract-error",
+		EnvelopeHash:    "hash-error",
 		Territory: envelope.Territory{
 			WorkspacePath: dir,
 		},
@@ -586,7 +604,7 @@ func TestSettle_ErrorRemediation(t *testing.T) {
 	ev := NewEvaluator(dir)
 	signer, _ := signing.GenerateSigner("agent-b")
 	eng, _ := NewEngine(EngineConfig{
-		Evaluator:       ev,
+		Evaluator:      ev,
 		ChainStore:     cs,
 		ExecutorSigner: signer,
 		RemediationMax: 2,
@@ -617,8 +635,10 @@ func TestSettle_AllAssertionsFail(t *testing.T) {
 	dir := t.TempDir()
 
 	env := &envelope.CognitiveTaskEnvelope{
-		EnvelopeID:   "contract-multi-fail",
-		EnvelopeHash: "hash-multi",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
+		EnvelopeID:      "contract-multi-fail",
+		EnvelopeHash:    "hash-multi",
 		Territory: envelope.Territory{
 			WorkspacePath: dir,
 		},
@@ -648,7 +668,7 @@ func TestSettle_AllAssertionsFail(t *testing.T) {
 	ev := NewEvaluator(dir)
 	signer, _ := signing.GenerateSigner("agent-b")
 	eng, _ := NewEngine(EngineConfig{
-		Evaluator:       ev,
+		Evaluator:      ev,
 		ChainStore:     cs,
 		ExecutorSigner: signer,
 	})
@@ -682,8 +702,10 @@ func TestSettle_MixedResults(t *testing.T) {
 	dir := t.TempDir()
 
 	env := &envelope.CognitiveTaskEnvelope{
-		EnvelopeID:   "contract-mixed",
-		EnvelopeHash: "hash-mixed",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
+		EnvelopeID:      "contract-mixed",
+		EnvelopeHash:    "hash-mixed",
 		Territory: envelope.Territory{
 			WorkspacePath: dir,
 		},
@@ -713,7 +735,7 @@ func TestSettle_MixedResults(t *testing.T) {
 	ev := NewEvaluator(dir)
 	signer, _ := signing.GenerateSigner("agent-b")
 	eng, _ := NewEngine(EngineConfig{
-		Evaluator:       ev,
+		Evaluator:      ev,
 		ChainStore:     cs,
 		ExecutorSigner: signer,
 	})
@@ -891,7 +913,7 @@ func TestSettle_RemediationMax(t *testing.T) {
 
 	eng, _ := NewEngine(EngineConfig{
 		Evaluator:      ev,
-		ChainStore:    cs,
+		ChainStore:     cs,
 		ExecutorSigner: s,
 		RemediationMax: 2,
 	})
@@ -1034,16 +1056,18 @@ func TestSettle_FileBasedAssertion(t *testing.T) {
 	signer, _ := signing.GenerateSigner("agent-b")
 	eng, _ := NewEngine(EngineConfig{
 		Evaluator:      ev,
-		ChainStore:    cs,
+		ChainStore:     cs,
 		ExecutorSigner: signer,
 	})
 
 	env := &envelope.CognitiveTaskEnvelope{
-		EnvelopeID:   "contract-file",
-		EnvelopeHash: "file123",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
+		EnvelopeID:      "contract-file",
+		EnvelopeHash:    "file123",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
-			Branch:       "main",
+			Branch:        "main",
 			WorkspacePath: dir,
 		},
 		Assertions: []envelope.Assertion{
@@ -1110,16 +1134,18 @@ func TestSettle_GitCleanWorktree(t *testing.T) {
 	s, _ := signing.GenerateSigner("agent-b")
 	eng, _ := NewEngine(EngineConfig{
 		Evaluator:      ev,
-		ChainStore:    cs,
+		ChainStore:     cs,
 		ExecutorSigner: s,
 	})
 
 	env := &envelope.CognitiveTaskEnvelope{
-		EnvelopeID:   "contract-git",
-		EnvelopeHash: "git123",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
+		EnvelopeID:      "contract-git",
+		EnvelopeHash:    "git123",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
-			Branch:       "main",
+			Branch:        "main",
 			WorkspacePath: gitDir,
 		},
 		Assertions: []envelope.Assertion{
@@ -1160,13 +1186,15 @@ func TestSettle_GitDirtyWorktree(t *testing.T) {
 	s, _ := signing.GenerateSigner("agent-b")
 	eng, _ := NewEngine(EngineConfig{
 		Evaluator:      ev,
-		ChainStore:    cs,
+		ChainStore:     cs,
 		ExecutorSigner: s,
 	})
 
 	env := &envelope.CognitiveTaskEnvelope{
-		EnvelopeID:   "contract-git-dirty",
-		EnvelopeHash: "git456",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
+		EnvelopeID:      "contract-git-dirty",
+		EnvelopeHash:    "git456",
 		Territory: envelope.Territory{
 			WorkspacePath: gitDir,
 		},

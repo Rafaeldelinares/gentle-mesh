@@ -13,6 +13,7 @@ const CurrentProtocolVersion = "2"
 var (
 	ErrUnknownProtocolVersion = errors.New("protocol_version: must be strictly \"2\"")
 	ErrInvalidMeshID          = errors.New("mesh_id: must be non-empty")
+	ErrMeshMismatch           = errors.New("mesh_id: network mismatch")
 )
 
 // ─────────────────────────────────────────────────────────────────
@@ -115,7 +116,7 @@ func ValidateReceipt(r *SettlementReceipt) error {
 // Territory mirrors the envelope's Territory for full auditability.
 type Territory struct {
 	Repository    string `json:"repository"`
-	Branch       string `json:"branch"`
+	Branch        string `json:"branch"`
 	WorkspacePath string `json:"workspace_path"`
 }
 
@@ -148,9 +149,9 @@ type AssertionResult struct {
 type AssertionEvidence struct {
 	// For command_exit_code, command_output_contains, no_regression:
 	Command        string `json:"command,omitempty"`
-	ExitCode      int    `json:"exit_code,omitempty"`
-	StdoutHash    string `json:"stdout_hash,omitempty"`
-	StderrHash    string `json:"stderr_hash,omitempty"`
+	ExitCode       int    `json:"exit_code,omitempty"`
+	StdoutHash     string `json:"stdout_hash,omitempty"`
+	StderrHash     string `json:"stderr_hash,omitempty"`
 	StdoutContains bool   `json:"stdout_contains,omitempty"`
 	StderrContains bool   `json:"stderr_contains,omitempty"`
 
@@ -164,7 +165,7 @@ type AssertionEvidence struct {
 	GitStatus string `json:"git_status,omitempty"`
 
 	// For port_available:
-	Port         int  `json:"port,omitempty"`
+	Port        int  `json:"port,omitempty"`
 	PortWasFree bool `json:"port_was_free,omitempty"`
 
 	// Timestamp of the assertion check.
@@ -309,11 +310,11 @@ func (r RemediationResult) String() string { return string(r) }
 type ReceiptStatus string
 
 const (
-	ReceiptStatusEmitted   ReceiptStatus = "EMITTED"
-	ReceiptStatusAccepted  ReceiptStatus = "ACCEPTED"
-	ReceiptStatusDisputed  ReceiptStatus = "DISPUTED"
-	ReceiptStatusResolved  ReceiptStatus = "RESOLVED"
-	ReceiptStatusStale     ReceiptStatus = "STALE"
+	ReceiptStatusEmitted  ReceiptStatus = "EMITTED"
+	ReceiptStatusAccepted ReceiptStatus = "ACCEPTED"
+	ReceiptStatusDisputed ReceiptStatus = "DISPUTED"
+	ReceiptStatusResolved ReceiptStatus = "RESOLVED"
+	ReceiptStatusStale    ReceiptStatus = "STALE"
 )
 
 // IsTerminal returns true if this is a final state.

@@ -14,6 +14,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
+	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
 	"github.com/gentleman-programming/gentle-mesh/pkg/tlsutil"
 )
 
@@ -137,6 +139,39 @@ func (c *HTTPClient) SubmitEnvelope(ctx context.Context, envelopeJSON []byte) (*
 	return &result, nil
 }
 
+// CreateLease requests a lease for an envelope via POST /leases and validates the returned lease.
+func (c *HTTPClient) CreateLease(ctx context.Context, envelopeJSON []byte) (*envelope.Lease, error) {
+	body, err := json.Marshal(map[string]any{"envelope_json": envelopeJSON})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/leases", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.readError(resp)
+	}
+
+	var lease envelope.Lease
+	if err := json.NewDecoder(resp.Body).Decode(&lease); err != nil {
+		return nil, fmt.Errorf("decode lease: %w", err)
+	}
+	if err := envelope.ValidateLease(&lease); err != nil {
+		return nil, fmt.Errorf("validate lease: %w", err)
+	}
+	return &lease, nil
+}
+
 // ExecuteTask runs a command on the executor.
 func (c *HTTPClient) ExecuteTask(ctx context.Context, req *ExecuteRequest) (*ExecuteResponse, error) {
 	body, err := json.Marshal(req)
@@ -194,6 +229,15 @@ func (c *HTTPClient) Settle(ctx context.Context, req *SettleRequest) (*SettleRes
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}
+	if len(result.ReceiptJSON) > 0 {
+		var rec receipt.SettlementReceipt
+		if err := json.Unmarshal(result.ReceiptJSON, &rec); err != nil {
+			return nil, fmt.Errorf("unmarshal receipt: %w", err)
+		}
+		if err := receipt.ValidateReceipt(&rec); err != nil {
+			return nil, fmt.Errorf("validate receipt: %w", err)
+		}
+	}
 	return &result, nil
 }
 
@@ -218,6 +262,15 @@ func (c *HTTPClient) GetReceipt(ctx context.Context, receiptID string) (*Receipt
 	var result ReceiptResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
+	}
+	if len(result.ReceiptJSON) > 0 {
+		var rec receipt.SettlementReceipt
+		if err := json.Unmarshal(result.ReceiptJSON, &rec); err != nil {
+			return nil, fmt.Errorf("unmarshal receipt: %w", err)
+		}
+		if err := receipt.ValidateReceipt(&rec); err != nil {
+			return nil, fmt.Errorf("validate receipt: %w", err)
+		}
 	}
 	return &result, nil
 }
@@ -277,7 +330,6 @@ func (c *HTTPClient) VerifyReceipt(ctx context.Context, req *VerifyRequest) (*Ve
 	return &result, nil
 }
 
-
 // Dispute sends the emitter's formal dispute of a settled receipt to the executor.
 // The emitter must pre-sign the dispute locally using receipt.DisputeReceipt.
 func (c *HTTPClient) Dispute(ctx context.Context, req *DisputeRequest) (*DisputeResponse, error) {
@@ -305,6 +357,15 @@ func (c *HTTPClient) Dispute(ctx context.Context, req *DisputeRequest) (*Dispute
 	var result DisputeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
+	}
+	if len(result.ReceiptJSON) > 0 {
+		var rec receipt.SettlementReceipt
+		if err := json.Unmarshal(result.ReceiptJSON, &rec); err != nil {
+			return nil, fmt.Errorf("unmarshal receipt: %w", err)
+		}
+		if err := receipt.ValidateReceipt(&rec); err != nil {
+			return nil, fmt.Errorf("validate receipt: %w", err)
+		}
 	}
 	return &result, nil
 }
@@ -336,6 +397,15 @@ func (c *HTTPClient) Accept(ctx context.Context, req *AcceptRequest) (*AcceptRes
 	var result AcceptResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
+	}
+	if len(result.ReceiptJSON) > 0 {
+		var rec receipt.SettlementReceipt
+		if err := json.Unmarshal(result.ReceiptJSON, &rec); err != nil {
+			return nil, fmt.Errorf("unmarshal receipt: %w", err)
+		}
+		if err := receipt.ValidateReceipt(&rec); err != nil {
+			return nil, fmt.Errorf("validate receipt: %w", err)
+		}
 	}
 	return &result, nil
 }
@@ -376,8 +446,8 @@ func (c *HTTPClient) InjectReceipt(ctx context.Context, receiptJSON []byte) (*In
 // VerifyChain verifies the full receipt chain using ChainStore.VerifyChain.
 func (c *HTTPClient) VerifyChain(ctx context.Context, emitterID, executorID, executorKey, emitterKey string) (*VerifyChainResponse, error) {
 	body, err := json.Marshal(&VerifyChainRequest{
-		EmitterID:  emitterID,
-		ExecutorID: executorID,
+		EmitterID:   emitterID,
+		ExecutorID:  executorID,
 		ExecutorKey: executorKey,
 		EmitterKey:  emitterKey,
 	})

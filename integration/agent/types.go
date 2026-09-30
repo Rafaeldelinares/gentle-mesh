@@ -6,6 +6,8 @@ package agent
 import (
 	"context"
 	"time"
+
+	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
 )
 
 // Role defines whether this agent is an emitter (A) or executor (B).
@@ -18,13 +20,14 @@ const (
 
 // Config holds the runtime configuration for an agent instance.
 type Config struct {
-	AgentID     string
-	Role        Role
-	ChainDBPath string
+	AgentID      string
+	MeshID       string // Configured mesh network ID for isolation
+	Role         Role
+	ChainDBPath  string
 	WorkspaceDir string
-	EvalTimeout time.Duration
-	MaxRemed   int
-	Signer     Signer // Ed25519 signing capability
+	EvalTimeout  time.Duration
+	MaxRemed     int
+	Signer       Signer // Ed25519 signing capability
 
 	// TLS configuration. If CertFile and KeyFile are set, the server
 	// runs HTTPS instead of HTTP.
@@ -67,8 +70,8 @@ type SettleRequest struct {
 // SettleResponse is the POST /settle response body.
 type SettleResponse struct {
 	ReceiptJSON []byte `json:"receipt_json"`
-	ReceiptID  string `json:"receipt_id,omitempty"`
-	Error      string `json:"error,omitempty"`
+	ReceiptID   string `json:"receipt_id,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 // ReceiptResponse is the GET /receipts/:id response body.
@@ -85,12 +88,12 @@ type ChainResponse struct {
 
 // ChainReceiptEntry is a single entry in the chain response.
 type ChainReceiptEntry struct {
-	ReceiptID            string `json:"receipt_id"`
+	ReceiptID           string `json:"receipt_id"`
 	ContractID          string `json:"contract_id"`
 	EnvelopeHash        string `json:"envelope_hash"`
 	Verdict             string `json:"verdict"`
 	ExecutorSignedAt    string `json:"executor_signed_at"`
-	ExecutorSignature    string `json:"executor_signature,omitempty"` // needed for chain verification
+	ExecutorSignature   string `json:"executor_signature,omitempty"` // needed for chain verification
 	PreviousReceiptHash string `json:"previous_receipt_hash,omitempty"`
 	EmitterAcceptance   string `json:"emitter_acceptance,omitempty"`
 	EmitterSignedAt     string `json:"emitter_signed_at,omitempty"`
@@ -103,12 +106,12 @@ type VerifyRequest struct {
 
 // VerifyResponse is the POST /verify response body.
 type VerifyResponse struct {
-	Valid          bool     `json:"valid"`
-	Errors         []string `json:"errors,omitempty"`
-	ChainValid     bool     `json:"chain_valid"`
-	ChainErrors    []string `json:"chain_errors,omitempty"`
-	ExecutorSigOK  bool     `json:"executor_sig_ok"`
-	EmitterSigOK   bool     `json:"emitter_sig_ok"`
+	Valid         bool     `json:"valid"`
+	Errors        []string `json:"errors,omitempty"`
+	ChainValid    bool     `json:"chain_valid"`
+	ChainErrors   []string `json:"chain_errors,omitempty"`
+	ExecutorSigOK bool     `json:"executor_sig_ok"`
+	EmitterSigOK  bool     `json:"emitter_sig_ok"`
 }
 
 // AcceptRequest is the POST /accept request body.
@@ -116,9 +119,9 @@ type VerifyResponse struct {
 // A must pre-sign the acceptance locally using AcceptReceipt and send the
 // pre-computed emitter_signature to avoid transmitting private keys.
 type AcceptRequest struct {
-	ReceiptJSON        []byte `json:"receipt_json"`
+	ReceiptJSON         []byte `json:"receipt_json"`
 	ExecutorSignedAtRFC string `json:"executor_signed_at_rfc"` // RFC3339Nano from the receipt
-	EmitterSignature    string `json:"emitter_signature"`     // Ed25519 sig from A (pre-computed locally)
+	EmitterSignature    string `json:"emitter_signature"`      // Ed25519 sig from A (pre-computed locally)
 }
 
 // AcceptResponse is the POST /accept response body.
@@ -135,9 +138,9 @@ type AcceptResponse struct {
 // pre-computed emitter_signature to avoid transmitting private keys.
 type DisputeRequest struct {
 	ReceiptJSON         []byte `json:"receipt_json"`
-	ExecutorSignedAtRFC  string `json:"executor_signed_at_rfc"` // RFC3339Nano from the receipt
-	EmitterSignature     string `json:"emitter_signature"`     // Ed25519 sig from A (pre-computed locally)
-	DisputeReason       string `json:"dispute_reason"`       // Human-readable reason for the dispute
+	ExecutorSignedAtRFC string `json:"executor_signed_at_rfc"` // RFC3339Nano from the receipt
+	EmitterSignature    string `json:"emitter_signature"`      // Ed25519 sig from A (pre-computed locally)
+	DisputeReason       string `json:"dispute_reason"`         // Human-readable reason for the dispute
 }
 
 // DisputeResponse is the POST /dispute response body.
@@ -171,18 +174,18 @@ type VerifyChainRequest struct {
 
 // VerifyChainResult is a single receipt verification result.
 type VerifyChainResult struct {
-	ReceiptID             string `json:"receipt_id"`
-	ExecutorSigValid      bool   `json:"executor_sig_valid"`
-	EmitterSigValid       bool   `json:"emitter_sig_valid"`
-	PreviousHashValid     bool   `json:"previous_hash_valid"`
-	Error                 string `json:"error,omitempty"`
+	ReceiptID         string `json:"receipt_id"`
+	ExecutorSigValid  bool   `json:"executor_sig_valid"`
+	EmitterSigValid   bool   `json:"emitter_sig_valid"`
+	PreviousHashValid bool   `json:"previous_hash_valid"`
+	Error             string `json:"error,omitempty"`
 }
 
 // VerifyChainResponse is the POST /verify-chain response body.
 type VerifyChainResponse struct {
-	Results []VerifyChainResult `json:"results"`
-	AllValid bool              `json:"all_valid"`
-	Error    string            `json:"error,omitempty"`
+	Results  []VerifyChainResult `json:"results"`
+	AllValid bool                `json:"all_valid"`
+	Error    string              `json:"error,omitempty"`
 }
 
 // HealthResponse is the GET /health response body.
@@ -228,6 +231,9 @@ type Client interface {
 	// SubmitEnvelope sends a CognitiveTaskEnvelope to an executor and
 	// waits for the lease response.
 	SubmitEnvelope(ctx context.Context, envelopeJSON []byte) (*EnvelopeResponse, error)
+
+	// CreateLease requests a lease for an envelope via POST /leases and validates the returned lease.
+	CreateLease(ctx context.Context, envelopeJSON []byte) (*envelope.Lease, error)
 
 	// ExecuteTask tells the executor to perform the task (simulated execution).
 	ExecuteTask(ctx context.Context, req *ExecuteRequest) (*ExecuteResponse, error)

@@ -16,16 +16,17 @@ import (
 var (
 	ErrUnknownProtocolVersion = errors.New("protocol_version: must be strictly \"2\"")
 	ErrInvalidMeshID          = errors.New("mesh_id: must be non-empty")
+	ErrMeshMismatch           = errors.New("mesh_id: network mismatch")
 	ErrInvalidEnvelopeID      = errors.New("envelope_id: must be a non-empty UUID")
-	ErrInvalidEmitter       = errors.New("emitter_agent_id: must be non-empty")
-	ErrInvalidExecutor      = errors.New("executor_agent_id: must be non-empty")
-	ErrSameAgent            = errors.New("emitter and executor must differ")
-	ErrInvalidTerritory     = errors.New("territory: invalid")
-	ErrNoAssertions         = errors.New("assertions: at least one is required")
-	ErrInvalidAssertionID   = errors.New("assertion: id must be non-empty")
-	ErrInvalidAssertionType = errors.New("assertion: unknown type")
-	ErrNegativeTimeout      = errors.New("timeout_seconds: must be positive")
-	ErrNegativeRemediations = errors.New("max_remediations: must be non-negative")
+	ErrInvalidEmitter         = errors.New("emitter_agent_id: must be non-empty")
+	ErrInvalidExecutor        = errors.New("executor_agent_id: must be non-empty")
+	ErrSameAgent              = errors.New("emitter and executor must differ")
+	ErrInvalidTerritory       = errors.New("territory: invalid")
+	ErrNoAssertions           = errors.New("assertions: at least one is required")
+	ErrInvalidAssertionID     = errors.New("assertion: id must be non-empty")
+	ErrInvalidAssertionType   = errors.New("assertion: unknown type")
+	ErrNegativeTimeout        = errors.New("timeout_seconds: must be positive")
+	ErrNegativeRemediations   = errors.New("max_remediations: must be non-negative")
 )
 
 // Validate checks that the envelope is structurally and semantically valid.
@@ -284,11 +285,11 @@ func ComputeEnvelopeHash(env *CognitiveTaskEnvelope) (string, error) {
 	repo := strings.TrimSuffix(strings.TrimSuffix(env.Territory.Repository, "/"), ".git")
 
 	signable := &CognitiveTaskEnvelope{
-		ProtocolVersion:  env.ProtocolVersion,
-		MeshID:           env.MeshID,
-		EnvelopeID:       env.EnvelopeID,
-		EmitterAgentID:   env.EmitterAgentID,
-		ExecutorAgentID:  env.ExecutorAgentID,
+		ProtocolVersion: env.ProtocolVersion,
+		MeshID:          env.MeshID,
+		EnvelopeID:      env.EnvelopeID,
+		EmitterAgentID:  env.EmitterAgentID,
+		ExecutorAgentID: env.ExecutorAgentID,
 		Territory: Territory{
 			Repository:    repo,
 			Branch:        env.Territory.Branch,
