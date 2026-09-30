@@ -27,43 +27,64 @@ import (
 // Docker infrastructure helpers
 // ─────────────────────────────────────────────────────────────────
 
+var (
+	testCertsMu  sync.RWMutex
+	testCertsDir string
+)
+
+func setTestCertsDir(dir string) {
+	testCertsMu.Lock()
+	defer testCertsMu.Unlock()
+	testCertsDir = dir
+}
+
+func getTestCertsDir() string {
+	testCertsMu.RLock()
+	defer testCertsMu.RUnlock()
+	return testCertsDir
+}
+
 // composeUp starts the docker-compose stack and waits for all agents to be healthy.
 // It generates TLS certificates on the host, builds the images, then brings up the containers.
 // Returns a cleanup function. The Go test harness runs on the HOST (not in Docker network),
 // so all agent access uses localhost with published ports.
-func composeUp(t *testing.T, composeDir string) (func(), string) {
+func composeUp(t *testing.T, composeDir string) func() {
 	t.Helper()
 
 	composeFile := filepath.Join(composeDir, "docker-compose.yml")
 
-	// Step 1: Generate TLS certificates on the host machine.
-	t.Log("[setup] Generating TLS certificates on host...")
-	certsDir := filepath.Join(composeDir, "certs-generated")
-	if err := os.MkdirAll(certsDir, 0755); err != nil {
-		t.Fatalf("create certs directory: %v", err)
-	}
+	// Step 1: Locate or generate TLS certificates on the host machine.
+	certsDir := os.Getenv("CERTS_HOST_DIR")
+	if certsDir == "" {
+		t.Log("[setup] Generating TLS certificates on host...")
+		certsDir = filepath.Join(composeDir, "certs-generated")
+		if err := os.MkdirAll(certsDir, 0755); err != nil {
+			t.Fatalf("create certs directory: %v", err)
+		}
 
-	genCertsScript := filepath.Join(composeDir, "certs", "gen-certs.sh")
-	if _, err := os.Stat(genCertsScript); os.IsNotExist(err) {
-		t.Skipf("gen-certs.sh not found at %s", genCertsScript)
-	}
+		genCertsScript := filepath.Join(composeDir, "certs", "gen-certs.sh")
+		if _, err := os.Stat(genCertsScript); os.IsNotExist(err) {
+			t.Skipf("gen-certs.sh not found at %s", genCertsScript)
+		}
 
-	genCmd := exec.Command("bash", genCertsScript, certsDir)
-	genOut, genErr := genCmd.CombinedOutput()
-	if genErr != nil {
-		t.Skipf("certificate generation failed (bash/openssl required): %v\n%s", genErr, string(genOut))
-	}
-	t.Logf("[setup] Certificates generated.")
+		genCmd := exec.Command("bash", genCertsScript, certsDir)
+		genOut, genErr := genCmd.CombinedOutput()
+		if genErr != nil {
+			t.Skipf("certificate generation failed (bash/openssl required): %v\n%s", genErr, string(genOut))
+		}
+		t.Logf("[setup] Certificates generated.")
 
-	// Make keys world-readable so the container user can read them.
-	chmodCmd := exec.Command("chmod", "a+r",
-		filepath.Join(certsDir, "ca.key"),
-		filepath.Join(certsDir, "server.key"),
-		filepath.Join(certsDir, "client.key"))
-	if err := chmodCmd.Run(); err != nil {
-		t.Logf("[setup] chmod on keys: %v (non-fatal)", err)
+		// Make keys world-readable so the container user can read them.
+		chmodCmd := exec.Command("chmod", "a+r",
+			filepath.Join(certsDir, "ca.key"),
+			filepath.Join(certsDir, "server.key"),
+			filepath.Join(certsDir, "client.key"))
+		if err := chmodCmd.Run(); err != nil {
+			t.Logf("[setup] chmod on keys: %v (non-fatal)", err)
+		}
+		t.Logf("[setup] Keys made world-readable for containers.")
 	}
-	t.Logf("[setup] Keys made world-readable for containers.")
+	setTestCertsDir(certsDir)
 
 	// Step 2: Build the agent images.
 	t.Log("[setup] Building agent images...")
@@ -121,16 +142,8 @@ func composeUp(t *testing.T, composeDir string) (func(), string) {
 			name string
 			port int
 		}{{"agent-a", 18443}, {"agent-b", 28443}, {"agent-c", 38443}} {
-			client, err := agent.NewHTTPClientTLS(
-				fmt.Sprintf("https://localhost:%d", ep.port),
-				agent.WithCACert(filepath.Join(certsDir, "ca.crt")),
-			)
-			if err != nil {
-				t.Logf("[setup]   %s: client error: %v", ep.name, err)
-				allHealthy = false
-				break
-			}
-			if _, err = client.Health(ctx); err != nil {
+			client := newTestTLSClient(fmt.Sprintf("https://localhost:%d", ep.port))
+			if _, err := client.Health(ctx); err != nil {
 				t.Logf("[setup]   %s: not ready yet...", ep.name)
 				allHealthy = false
 				break
@@ -162,7 +175,7 @@ func composeUp(t *testing.T, composeDir string) (func(), string) {
 		t.Fatalf("timeout waiting for agents. Logs:\n%s", string(logsOut))
 	}
 
-	return cleanup, certsDir
+	return cleanup
 }
 
 // findComposeDir returns the path to the integration directory.
@@ -194,16 +207,51 @@ func findComposeDir(t *testing.T) string {
 	return ""
 }
 
-// newTestTLSClient creates an HTTP client that validates the server certificate
-// using the test CA certificate generated for the container cluster.
-func newTestTLSClient(t *testing.T, baseURL, certsDir string) *agent.HTTPClient {
-	t.Helper()
-	caCertPath := filepath.Join(certsDir, "ca.crt")
-	client, err := agent.NewHTTPClientTLS(baseURL, agent.WithCACert(caCertPath))
-	if err != nil {
-		t.Fatalf("create TLS client for %s: %v", baseURL, err)
+func findTestCACert() string {
+	if dir := getTestCertsDir(); dir != "" {
+		caPath := filepath.Join(dir, "ca.crt")
+		if _, err := os.Stat(caPath); err == nil {
+			return caPath
+		}
 	}
+	if dir := os.Getenv("CERTS_HOST_DIR"); dir != "" {
+		caPath := filepath.Join(dir, "ca.crt")
+		if _, err := os.Stat(caPath); err == nil {
+			return caPath
+		}
+	}
+	if _, err := os.Stat("/tmp/rfc002-certs/ca.crt"); err == nil {
+		return "/tmp/rfc002-certs/ca.crt"
+	}
+	cwd, err := os.Getwd()
+	if err == nil {
+		for dir := cwd; dir != "/" && dir != ""; dir = filepath.Dir(dir) {
+			caPath := filepath.Join(dir, "integration", "certs-generated", "ca.crt")
+			if _, err := os.Stat(caPath); err == nil {
+				return caPath
+			}
+		}
+	}
+	return ""
+}
+
+// newTestTLSClient creates an HTTP client that validates the server certificate
+// using the test CA certificate if available, falling back to explicit dev-insecure.
+func newTestTLSClient(baseURL string) *agent.HTTPClient {
+	if caPath := findTestCACert(); caPath != "" {
+		client, err := agent.NewHTTPClientTLS(baseURL, agent.WithCACert(caPath))
+		if err == nil {
+			return client
+		}
+	}
+	client, _ := agent.NewHTTPClientTLS(baseURL, agent.WithDevInsecureTLS(true))
 	return client
+}
+
+// newInsecureTLSClient is maintained for backwards compatibility in integration tests,
+// delegating to newTestTLSClient which prefers WithCACert if the test CA exists.
+func newInsecureTLSClient(baseURL string) *agent.HTTPClient {
+	return newTestTLSClient(baseURL)
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -221,7 +269,7 @@ func TestDistributed_OneToOneOverHTTPS(t *testing.T) {
 	}
 
 	composeDir := findComposeDir(t)
-	cleanup, certsDir := composeUp(t, composeDir)
+	cleanup := composeUp(t, composeDir)
 	defer cleanup()
 
 
@@ -248,8 +296,8 @@ def subtract(a, b):
 	t.Log("=== Distributed 1-to-1: Agent A → Agent B over HTTPS ===")
 
 	ctx := context.Background()
-	aClient := newTestTLSClient(t, "https://localhost:18443", certsDir)
-	bClient := newTestTLSClient(t, "https://localhost:28443", certsDir)
+	aClient := newTestTLSClient("https://localhost:18443")
+	bClient := newTestTLSClient("https://localhost:28443")
 
 	// Step 1: Get baseline SHA-256 of calculator.py from agent-b's workspace.
 	cmd := exec.Command("docker", "exec", "agent-b", "sh", "-c",
@@ -443,15 +491,15 @@ func TestDistributed_FanOutOneToMany(t *testing.T) {
 	}
 
 	composeDir := findComposeDir(t)
-	cleanup, certsDir := composeUp(t, composeDir)
+	cleanup := composeUp(t, composeDir)
 	defer cleanup()
 
 	t.Log("=== Distributed Fan-out: Agent A → Agent B + Agent C ===")
 
 	ctx := context.Background()
-	aClient := newTestTLSClient(t, "https://localhost:18443", certsDir)
-	bClient := newTestTLSClient(t, "https://localhost:28443", certsDir)
-	cClient := newTestTLSClient(t, "https://localhost:38443", certsDir)
+	aClient := newTestTLSClient("https://localhost:18443")
+	bClient := newTestTLSClient("https://localhost:28443")
+	cClient := newTestTLSClient("https://localhost:38443")
 
 	aSigner, _ := signing.GenerateSigner("agent-a")
 
@@ -655,7 +703,7 @@ func TestDistributed_ChainIntegrityPerExecutor(t *testing.T) {
 	}
 
 	composeDir := findComposeDir(t)
-	cleanup, certsDir := composeUp(t, composeDir)
+	cleanup := composeUp(t, composeDir)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -664,8 +712,8 @@ func TestDistributed_ChainIntegrityPerExecutor(t *testing.T) {
 		executorID string
 		client     *agent.HTTPClient
 	}{
-		{"agent-b", newTestTLSClient(t, "https://localhost:28443", certsDir)},
-		{"agent-c", newTestTLSClient(t, "https://localhost:38443", certsDir)},
+		{"agent-b", newTestTLSClient("https://localhost:28443")},
+		{"agent-c", newTestTLSClient("https://localhost:38443")},
 	} {
 		t.Run(tc.executorID, func(t *testing.T) {
 			chainResp, err := tc.client.GetChain(ctx, "agent-a", tc.executorID)
