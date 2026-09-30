@@ -144,7 +144,7 @@ func composeUp(t *testing.T, composeDir string) func() {
 		}{{"agent-a", 18443}, {"agent-b", 28443}, {"agent-c", 38443}} {
 			client := newTestTLSClient(fmt.Sprintf("https://localhost:%d", ep.port))
 			if _, err := client.Health(ctx); err != nil {
-				t.Logf("[setup]   %s: not ready yet...", ep.name)
+				t.Logf("[setup]   %s: not ready yet (%v)...", ep.name, err)
 				allHealthy = false
 				break
 			}
