@@ -1576,3 +1576,17 @@ func TestServer_RunnerFlag(t *testing.T) {
 		}
 	})
 }
+
+func TestCLI_CertRevoke_ReturnsError(t *testing.T) {
+	ctx := context.Background()
+	var stdout, stderr bytes.Buffer
+	err := runCLI(ctx, []string{"cert-revoke", "-node-id", "test-node"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected cert-revoke to return error, got nil")
+	}
+	expectedMsg := "la revocación de certificados no está implementada en esta versión; ver issue #25"
+	if !strings.Contains(err.Error(), expectedMsg) {
+		t.Fatalf("expected error containing %q, got: %v", expectedMsg, err)
+	}
+}
+
