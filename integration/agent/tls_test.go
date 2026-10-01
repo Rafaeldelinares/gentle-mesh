@@ -36,6 +36,7 @@ func TestTLS_HTTPSServer(t *testing.T) {
 
 	cfg := Config{
 		AgentID:     "test-agent",
+		MeshID:      "gentle-mesh-test",
 		Role:        RoleExecutor,
 		TLSCertFile: certFile,
 		TLSKeyFile:  keyFile,
@@ -126,6 +127,7 @@ func TestTLS_MutualTLS(t *testing.T) {
 
 	cfg := Config{
 		AgentID:      "test-agent-mtls",
+		MeshID:       "gentle-mesh-test",
 		Role:         RoleExecutor,
 		TLSCertFile:  certFile,
 		TLSKeyFile:   keyFile,
@@ -193,6 +195,7 @@ func TestTLS_MinVersionTLS12(t *testing.T) {
 
 	cfg := Config{
 		AgentID:     "test-agent-tls12",
+		MeshID:      "gentle-mesh-test",
 		Role:        RoleExecutor,
 		TLSCertFile: certFile,
 		TLSKeyFile:  keyFile,
@@ -251,9 +254,10 @@ func TestTLS_ConfigStored(t *testing.T) {
 	os.WriteFile(keyFile, []byte("dummy"), 0600)
 
 	cfg := Config{
-		AgentID:     "test-agent-config",
-		TLSCertFile: certFile,
-		TLSKeyFile:  keyFile,
+		AgentID:      "test-agent-config",
+		MeshID:       "gentle-mesh-test",
+		TLSCertFile:  certFile,
+		TLSKeyFile:   keyFile,
 		ClientCAFile: "ca.crt",
 		ChainDBPath:  dbPath,
 	}

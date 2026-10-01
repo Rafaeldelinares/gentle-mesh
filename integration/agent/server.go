@@ -46,6 +46,9 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.AgentID == "" {
 		return nil, errors.New("agent_id is required")
 	}
+	if cfg.MeshID == "" {
+		return nil, errors.New("mesh_id is required")
+	}
 	if cfg.Role == "" {
 		cfg.Role = RoleExecutor
 	}
@@ -92,7 +95,7 @@ func NewServer(cfg Config) (*Server, error) {
 	// Create settlement engine.
 	evaluator := settlement.NewEvaluator(cfg.WorkspaceDir)
 	engine, err := settlement.NewEngine(settlement.EngineConfig{
-		Evaluator:       evaluator,
+		Evaluator:      evaluator,
 		ChainStore:     chainStore,
 		ExecutorSigner: signer,
 		RemediationMax: cfg.MaxRemed,
@@ -186,7 +189,7 @@ func (s *Server) runTLS(port int) error {
 	s.httpServer = &http.Server{
 		Addr:         fmt.Sprintf(":%d", port),
 		Handler:      mux,
-		TLSConfig:   tlsConfig,
+		TLSConfig:    tlsConfig,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -305,6 +308,10 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validate: "+err.Error())
 		return
 	}
+	if env.MeshID != s.config.MeshID {
+		writeError(w, http.StatusBadRequest, envelope.ErrMeshMismatch.Error())
+		return
+	}
 
 	// Pre-flight: check preconditions synchronously.
 	precondResults := s.runPreconditions(env.Preconditions)
@@ -316,13 +323,17 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	meshID := s.config.MeshID
+
 	lease := &envelope.Lease{
-		LeaseID:            fmt.Sprintf("lease-%d", time.Now().UnixNano()),
+		ProtocolVersion:     envelope.CurrentProtocolVersion,
+		MeshID:              meshID,
+		LeaseID:             fmt.Sprintf("lease-%d", time.Now().UnixNano()),
 		EnvelopeID:          env.EnvelopeID,
 		ExecutorAgentID:     s.config.AgentID,
-		Accepted:           allPassed,
+		Accepted:            allPassed,
 		PreconditionResults: precondResults,
-		ExpiresAt:          time.Now().Add(time.Duration(env.TimeoutSeconds) * time.Second),
+		ExpiresAt:           time.Now().Add(time.Duration(env.TimeoutSeconds) * time.Second),
 	}
 
 	// Sign the lease.
@@ -365,6 +376,14 @@ func (s *Server) handleCreateLease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := envelope.Validate(env); err != nil {
+		writeError(w, http.StatusBadRequest, "validate: "+err.Error())
+		return
+	}
+	if env.MeshID != s.config.MeshID {
+		writeError(w, http.StatusBadRequest, envelope.ErrMeshMismatch.Error())
+		return
+	}
 
 	precondResults := s.runPreconditions(env.Preconditions)
 	allPassed := true
@@ -375,13 +394,17 @@ func (s *Server) handleCreateLease(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	meshID := s.config.MeshID
+
 	lease := &envelope.Lease{
-		LeaseID:            fmt.Sprintf("lease-%d", time.Now().UnixNano()),
+		ProtocolVersion:     envelope.CurrentProtocolVersion,
+		MeshID:              meshID,
+		LeaseID:             fmt.Sprintf("lease-%d", time.Now().UnixNano()),
 		EnvelopeID:          env.EnvelopeID,
 		ExecutorAgentID:     s.config.AgentID,
-		Accepted:           allPassed,
+		Accepted:            allPassed,
 		PreconditionResults: precondResults,
-		ExpiresAt:          time.Now().Add(time.Duration(env.TimeoutSeconds) * time.Second),
+		ExpiresAt:           time.Now().Add(time.Duration(env.TimeoutSeconds) * time.Second),
 	}
 
 	leaseBytes, _ := json.Marshal(lease)
@@ -415,6 +438,14 @@ func (s *Server) handleSettle(w http.ResponseWriter, r *http.Request) {
 	env := new(envelope.CognitiveTaskEnvelope)
 	if err := json.Unmarshal(req.EnvelopeJSON, env); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := envelope.Validate(env); err != nil {
+		writeError(w, http.StatusBadRequest, "validate: "+err.Error())
+		return
+	}
+	if env.MeshID != s.config.MeshID {
+		writeError(w, http.StatusBadRequest, envelope.ErrMeshMismatch.Error())
 		return
 	}
 
@@ -485,6 +516,10 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "parse receipt: "+err.Error())
 		return
 	}
+	if rec.MeshID != s.config.MeshID {
+		writeError(w, http.StatusBadRequest, receipt.ErrMeshMismatch.Error())
+		return
+	}
 
 	// Validate the executor signed-at field is present.
 	if req.ExecutorSignedAtRFC == "" {
@@ -501,6 +536,10 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if stored.MeshID != s.config.MeshID {
+		writeError(w, http.StatusBadRequest, receipt.ErrMeshMismatch.Error())
 		return
 	}
 
@@ -581,6 +620,10 @@ func (s *Server) handleDispute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "parse receipt: "+err.Error())
 		return
 	}
+	if rec.MeshID != s.config.MeshID {
+		writeError(w, http.StatusBadRequest, receipt.ErrMeshMismatch.Error())
+		return
+	}
 
 	// Get the receipt from the chain store.
 	ctx := context.Background()
@@ -591,6 +634,10 @@ func (s *Server) handleDispute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if stored.MeshID != s.config.MeshID {
+		writeError(w, http.StatusBadRequest, receipt.ErrMeshMismatch.Error())
 		return
 	}
 
@@ -717,6 +764,10 @@ func (s *Server) handleGetReceipt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if rec.MeshID != s.config.MeshID {
+		writeError(w, http.StatusBadRequest, receipt.ErrMeshMismatch.Error())
+		return
+	}
 
 	recJSON, _ := json.Marshal(rec)
 	writeJSON(w, http.StatusOK, &ReceiptResponse{
@@ -744,12 +795,12 @@ func (s *Server) handleGetChain(w http.ResponseWriter, r *http.Request) {
 	entries := make([]ChainReceiptEntry, len(chain))
 	for i, rec := range chain {
 		entries[i] = ChainReceiptEntry{
-			ReceiptID:            rec.ReceiptID,
-			ContractID:           rec.ContractID,
+			ReceiptID:           rec.ReceiptID,
+			ContractID:          rec.ContractID,
 			EnvelopeHash:        rec.EnvelopeHash,
 			Verdict:             string(rec.Verdict),
 			ExecutorSignedAt:    rec.ExecutorSignedAt.Format(time.RFC3339),
-			ExecutorSignature:    rec.ExecutorSignature,
+			ExecutorSignature:   rec.ExecutorSignature,
 			PreviousReceiptHash: rec.PreviousReceiptHash,
 		}
 		if rec.EmitterAcceptanceAt != nil {
@@ -780,6 +831,10 @@ func (s *Server) handleVerifyReceipt(w http.ResponseWriter, r *http.Request) {
 	rec := new(receipt.SettlementReceipt)
 	if err := json.Unmarshal(req.ReceiptJSON, rec); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if rec.MeshID != s.config.MeshID {
+		writeError(w, http.StatusBadRequest, receipt.ErrMeshMismatch.Error())
 		return
 	}
 
@@ -843,8 +898,8 @@ func (s *Server) runPreconditions(preconds []envelope.Precondition) []envelope.P
 	for i, p := range preconds {
 		result := envelope.PreconditionResult{
 			PreconditionIndex: i,
-			Type:             string(p.Type),
-			Passed:           false,
+			Type:              string(p.Type),
+			Passed:            false,
 		}
 
 		switch p.Type {

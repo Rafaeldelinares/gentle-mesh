@@ -53,11 +53,13 @@ services:
       - agent-a-chain:/data   # A keeps its own audit copy of the chain
     environment:
       AGENT_ID: "agent-a"
+      GENTLE_MESH_ID: "gentle-mesh-dev"
       AGENT_ROLE: "emitter"
       CHAIN_DB_PATH: "/data/chain.db"
     command: >
       serve
       --agent-id agent-a
+      --mesh-id gentle-mesh-dev
       --role emitter
       --port 8443
       --tls-cert /certs/server.crt
@@ -90,6 +92,7 @@ services:
       - agent-b-chain:/data
     environment:
       AGENT_ID: "agent-b"
+      GENTLE_MESH_ID: "gentle-mesh-dev"
       AGENT_ROLE: "executor"
       CHAIN_DB_PATH: "/data/chain.db"
       WORKSPACE_DIR: "/srv/workspace"
@@ -97,6 +100,7 @@ services:
     command: >
       serve
       --agent-id agent-b
+      --mesh-id gentle-mesh-dev
       --role executor
       --port 8443
       --tls-cert /certs/server.crt
@@ -129,6 +133,7 @@ services:
       - agent-c-chain:/data
     environment:
       AGENT_ID: "agent-c"
+      GENTLE_MESH_ID: "gentle-mesh-dev"
       AGENT_ROLE: "executor"
       CHAIN_DB_PATH: "/data/chain.db"
       WORKSPACE_DIR: "/srv/workspace"
@@ -136,6 +141,7 @@ services:
     command: >
       serve
       --agent-id agent-c
+      --mesh-id gentle-mesh-dev
       --role executor
       --port 8443
       --tls-cert /certs/server.crt
@@ -152,6 +158,8 @@ services:
   # Orchestrates the full scenario and validates results over HTTPS.
   # ─────────────────────────────────────────────────────────────────
   integration-test:
+    profiles:
+      - runner
     build:
       context: ..
       dockerfile: integration/Dockerfile.agent

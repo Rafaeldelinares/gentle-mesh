@@ -94,6 +94,8 @@ func TestMeshClient_SubmitEnvelope(t *testing.T) {
 	}
 
 	env := &envelope.CognitiveTaskEnvelope{
+		ProtocolVersion:  envelope.CurrentProtocolVersion,
+		MeshID:           "gentle-mesh-dev",
 		EnvelopeID:      "envelope-001",
 		EmitterAgentID:   "emitter",
 		ExecutorAgentID:  "executor",

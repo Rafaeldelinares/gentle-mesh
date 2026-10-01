@@ -89,7 +89,7 @@ func composeUp(t *testing.T, composeDir string) func() {
 	// Step 2: Build the agent images.
 	t.Log("[setup] Building agent images...")
 	buildCmd := exec.Command("docker", "compose", "-f", composeFile,
-		"-p", "rfc002", "build", "--no-cache")
+		"-p", "rfc002", "build", "--no-cache", "agent-a", "agent-b", "agent-c")
 	buildCmd.Dir = composeDir
 	buildOut, buildErr := buildCmd.CombinedOutput()
 	if buildErr != nil {
@@ -116,7 +116,8 @@ func composeUp(t *testing.T, composeDir string) func() {
 		"up", "-d",
 		"--scale", "agent-a=1",
 		"--scale", "agent-b=1",
-		"--scale", "agent-c=1")
+		"--scale", "agent-c=1",
+		"agent-a", "agent-b", "agent-c")
 	upCmd.Dir = composeDir
 	upCmd.Env = append(os.Environ(), "CERTS_HOST_DIR="+certsDir)
 	upOut, upErr := upCmd.CombinedOutput()
@@ -272,8 +273,6 @@ func TestDistributed_OneToOneOverHTTPS(t *testing.T) {
 	cleanup := composeUp(t, composeDir)
 	defer cleanup()
 
-
-
 	// Create initial calculator.py with baseline content.
 	workspace := "/srv/workspace"
 	calcPath := filepath.Join(workspace, "calculator.py")
@@ -319,10 +318,10 @@ def subtract(a, b):
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
-			Branch:       "main",
+			Branch:        "main",
 			WorkspacePath: workspace,
 		},
-		Preconditions: []envelope.Precondition{},   // no preconditions — focus on core settlement flow
+		Preconditions: []envelope.Precondition{}, // no preconditions — focus on core settlement flow
 		Assertions: []envelope.Assertion{
 			{
 				ID:   "file_modified",
@@ -345,7 +344,8 @@ def subtract(a, b):
 		MaxRemediations: 1,
 		NoSubdelegation: true,
 		CreatedAt:       time.Now().UTC(),
-		Version:         "1.0",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
 	}
 
 	hash, err := envelope.ComputeEnvelopeHash(env)
@@ -403,7 +403,7 @@ def subtract(a, b):
 	t.Log("[5] Agent A → Agent B: settlement...")
 	settleResp, err := bClient.Settle(ctx, &agent.SettleRequest{
 		EnvelopeJSON: envJSON,
-		LeaseID:     leaseResp.LeaseID,
+		LeaseID:      leaseResp.LeaseID,
 	})
 	if err != nil {
 		t.Fatalf("settle: %v", err)
@@ -540,9 +540,9 @@ func TestDistributed_FanOutOneToMany(t *testing.T) {
 	bPubKeyBytes, _ := hex.DecodeString(bHealth.PublicKey)
 	cPubKeyBytes, _ := hex.DecodeString(cHealth.PublicKey)
 	for _, tc := range []struct {
-		rec      *receipt.SettlementReceipt
-		pubKey   []byte
-		name     string
+		rec    *receipt.SettlementReceipt
+		pubKey []byte
+		name   string
 	}{
 		{results[0].receipt, bPubKeyBytes, "B"},
 		{results[1].receipt, cPubKeyBytes, "C"},
@@ -580,7 +580,7 @@ func buildEnvelope(emitterID, executorID, id, workspace, filePath, expectedHash 
 		ExecutorAgentID: executorID,
 		Territory: envelope.Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
-			Branch:       "main",
+			Branch:        "main",
 			WorkspacePath: workspace,
 		},
 		Assertions: []envelope.Assertion{
@@ -597,7 +597,8 @@ func buildEnvelope(emitterID, executorID, id, workspace, filePath, expectedHash 
 		MaxRemediations: 0,
 		NoSubdelegation: true,
 		CreatedAt:       time.Now().UTC(),
-		Version:         "1.0",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
 	}
 	hash, _ := envelope.ComputeEnvelopeHash(env)
 	env.EnvelopeHash = hash
@@ -676,7 +677,7 @@ func fanDispatch(ctx context.Context, aClient, executorClient *agent.HTTPClient,
 	// Settle.
 	settleResp, err := executorClient.Settle(ctx, &agent.SettleRequest{
 		EnvelopeJSON: envJSON,
-		LeaseID:     leaseResp.LeaseID,
+		LeaseID:      leaseResp.LeaseID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("settle on %s: %w", executorID, err)

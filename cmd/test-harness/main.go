@@ -3,9 +3,9 @@
 //
 // Usage:
 //
-//   serve --port 8080              Run as an agent HTTP server
-//   test-scenario                  Run the full integration test scenario
-//   health --url http://host:8080  Check agent health
+//	serve --port 8080              Run as an agent HTTP server
+//	test-scenario                  Run the full integration test scenario
+//	health --url http://host:8080  Check agent health
 package main
 
 import (
@@ -58,6 +58,7 @@ func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	port := fs.Int("port", 8080, "HTTP server port")
 	agentID := fs.String("agent-id", "", "Agent ID (required)")
+	meshID := fs.String("mesh-id", os.Getenv("GENTLE_MESH_ID"), "Mesh ID (defaults to GENTLE_MESH_ID env var)")
 	role := fs.String("role", "executor", "Role: emitter or executor")
 	chainDB := fs.String("chain-db", "/data/chain.db", "Path to SQLite chain database")
 	workspace := fs.String("workspace", "/srv/workspace", "Workspace directory")
@@ -82,14 +83,15 @@ func runServe(args []string) {
 	}
 
 	cfg := agent.Config{
-		AgentID:     *agentID,
-		Role:        agent.Role(*role),
-		ChainDBPath: *chainDB,
+		AgentID:      *agentID,
+		MeshID:       *meshID,
+		Role:         agent.Role(*role),
+		ChainDBPath:  *chainDB,
 		WorkspaceDir: *workspace,
-		EvalTimeout: *evalTimeout,
-		MaxRemed:   *maxRemed,
-		TLSCertFile: *tlsCert,
-		TLSKeyFile:  *tlsKey,
+		EvalTimeout:  *evalTimeout,
+		MaxRemed:     *maxRemed,
+		TLSCertFile:  *tlsCert,
+		TLSKeyFile:   *tlsKey,
 		ClientCAFile: *clientCA,
 	}
 

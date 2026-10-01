@@ -28,8 +28,9 @@ func TestShell_LocalPreFlightRejection(t *testing.T) {
 	runCmd("git", "-C", workspace, "add", ".")
 
 	s, err := New(Config{
-		AgentID:       "test-agent",
-		WorkspaceDir:  workspace,
+		MeshID:       "mesh-test",
+		AgentID:      "test-agent",
+		WorkspaceDir: workspace,
 		ChainDBPath:  chainDB,
 	})
 	if err != nil {
@@ -58,8 +59,9 @@ func TestShell_LocalPreFlightToolNotFound(t *testing.T) {
 	chainDB := t.TempDir() + "/chain.db"
 
 	s, err := New(Config{
-		AgentID:       "test-agent",
-		WorkspaceDir:  workspace,
+		MeshID:       "mesh-test",
+		AgentID:      "test-agent",
+		WorkspaceDir: workspace,
 		ChainDBPath:  chainDB,
 	})
 	if err != nil {
@@ -84,8 +86,9 @@ func TestShell_LocalPreFlightToolFound(t *testing.T) {
 	chainDB := t.TempDir() + "/chain.db"
 
 	s, err := New(Config{
-		AgentID:       "test-agent",
-		WorkspaceDir:  workspace,
+		MeshID:       "mesh-test",
+		AgentID:      "test-agent",
+		WorkspaceDir: workspace,
 		ChainDBPath:  chainDB,
 	})
 	if err != nil {
@@ -111,8 +114,9 @@ func TestShell_ExecuteAssertionPass(t *testing.T) {
 	chainDB := t.TempDir() + "/chain.db"
 
 	s, err := New(Config{
-		AgentID:       "test-agent",
-		WorkspaceDir:  workspace,
+		MeshID:       "mesh-test",
+		AgentID:      "test-agent",
+		WorkspaceDir: workspace,
 		ChainDBPath:  chainDB,
 		EvalTimeout:  10 * time.Second,
 	})
@@ -152,8 +156,9 @@ func TestShell_ExecuteAssertionFail(t *testing.T) {
 	chainDB := t.TempDir() + "/chain.db"
 
 	s, err := New(Config{
-		AgentID:       "test-agent",
-		WorkspaceDir:  workspace,
+		MeshID:       "mesh-test",
+		AgentID:      "test-agent",
+		WorkspaceDir: workspace,
 		ChainDBPath:  chainDB,
 		EvalTimeout:  10 * time.Second,
 	})
@@ -199,8 +204,9 @@ func TestShell_ExecuteFileHashMismatch(t *testing.T) {
 	}
 
 	s, err := New(Config{
-		AgentID:       "test-agent",
-		WorkspaceDir:  workspace,
+		MeshID:       "mesh-test",
+		AgentID:      "test-agent",
+		WorkspaceDir: workspace,
 		ChainDBPath:  chainDB,
 		EvalTimeout:  10 * time.Second,
 	})
@@ -235,8 +241,9 @@ func TestShell_ChainStore(t *testing.T) {
 	chainDB := t.TempDir() + "/chain.db"
 
 	s, err := New(Config{
-		AgentID:       "test-agent",
-		WorkspaceDir:  workspace,
+		MeshID:       "mesh-test",
+		AgentID:      "test-agent",
+		WorkspaceDir: workspace,
 		ChainDBPath:  chainDB,
 		EvalTimeout:  10 * time.Second,
 	})
@@ -268,14 +275,31 @@ func TestShell_ChainStore(t *testing.T) {
 	}
 }
 
+// TestShell_EmptyMeshID_ReturnsError verifies that New returns an error if MeshID is empty.
+func TestShell_EmptyMeshID_ReturnsError(t *testing.T) {
+	workspace := t.TempDir()
+	chainDB := t.TempDir() + "/chain.db"
+
+	_, err := New(Config{
+		AgentID:      "test-agent",
+		MeshID:       "", // Empty MeshID MUST return error
+		WorkspaceDir: workspace,
+		ChainDBPath:  chainDB,
+	})
+	if err == nil {
+		t.Fatal("New(Config{MeshID: \"\"}) should have returned error, got nil")
+	}
+}
+
 // TestShell_Signer verifies that the shell exposes its signer.
 func TestShell_Signer(t *testing.T) {
 	workspace := t.TempDir()
 	chainDB := t.TempDir() + "/chain.db"
 
 	s, err := New(Config{
-		AgentID:       "test-agent",
-		WorkspaceDir:  workspace,
+		MeshID:       "mesh-test",
+		AgentID:      "test-agent",
+		WorkspaceDir: workspace,
 		ChainDBPath:  chainDB,
 	})
 	if err != nil {

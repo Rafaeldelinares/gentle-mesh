@@ -57,8 +57,8 @@ func TestVerdict_String(t *testing.T) {
 
 func TestAcceptance_IsValid(t *testing.T) {
 	tests := []struct {
-		a      Acceptance
-		valid  bool
+		a     Acceptance
+		valid bool
 	}{
 		{AcceptanceAccepted, true},
 		{AcceptanceDisputed, true},
@@ -131,14 +131,16 @@ func TestReceiptStatus_String(t *testing.T) {
 func validReceipt() *SettlementReceipt {
 	now := time.Now().UTC()
 	return &SettlementReceipt{
-		ReceiptID:        "0192de5f-7c01-8000-b000-000000000002",
-		ContractID:       "0192de5f-7c00-8000-b000-000000000001",
-		EnvelopeHash:     "abc123def456",
-		EmitterAgentID:   "agent-a",
-		ExecutorAgentID:  "agent-b",
+		ProtocolVersion: CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
+		ReceiptID:       "0192de5f-7c01-8000-b000-000000000002",
+		ContractID:      "0192de5f-7c00-8000-b000-000000000001",
+		EnvelopeHash:    "abc123def456",
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
 		Territory: Territory{
 			Repository:    "github.com/gentleman-programming/gentle-mesh",
-			Branch:         "feature/auth",
+			Branch:        "feature/auth",
 			WorkspacePath: "/srv/workspace/mesh",
 		},
 		Verdict: VerdictSettledClean,
@@ -147,15 +149,15 @@ func validReceipt() *SettlementReceipt {
 				AssertionIndex: 0,
 				AssertionID:    "tests_passing",
 				AssertionType:  "command_exit_code",
-				Result:        ResultPass,
+				Result:         ResultPass,
 				Evidence: AssertionEvidence{
 					Command:   "go test ./pkg/auth/...",
-					ExitCode: 0,
+					ExitCode:  0,
 					CheckedAt: now,
 				},
 			},
 		},
-		ExecutorSignature:  "sig-from-b",
+		ExecutorSignature:   "sig-from-b",
 		ExecutorSignedAt:    now,
 		PreviousReceiptHash: "previous-sig-hash",
 	}
@@ -219,15 +221,15 @@ func TestTerritory_Fields(t *testing.T) {
 
 func TestRemediationAttempt_Fields(t *testing.T) {
 	ra := RemediationAttempt{
-		AttemptIndex:          0,
+		AttemptIndex:           0,
 		TriggeredByAssertionID: "tests_passing",
-		Action:                "Ran go mod tidy to resolve dependency issue",
-		Command:               "go mod tidy",
-		ExitCode:              0,
-		AssertionsRechecked:   []string{"tests_passing", "build_clean"},
-		Result:                RemediationSuccess,
-		Message:               "Dependencies updated, tests re-run",
-		AttemptedAt:           time.Now().UTC(),
+		Action:                 "Ran go mod tidy to resolve dependency issue",
+		Command:                "go mod tidy",
+		ExitCode:               0,
+		AssertionsRechecked:    []string{"tests_passing", "build_clean"},
+		Result:                 RemediationSuccess,
+		Message:                "Dependencies updated, tests re-run",
+		AttemptedAt:            time.Now().UTC(),
 	}
 
 	if ra.Result != RemediationSuccess {

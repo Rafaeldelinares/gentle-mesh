@@ -18,9 +18,9 @@ import (
 // Errors for chain operations.
 var (
 	ErrReceiptNotFound         = errors.New("receipt not found")
-	ErrChainBroken            = errors.New("receipt chain is broken")
+	ErrChainBroken             = errors.New("receipt chain is broken")
 	ErrChainVerificationFailed = errors.New("chain verification failed")
-	ErrInvalidReceipt         = errors.New("invalid receipt")
+	ErrInvalidReceipt          = errors.New("invalid receipt")
 )
 
 // ChainStore manages the receipt chain for an agent pair.
@@ -80,6 +80,9 @@ const maxSaveRetries = 3
 func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) error {
 	if r == nil {
 		return ErrInvalidReceipt
+	}
+	if err := ValidateReceipt(r); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidReceipt, err)
 	}
 
 	cs.mu.Lock()
@@ -235,7 +238,13 @@ func (cs *ChainStore) GetChain(ctx context.Context, emitterID, executorID string
 // (prev_hash is not recalculated for an update).
 func (cs *ChainStore) UpdateReceipt(ctx context.Context, r *SettlementReceipt) error {
 	if r == nil {
-		return errors.New("receipt is nil")
+		return ErrInvalidReceipt
+	}
+	if r.ReceiptID == "" || r.ContractID == "" {
+		return fmt.Errorf("%w: missing receipt_id or contract_id", ErrInvalidReceipt)
+	}
+	if err := ValidateReceipt(r); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidReceipt, err)
 	}
 	data, err := json.Marshal(r)
 	if err != nil {
@@ -268,6 +277,9 @@ func (cs *ChainStore) UpdateReceipt(ctx context.Context, r *SettlementReceipt) e
 func (cs *ChainStore) InjectReceipt(ctx context.Context, r *SettlementReceipt) error {
 	if r == nil {
 		return ErrInvalidReceipt
+	}
+	if err := ValidateReceipt(r); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidReceipt, err)
 	}
 	data, err := json.Marshal(r)
 	if err != nil {
@@ -355,8 +367,8 @@ func (cs *ChainStore) VerifyChain(
 
 	for i, r := range chain {
 		result := VerificationResult{
-			ReceiptID:   r.ReceiptID,
-			ContractID:  r.ContractID,
+			ReceiptID:  r.ReceiptID,
+			ContractID: r.ContractID,
 			Verdict:    r.Verdict,
 			Index:      i,
 		}
@@ -429,14 +441,14 @@ func (cs *ChainStore) VerifyChain(
 // VerificationResult is the result of verifying a single receipt in the chain.
 type VerificationResult struct {
 	ReceiptID              string
-	ContractID            string
-	Verdict              Verdict
-	Index                int
-	PreviousHashValid    bool
+	ContractID             string
+	Verdict                Verdict
+	Index                  int
+	PreviousHashValid      bool
 	ExecutorSignatureValid bool
 	EmitterSignatureValid  bool
-	Valid                 bool
-	Error                string
+	Valid                  bool
+	Error                  string
 }
 
 // ComputeReceiptHash computes the JCS canonical SHA-256 hash of a receipt

@@ -361,7 +361,8 @@ func makeEnvelope(workspace string, signer *signing.BasicSigner, id string) *env
 		MaxRemediations: 0,
 		NoSubdelegation: true,
 		CreatedAt:       time.Now().UTC(),
-		Version:         "1.0",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
 	}
 	hash, _ := envelope.ComputeEnvelopeHash(env)
 	env.EnvelopeHash = hash

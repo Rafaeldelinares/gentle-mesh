@@ -288,7 +288,8 @@ func (s *Scenario) createEnvelope() (*envelope.CognitiveTaskEnvelope, error) {
 		MaxRemediations: 1,
 		NoSubdelegation: true,
 		CreatedAt:       time.Now().UTC(),
-		Version:         "1.0",
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "gentle-mesh-dev",
 	}
 
 	hash, err := envelope.ComputeEnvelopeHash(env)
