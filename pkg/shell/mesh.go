@@ -7,7 +7,6 @@ import (
 
 	"github.com/gentleman-programming/gentle-mesh/integration/agent"
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
 	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
 	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
 )
@@ -16,8 +15,8 @@ import (
 // It is used in Mode B and Mode C (remote executor mode).
 type MeshClient struct {
 	httpClient *agent.HTTPClient
-	signer    *signing.BasicSigner
-	baseURL   string
+	signer     *signing.BasicSigner
+	baseURL    string
 }
 
 // NewMeshClient creates a MeshClient for the given executor URL.
@@ -39,25 +38,9 @@ func NewMeshClient(baseURL string, signer *signing.BasicSigner, opts ...agent.TL
 // SubmitEnvelope signs and submits a CognitiveTaskEnvelope to the remote executor.
 // It signs the envelope with Ed25519 using JCS canonicalization (RFC 8785).
 func (m *MeshClient) SubmitEnvelope(ctx context.Context, env *envelope.CognitiveTaskEnvelope) (*agent.EnvelopeResponse, error) {
-	// Step 1: Compute envelope hash.
-	hash, err := envelope.ComputeEnvelopeHash(env)
-	if err != nil {
-		return nil, fmt.Errorf("compute envelope hash: %w", err)
+	if err := envelope.SignEnvelope(env, m.signer); err != nil {
+		return nil, fmt.Errorf("sign envelope: %w", err)
 	}
-	env.EnvelopeHash = hash
-
-	// Step 2: Sign the envelope (Ed25519 over JCS canonical JSON).
-	signable := *env
-	signable.EmitterSignature = ""
-	canonical, err := jcs.Marshal(&signable)
-	if err != nil {
-		return nil, fmt.Errorf("JCS marshal envelope: %w", err)
-	}
-	sig, err := m.signer.Sign(canonical)
-	if err != nil {
-		return nil, fmt.Errorf("Ed25519 sign: %w", err)
-	}
-	env.EmitterSignature = sig
 
 	// Step 3: Serialize and submit.
 	envJSON, err := json.Marshal(env)
@@ -77,7 +60,7 @@ func (m *MeshClient) Settle(ctx context.Context, env *envelope.CognitiveTaskEnve
 
 	resp, err := m.httpClient.Settle(ctx, &agent.SettleRequest{
 		EnvelopeJSON: envJSON,
-		LeaseID:    leaseID,
+		LeaseID:      leaseID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("settle: %w", err)
@@ -144,11 +127,11 @@ func (m *MeshClient) Check(ctx context.Context, preconditions []envelope.Precond
 	// Real implementation would POST to /preflight and parse the response.
 	results := make([]envelope.PreconditionResult, len(preconditions))
 	for i, p := range preconditions {
-			results[i] = envelope.PreconditionResult{
+		results[i] = envelope.PreconditionResult{
 			PreconditionIndex: i,
-			Type:             string(p.Type),
-			Passed:           true,
-			Message:          "pre-flight delegated to remote executor",
+			Type:              string(p.Type),
+			Passed:            true,
+			Message:           "pre-flight delegated to remote executor",
 		}
 	}
 	return &ReadinessReport{

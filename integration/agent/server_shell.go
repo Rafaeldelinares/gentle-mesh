@@ -444,26 +444,10 @@ func (s *ShellServer) dispatchOne(ctx context.Context, idx int, env envelope.Cog
 	}
 	defer executorClient.Close()
 
-	hash, err := envelope.ComputeEnvelopeHash(&env)
-	if err != nil {
-		result.Error = fmt.Sprintf("compute hash: %v", err)
+	if err := envelope.SignEnvelope(&env, s.signer); err != nil {
+		result.Error = fmt.Sprintf("sign envelope: %v", err)
 		return result
 	}
-	env.EnvelopeHash = hash
-
-	signable := env
-	signable.EmitterSignature = ""
-	canonical, err := jcs.Marshal(&signable)
-	if err != nil {
-		result.Error = fmt.Sprintf("JCS marshal: %v", err)
-		return result
-	}
-	sig, err := s.signer.Sign(canonical)
-	if err != nil {
-		result.Error = fmt.Sprintf("Ed25519 sign: %v", err)
-		return result
-	}
-	env.EmitterSignature = sig
 
 	envJSON, err := json.Marshal(&env)
 	if err != nil {

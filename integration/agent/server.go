@@ -34,7 +34,7 @@ type Server struct {
 	chainStore *receipt.ChainStore
 	evaluator  *settlement.Evaluator
 	engine     *settlement.Engine
-	signer     *signing.BasicSigner
+	signer     signing.Signer
 
 	// In-memory state for the integration test.
 	leasesMu sync.RWMutex
@@ -240,8 +240,13 @@ func (s *Server) PublicKey() string {
 }
 
 // Signer returns the agent's signer.
-func (s *Server) Signer() *signing.BasicSigner {
+func (s *Server) Signer() signing.Signer {
 	return s.signer
+}
+
+// SetSigner overrides the agent's signer (useful in tests to simulate signing failures).
+func (s *Server) SetSigner(signer signing.Signer) {
+	s.signer = signer
 }
 
 // ChainStore returns the receipt chain store.
@@ -337,9 +342,11 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sign the lease.
-	leaseBytes, _ := json.Marshal(lease)
-	leaseSig, _ := s.signer.Sign(leaseBytes)
-	lease.ExecutorSignature = leaseSig
+	if err := envelope.SignLease(lease, s.signer); err != nil {
+		log.Printf("[%s] Sign lease error: %v", s.config.AgentID, err)
+		writeError(w, http.StatusInternalServerError, "sign lease: "+err.Error())
+		return
+	}
 
 	s.leasesMu.Lock()
 	s.leases[lease.LeaseID] = lease
@@ -407,9 +414,11 @@ func (s *Server) handleCreateLease(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:           time.Now().Add(time.Duration(env.TimeoutSeconds) * time.Second),
 	}
 
-	leaseBytes, _ := json.Marshal(lease)
-	leaseSig, _ := s.signer.Sign(leaseBytes)
-	lease.ExecutorSignature = leaseSig
+	if err := envelope.SignLease(lease, s.signer); err != nil {
+		log.Printf("[%s] Sign lease error: %v", s.config.AgentID, err)
+		writeError(w, http.StatusInternalServerError, "sign lease: "+err.Error())
+		return
+	}
 
 	s.leasesMu.Lock()
 	s.leases[lease.LeaseID] = lease
@@ -569,7 +578,11 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return the updated receipt.
-	updatedJSON, _ := json.Marshal(stored)
+	updatedJSON, err := json.Marshal(stored)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "marshal: "+err.Error())
+		return
+	}
 	log.Printf("[%s] Accept: receipt=%s emitter_acceptance=%s",
 		s.config.AgentID, stored.ReceiptID, stored.EmitterAcceptance)
 
@@ -673,7 +686,11 @@ func (s *Server) handleDispute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return the updated receipt.
-	updatedJSON, _ := json.Marshal(stored)
+	updatedJSON, err := json.Marshal(stored)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "marshal: "+err.Error())
+		return
+	}
 	log.Printf("[%s] Dispute: receipt=%s reason=%s",
 		s.config.AgentID, stored.ReceiptID, stored.DisputeReason)
 
@@ -769,7 +786,11 @@ func (s *Server) handleGetReceipt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	recJSON, _ := json.Marshal(rec)
+	recJSON, err := json.Marshal(rec)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "marshal: "+err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, &ReceiptResponse{
 		ReceiptJSON: recJSON,
 		ReceiptID:   rec.ReceiptID,
