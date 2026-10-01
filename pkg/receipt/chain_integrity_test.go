@@ -351,3 +351,38 @@ func TestChainIntegrityVerifier_TamperingDetection(t *testing.T) {
 		}
 	})
 }
+
+// TestR4_SaveReceipt_ExplicitSequenceMismatch_Rejected verifies that attempting to save
+// a receipt with an explicit non-zero SequenceNumber that does not match expectedSeq
+// is rejected with ErrSequenceConflict and persists nothing to the database.
+func TestR4_SaveReceipt_ExplicitSequenceMismatch_Rejected(t *testing.T) {
+	cs, _ := setupChain(t)
+	_, signer := makeTestSigners(t)
+
+	// Attempt to save receipt with SequenceNumber = 99 when expectedSeq is 1.
+	r := makeSignedReceipt(t, "agent-a", "agent-b", "", "contract-mismatch", signer)
+	r.SequenceNumber = 99
+
+	err := cs.SaveReceipt(context.Background(), r)
+	if err == nil {
+		t.Fatal("expected ErrSequenceConflict, got nil")
+	}
+	if !errors.Is(err, ErrSequenceConflict) {
+		t.Fatalf("expected ErrSequenceConflict, got: %v", err)
+	}
+
+	// Verify nothing was persisted.
+	last, err := cs.GetLastReceipt(context.Background(), "agent-a", "agent-b")
+	if !errors.Is(err, ErrReceiptNotFound) {
+		t.Fatalf("expected ErrReceiptNotFound, got last=%v, err=%v", last, err)
+	}
+
+	chain, err := cs.GetChain(context.Background(), "agent-a", "agent-b")
+	if err != nil {
+		t.Fatalf("GetChain failed: %v", err)
+	}
+	if len(chain) != 0 {
+		t.Fatalf("expected empty chain, got %d receipts", len(chain))
+	}
+}
+
