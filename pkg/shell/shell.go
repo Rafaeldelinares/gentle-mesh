@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -233,17 +234,28 @@ func (s *Shell) Execute(ctx context.Context, assertions []envelope.Assertion) (*
 		agentID = "local-shell"
 	}
 
+	last, err := s.chainStore.GetLastReceipt(ctx, agentID, agentID)
+	if err != nil && !errors.Is(err, receipt.ErrReceiptNotFound) {
+		return nil, fmt.Errorf("get last receipt: %w", err)
+	}
+	var prevHash string
+	if last != nil {
+		h := sha256.Sum256([]byte(last.ExecutorSignature))
+		prevHash = hex.EncodeToString(h[:])
+	}
+
 	rec := &receipt.SettlementReceipt{
-		ProtocolVersion:  receipt.CurrentProtocolVersion,
-		MeshID:           meshID,
-		ReceiptID:        fmt.Sprintf("rcpt-%d", signedAt.UnixNano()),
-		ContractID:       fmt.Sprintf("contract-%d", signedAt.UnixNano()),
-		EnvelopeHash:     envHash,
-		EmitterAgentID:   agentID,
-		ExecutorAgentID:  agentID,
-		Verdict:          verdict,
-		Assertions:       ConvertResults(results),
-		ExecutorSignedAt: signedAt,
+		ProtocolVersion:     receipt.CurrentProtocolVersion,
+		MeshID:              meshID,
+		ReceiptID:           fmt.Sprintf("rcpt-%d", signedAt.UnixNano()),
+		ContractID:          fmt.Sprintf("contract-%d", signedAt.UnixNano()),
+		EnvelopeHash:        envHash,
+		EmitterAgentID:      agentID,
+		ExecutorAgentID:     agentID,
+		Verdict:             verdict,
+		Assertions:          ConvertResults(results),
+		PreviousReceiptHash: prevHash,
+		ExecutorSignedAt:    signedAt,
 	}
 
 	// Sign receipt: hash the JCS-canonical receipt JSON, then sign the hash.

@@ -114,20 +114,30 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 		verdict, remediationUsed, results = eng.runRemediation(ctx, in, failedCount)
 	}
 
-	// 6. Build receipt. Leave PreviousReceiptHash empty; SaveReceipt computes it
-	// atomically under mutex to ensure correct chain linkage under concurrent load.
+	// 6. Build receipt with previous receipt hash (S7).
+	last, err := eng.chainStore.GetLastReceipt(ctx, in.Envelope.EmitterAgentID, in.Envelope.ExecutorAgentID)
+	if err != nil && !errors.Is(err, receipt.ErrReceiptNotFound) {
+		return nil, fmt.Errorf("get last receipt: %w", err)
+	}
+	var prevHash string
+	if last != nil {
+		h := sha256.Sum256([]byte(last.ExecutorSignature))
+		prevHash = hex.EncodeToString(h[:])
+	}
+
 	r := &receipt.SettlementReceipt{
-		ProtocolVersion:  receipt.CurrentProtocolVersion,
-		MeshID:           in.Envelope.MeshID,
-		ReceiptID:        generateReceiptID(),
-		ContractID:       in.Envelope.EnvelopeID,
-		EnvelopeHash:     expectedHash,
-		EmitterAgentID:   in.Envelope.EmitterAgentID,
-		ExecutorAgentID:  in.Envelope.ExecutorAgentID,
-		Verdict:          verdict,
-		Territory:        eng.convertTerritory(in.Envelope.Territory),
-		Assertions:       eng.convertResults(results),
-		ExecutorSignedAt: time.Time{},
+		ProtocolVersion:     receipt.CurrentProtocolVersion,
+		MeshID:              in.Envelope.MeshID,
+		ReceiptID:           generateReceiptID(),
+		ContractID:          in.Envelope.EnvelopeID,
+		EnvelopeHash:        expectedHash,
+		EmitterAgentID:      in.Envelope.EmitterAgentID,
+		ExecutorAgentID:     in.Envelope.ExecutorAgentID,
+		Verdict:             verdict,
+		Territory:           eng.convertTerritory(in.Envelope.Territory),
+		Assertions:          eng.convertResults(results),
+		PreviousReceiptHash: prevHash,
+		ExecutorSignedAt:    time.Time{},
 	}
 
 	// 7. Sign.

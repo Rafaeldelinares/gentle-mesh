@@ -20,6 +20,7 @@ func openDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("sql.Open error: %v", err)
 	}
+	db.SetMaxOpenConns(1)
 	return db
 }
 
@@ -125,36 +126,22 @@ func TestSaveReceipt_ChainBroken(t *testing.T) {
 	r1 := validReceipt()
 	r1.ReceiptID = "receipt-001"
 	r1.PreviousReceiptHash = ""
-	cs.SaveReceipt(context.Background(), r1)
+	if err := cs.SaveReceipt(context.Background(), r1); err != nil {
+		t.Fatalf("SaveReceipt(r1) failed: %v", err)
+	}
 
-	// Second receipt with WRONG previous hash: SaveReceipt no longer validates
-	// prev_hash (VerifyChain does that). SaveReceipt accepts any hash.
+	// Second receipt with WRONG previous hash: SaveReceipt validates prev_hash (S7) and rejects.
 	r2 := validReceipt()
 	r2.ReceiptID = "receipt-002"
 	r2.ContractID = "contract-002"
 	r2.PreviousReceiptHash = "wrong-hash-value-0000000000000000000000000000000000000000000"
 
-	// SaveReceipt should succeed (validation moved to VerifyChain).
 	err := cs.SaveReceipt(context.Background(), r2)
-	if err != nil {
-		t.Errorf("SaveReceipt with wrong previous hash: expected success, got %v", err)
+	if err == nil {
+		t.Fatal("expected error when saving receipt with wrong previous hash, got nil")
 	}
-
-	// VerifyChain returns nil error but marks the receipt invalid.
-	_, executorSigner := makeTestSigners(t)
-	results, err := cs.VerifyChain(context.Background(), "agent-a", "agent-b",
-		executorSigner.PublicKey(), nil)
-	if err != nil {
-		t.Fatalf("VerifyChain returned unexpected error: %v", err)
-	}
-	if len(results) < 2 {
-		t.Fatalf("VerifyChain returned %d results, want at least 2", len(results))
-	}
-	if results[1].PreviousHashValid {
-		t.Error("VerifyChain: second receipt should have PreviousHashValid=false")
-	}
-	if results[1].Valid {
-		t.Error("VerifyChain: second receipt should be invalid")
+	if !errors.Is(err, ErrChainBroken) {
+		t.Fatalf("expected ErrChainBroken, got: %v", err)
 	}
 }
 
@@ -198,14 +185,37 @@ func TestUpdateReceipt_ValidationFailure(t *testing.T) {
 }
 
 func TestUpdateReceipt_LegacyReceiptRejected(t *testing.T) {
-	cs, _ := setupChain(t)
+	cs, db := setupChain(t)
 
 	// Insert legacy receipt (no protocol_version, no mesh_id) directly
 	r := validReceipt()
 	r.ProtocolVersion = ""
 	r.MeshID = ""
-	if err := cs.saveReceiptOnce(context.Background(), r); err != nil {
-		t.Fatalf("save legacy receipt: %v", err)
+	data, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal legacy receipt: %v", err)
+	}
+	_, err = db.ExecContext(context.Background(), `
+		INSERT INTO receipts (
+			receipt_id, contract_id, envelope_hash,
+			emitter_agent_id, executor_agent_id, verdict,
+			previous_receipt_hash, executor_signature, executor_signed_at,
+			emitter_acceptance, emitter_acceptance_at, emitter_signature,
+			dispute_reason, data, seq
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, r.ReceiptID, r.ContractID, r.EnvelopeHash,
+		r.EmitterAgentID, r.ExecutorAgentID, string(r.Verdict),
+		nullable(r.PreviousReceiptHash), r.ExecutorSignature,
+		r.ExecutorSignedAt.Format(time.RFC3339),
+		nullable(string(r.EmitterAcceptance)),
+		nil,
+		nullable(r.EmitterSignature),
+		nullable(r.DisputeReason),
+		string(data),
+		1,
+	)
+	if err != nil {
+		t.Fatalf("insert legacy receipt: %v", err)
 	}
 
 	// Updating a legacy receipt (e.g. for accept/dispute) MUST fail with ErrInvalidReceipt
@@ -472,17 +482,17 @@ func TestVerifyChain_BrokenChain(t *testing.T) {
 	signReceipt(r1, executor)
 	cs.SaveReceipt(context.Background(), r1)
 
-	// Second receipt with CORRUPTED previous hash: SaveReceipt no longer validates
-	// prev_hash (moved to VerifyChain). SaveReceipt succeeds.
+	// Second receipt with CORRUPTED previous hash: injected directly to test VerifyChain.
 	r2 := validReceipt()
 	r2.ReceiptID = "bc-002"
 	r2.ContractID = "contract-bc-002"
 	r2.PreviousReceiptHash = "deadbeef00000000000000000000000000000000000000000000000000000000"
+	r2.SequenceNumber = 2
 	signReceipt(r2, executor)
 
-	err := cs.SaveReceipt(context.Background(), r2)
+	err := cs.InjectReceipt(context.Background(), r2)
 	if err != nil {
-		t.Errorf("SaveReceipt with corrupted prev_hash: expected success, got %v", err)
+		t.Errorf("InjectReceipt with corrupted prev_hash: expected success, got %v", err)
 	}
 
 	// VerifyChain should detect the broken chain.
@@ -565,13 +575,22 @@ func TestCount(t *testing.T) {
 	}
 
 	// Add receipts.
-	r := validReceipt()
+	var lastSig string
+	signer := executorForTest()
 	for i := 0; i < 3; i++ {
+		r := validReceipt()
 		r.ReceiptID = "count-" + string(rune('0'+i))
-		r.PreviousReceiptHash = ""
-		signReceipt(r, executorForTest())
-		cs.SaveReceipt(context.Background(), r)
-		time.Sleep(1 * time.Millisecond)
+		if i == 0 {
+			r.PreviousReceiptHash = ""
+		} else {
+			h := sha256.Sum256([]byte(lastSig))
+			r.PreviousReceiptHash = hex.EncodeToString(h[:])
+		}
+		signReceipt(r, signer)
+		lastSig = r.ExecutorSignature
+		if err := cs.SaveReceipt(context.Background(), r); err != nil {
+			t.Fatalf("SaveReceipt #%d: %v", i, err)
+		}
 	}
 
 	n, _ = cs.Count(context.Background(), "agent-a", "agent-b")
