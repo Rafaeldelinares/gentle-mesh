@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -511,4 +512,56 @@ func TestServer_LeaseSigning_ErrorHandling(t *testing.T) {
 	if len(srv.leases) != 0 {
 		t.Errorf("srv.leases has %d entries, want 0 persisted after signing failure", len(srv.leases))
 	}
+}
+
+func TestServer_SetSigner_ConcurrentRaceFree(t *testing.T) {
+	srv, ts, origSigner := setupTestServerWithMesh(t, "mesh-alpha")
+	client := ts.Client()
+
+	var wg sync.WaitGroup
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Writer goroutine swapping signer
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s2, _ := signing.GenerateSigner("agent-alt")
+		for i := 0; ; i++ {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				if i%2 == 0 {
+					srv.SetSigner(s2)
+				} else {
+					srv.SetSigner(origSigner)
+				}
+				time.Sleep(1 * time.Millisecond)
+			}
+		}
+	}()
+
+	// Reader goroutines querying PublicKey and health HTTP endpoint
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					_ = srv.PublicKey()
+					_ = srv.Signer()
+					resp, err := client.Get(ts.URL + "/health")
+					if err == nil {
+						_ = resp.Body.Close()
+					}
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
 }

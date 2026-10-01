@@ -34,6 +34,7 @@ type Server struct {
 	chainStore *receipt.ChainStore
 	evaluator  *settlement.Evaluator
 	engine     *settlement.Engine
+	signerMu   sync.RWMutex
 	signer     signing.Signer
 
 	// In-memory state for the integration test.
@@ -236,16 +237,22 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 // PublicKey returns the agent's Ed25519 public key as hex string.
 func (s *Server) PublicKey() string {
+	s.signerMu.RLock()
+	defer s.signerMu.RUnlock()
 	return hexEncode(s.signer.PublicKey())
 }
 
 // Signer returns the agent's signer.
 func (s *Server) Signer() signing.Signer {
+	s.signerMu.RLock()
+	defer s.signerMu.RUnlock()
 	return s.signer
 }
 
 // SetSigner overrides the agent's signer (useful in tests to simulate signing failures).
 func (s *Server) SetSigner(signer signing.Signer) {
+	s.signerMu.Lock()
+	defer s.signerMu.Unlock()
 	s.signer = signer
 }
 
@@ -272,7 +279,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		AgentID:   s.config.AgentID,
 		Role:      string(s.config.Role),
 		Timestamp: time.Now().UTC(),
-		PublicKey: hexEncode(s.signer.PublicKey()),
+		PublicKey: s.PublicKey(),
 	})
 }
 
@@ -280,7 +287,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"agent_id":      s.config.AgentID,
 		"role":          s.config.Role,
-		"public_key":    hexEncode(s.signer.PublicKey()),
+		"public_key":    s.PublicKey(),
 		"workspace_dir": s.config.WorkspaceDir,
 	})
 }
@@ -342,7 +349,7 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sign the lease.
-	if err := envelope.SignLease(lease, s.signer); err != nil {
+	if err := envelope.SignLease(lease, s.Signer()); err != nil {
 		log.Printf("[%s] Sign lease error: %v", s.config.AgentID, err)
 		writeError(w, http.StatusInternalServerError, "sign lease: "+err.Error())
 		return
@@ -414,7 +421,7 @@ func (s *Server) handleCreateLease(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:           time.Now().Add(time.Duration(env.TimeoutSeconds) * time.Second),
 	}
 
-	if err := envelope.SignLease(lease, s.signer); err != nil {
+	if err := envelope.SignLease(lease, s.Signer()); err != nil {
 		log.Printf("[%s] Sign lease error: %v", s.config.AgentID, err)
 		writeError(w, http.StatusInternalServerError, "sign lease: "+err.Error())
 		return
@@ -559,7 +566,7 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 	// ExecutorSignature are exactly what B signed. Using A's receipt risks
 	// hash mismatch if A's JSON parse/serialize lost precision or content.
 	// This is safe because the receipt_id in 'rec' (from A) matches 'stored'.
-	if err := receipt.VerifyExecutorSignature(stored, s.signer.PublicKey()); err != nil {
+	if err := receipt.VerifyExecutorSignature(stored, s.Signer().PublicKey()); err != nil {
 		writeError(w, http.StatusUnauthorized, "executor signature invalid: "+err.Error())
 		return
 	}
@@ -666,7 +673,7 @@ func (s *Server) handleDispute(w http.ResponseWriter, r *http.Request) {
 
 	// S2: Verify against 'stored' (DB record). Using 'rec' (A's JSON) risks
 	// hash mismatch if A's JSON parse/serialize lost precision or content.
-	if err := receipt.VerifyExecutorSignature(stored, s.signer.PublicKey()); err != nil {
+	if err := receipt.VerifyExecutorSignature(stored, s.Signer().PublicKey()); err != nil {
 		writeError(w, http.StatusUnauthorized, "executor signature invalid: "+err.Error())
 		return
 	}
@@ -866,7 +873,7 @@ func (s *Server) handleVerifyReceipt(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		resp.Errors = append(resp.Errors, "compute hash: "+err.Error())
 	} else {
-		err := signing.Verify(s.signer.PublicKey(), []byte(hash), rec.ExecutorSignature)
+		err := signing.Verify(s.Signer().PublicKey(), []byte(hash), rec.ExecutorSignature)
 		resp.ExecutorSigOK = (err == nil)
 		if err != nil {
 			resp.Errors = append(resp.Errors, "executor signature: "+err.Error())
