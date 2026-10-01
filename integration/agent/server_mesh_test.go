@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,7 +20,7 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
 )
 
-func setupTestServerWithMesh(t *testing.T, meshID string) (*Server, *httptest.Server, *signing.BasicSigner) {
+func setupTestServerWithMesh(t *testing.T, meshID string) (*Server, *httptest.Server, signing.Signer) {
 	t.Helper()
 	tmpDir, err := os.MkdirTemp("", "gentle-mesh-server-*")
 	if err != nil {
@@ -123,6 +125,9 @@ func TestServer_IssuedLeases_HaveProtocolVersionAndMeshID(t *testing.T) {
 	if err := envelope.ValidateLease(lease); err != nil {
 		t.Errorf("handleEnvelope lease failed ValidateLease: %v", err)
 	}
+	if err := envelope.VerifyLeaseSignature(lease, srv.Signer().PublicKey()); err != nil {
+		t.Errorf("handleEnvelope lease signature verification failed: %v", err)
+	}
 
 	// Test handleCreateLease (POST /leases)
 	leaseReqBody, _ := json.Marshal(map[string]any{"envelope_json": envJSON})
@@ -149,6 +154,9 @@ func TestServer_IssuedLeases_HaveProtocolVersionAndMeshID(t *testing.T) {
 	}
 	if err := envelope.ValidateLease(&createdLease); err != nil {
 		t.Errorf("handleCreateLease lease failed ValidateLease: %v", err)
+	}
+	if err := envelope.VerifyLeaseSignature(&createdLease, srv.Signer().PublicKey()); err != nil {
+		t.Errorf("handleCreateLease lease signature verification failed: %v", err)
 	}
 }
 
@@ -438,4 +446,122 @@ func TestShellServer_MeshAndAgentValidation(t *testing.T) {
 	if _, err = srvNoMesh.executeLocal(context.Background(), assertions); err == nil {
 		t.Fatal("expected error for empty meshID on executeLocal")
 	}
+}
+
+type faultySigner struct {
+	agentID string
+}
+
+func (f *faultySigner) AgentID() string   { return f.agentID }
+func (f *faultySigner) PublicKey() []byte { return []byte("dummy-key") }
+func (f *faultySigner) Sign(data []byte) (string, error) {
+	return "", errors.New("simulated signing failure")
+}
+
+func TestServer_LeaseSigning_ErrorHandling(t *testing.T) {
+	srv, ts, _ := setupTestServerWithMesh(t, "mesh-alpha")
+	client := ts.Client()
+
+	srv.SetSigner(&faultySigner{agentID: "agent-b"})
+
+	env := &envelope.CognitiveTaskEnvelope{
+		ProtocolVersion: envelope.CurrentProtocolVersion,
+		MeshID:          "mesh-alpha",
+		EnvelopeID:      "env-faulty-signer",
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+		Territory: envelope.Territory{
+			Repository:    "github.com/org/repo",
+			Branch:        "main",
+			WorkspacePath: "/srv/workspace",
+		},
+		Assertions: []envelope.Assertion{
+			{ID: "a1", Type: envelope.AssertionCommandExitCode, Params: envelope.AssertionParams{Command: "true"}},
+		},
+		TimeoutSeconds: 30,
+	}
+	envJSON, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal env: %v", err)
+	}
+
+	// 1. POST /envelopes with faulty signer must return 500 and persist nothing
+	envReqBody, _ := json.Marshal(map[string]any{"envelope_json": envJSON})
+	resp, err := client.Post(ts.URL+"/envelopes", "application/json", bytes.NewReader(envReqBody))
+	if err != nil {
+		t.Fatalf("POST /envelopes: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("POST /envelopes with faulty signer status=%d, want 500", resp.StatusCode)
+	}
+	if len(srv.leases) != 0 {
+		t.Errorf("srv.leases has %d entries, want 0 persisted after signing failure", len(srv.leases))
+	}
+
+	// 2. POST /leases with faulty signer must return 500 and persist nothing
+	leaseReqBody, _ := json.Marshal(map[string]any{"envelope_json": envJSON})
+	leaseResp, err := client.Post(ts.URL+"/leases", "application/json", bytes.NewReader(leaseReqBody))
+	if err != nil {
+		t.Fatalf("POST /leases: %v", err)
+	}
+	defer leaseResp.Body.Close()
+	if leaseResp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("POST /leases with faulty signer status=%d, want 500", leaseResp.StatusCode)
+	}
+	if len(srv.leases) != 0 {
+		t.Errorf("srv.leases has %d entries, want 0 persisted after signing failure", len(srv.leases))
+	}
+}
+
+func TestServer_SetSigner_ConcurrentRaceFree(t *testing.T) {
+	srv, ts, origSigner := setupTestServerWithMesh(t, "mesh-alpha")
+	client := ts.Client()
+
+	var wg sync.WaitGroup
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Writer goroutine swapping signer
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s2, _ := signing.GenerateSigner("agent-alt")
+		for i := 0; ; i++ {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				if i%2 == 0 {
+					srv.SetSigner(s2)
+				} else {
+					srv.SetSigner(origSigner)
+				}
+				time.Sleep(1 * time.Millisecond)
+			}
+		}
+	}()
+
+	// Reader goroutines querying PublicKey and health HTTP endpoint
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					_ = srv.PublicKey()
+					_ = srv.Signer()
+					resp, err := client.Get(ts.URL + "/health")
+					if err == nil {
+						_ = resp.Body.Close()
+					}
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
 }
