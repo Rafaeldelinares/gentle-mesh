@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,7 +42,10 @@ func NewChainStore(db *sql.DB) *ChainStore {
 	return &ChainStore{db: db}
 }
 
-// InitSchema creates the receipts table and indexes.
+// InitSchema creates the receipts table and indexes atomically and idempotently.
+// If the table already exists without the seq column, it executes an atomic migration:
+// adding the column, reconstructing the sequential sequence numbers (1..N) following
+// the previous_receipt_hash cryptographic chain, and creating the unique index.
 func (cs *ChainStore) InitSchema(ctx context.Context) error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS receipts (
@@ -67,18 +71,161 @@ func (cs *ChainStore) InitSchema(ctx context.Context) error {
 
 	CREATE INDEX IF NOT EXISTS idx_receipts_contract
 		ON receipts(contract_id);
-
-	CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_pair_seq
-		ON receipts(emitter_agent_id, executor_agent_id, seq);
 	`
-	_, err := cs.db.ExecContext(ctx, schema)
-	if err != nil {
-		return err
+	if _, err := cs.db.ExecContext(ctx, schema); err != nil {
+		return fmt.Errorf("create base schema: %w", err)
 	}
-	// Migrate existing tables that might not have the seq column.
-	_, _ = cs.db.ExecContext(ctx, `ALTER TABLE receipts ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;`)
-	_, err = cs.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_pair_seq ON receipts(emitter_agent_id, executor_agent_id, seq);`)
-	return err
+
+	return cs.migrateSeqSchema(ctx)
+}
+
+func (cs *ChainStore) migrateSeqSchema(ctx context.Context) error {
+	tx, err := cs.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Check if column 'seq' exists via pragma_table_info.
+	var seqColCount int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info('receipts') WHERE name = 'seq';").Scan(&seqColCount); err != nil {
+		return fmt.Errorf("check seq column: %w", err)
+	}
+
+	if seqColCount == 0 {
+		if _, err := tx.ExecContext(ctx, "ALTER TABLE receipts ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;"); err != nil {
+			return fmt.Errorf("alter table add column seq: %w", err)
+		}
+		if err := backfillReceiptSequences(ctx, tx); err != nil {
+			return err
+		}
+	}
+
+	// Create unique index only after seq column is confirmed to exist and backfilled.
+	if _, err := tx.ExecContext(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_pair_seq ON receipts(emitter_agent_id, executor_agent_id, seq);"); err != nil {
+		return fmt.Errorf("create unique index idx_receipts_pair_seq: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+type receiptMigrationNode struct {
+	receiptID         string
+	prevHash          string
+	executorSignature string
+	dataJSON          string
+}
+
+func backfillReceiptSequences(ctx context.Context, tx *sql.Tx) error {
+	pairRows, err := tx.QueryContext(ctx, "SELECT DISTINCT emitter_agent_id, executor_agent_id FROM receipts;")
+	if err != nil {
+		return fmt.Errorf("query distinct agent pairs: %w", err)
+	}
+	defer pairRows.Close()
+
+	var pairs [][2]string
+	for pairRows.Next() {
+		var em, ex string
+		if err := pairRows.Scan(&em, &ex); err != nil {
+			return fmt.Errorf("scan agent pair: %w", err)
+		}
+		pairs = append(pairs, [2]string{em, ex})
+	}
+	_ = pairRows.Close()
+
+	for _, p := range pairs {
+		if err := backfillPairSequence(ctx, tx, p[0], p[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func backfillPairSequence(ctx context.Context, tx *sql.Tx, emitter, executor string) error {
+	rows, err := tx.QueryContext(ctx,
+		"SELECT receipt_id, previous_receipt_hash, executor_signature, data FROM receipts WHERE emitter_agent_id = ? AND executor_agent_id = ?;",
+		emitter, executor)
+	if err != nil {
+		return fmt.Errorf("query receipts for pair (%s, %s): %w", emitter, executor, err)
+	}
+	defer rows.Close()
+
+	var allNodes []*receiptMigrationNode
+	byPrevHash := make(map[string][]*receiptMigrationNode)
+	for rows.Next() {
+		var id, sig, data string
+		var prev sql.NullString
+		if err := rows.Scan(&id, &prev, &sig, &data); err != nil {
+			return fmt.Errorf("scan receipt: %w", err)
+		}
+		var prevHash string
+		if prev.Valid {
+			prevHash = prev.String
+		}
+		node := &receiptMigrationNode{receiptID: id, prevHash: prevHash, executorSignature: sig, dataJSON: data}
+		allNodes = append(allNodes, node)
+		byPrevHash[prevHash] = append(byPrevHash[prevHash], node)
+	}
+	_ = rows.Close()
+
+	if len(allNodes) == 0 {
+		return nil
+	}
+
+	roots := byPrevHash[""]
+	if len(roots) == 0 {
+		return fmt.Errorf("%w: migration failed for pair (%s, %s): no root receipt found", ErrChainBroken, emitter, executor)
+	}
+	if len(roots) > 1 {
+		return fmt.Errorf("%w: migration failed for pair (%s, %s): multiple root receipts found (chain forked/ambiguous)", ErrChainBroken, emitter, executor)
+	}
+
+	for prevH, list := range byPrevHash {
+		if len(list) > 1 {
+			return fmt.Errorf("%w: migration failed for pair (%s, %s): fork detected at previous hash %q", ErrChainBroken, emitter, executor, prevH)
+		}
+	}
+
+	curr := roots[0]
+	visited := make(map[string]bool, len(allNodes))
+	for seq := int64(1); seq <= int64(len(allNodes)); seq++ {
+		if visited[curr.receiptID] {
+			return fmt.Errorf("%w: migration failed for pair (%s, %s): cycle detected at receipt %s", ErrChainBroken, emitter, executor, curr.receiptID)
+		}
+		visited[curr.receiptID] = true
+
+		// Update both seq and the embedded SequenceNumber in data JSON
+		updatedData := curr.dataJSON
+		var r SettlementReceipt
+		if err := json.Unmarshal([]byte(curr.dataJSON), &r); err == nil {
+			r.SequenceNumber = seq
+			if b, err := json.Marshal(&r); err == nil {
+				updatedData = string(b)
+			}
+		}
+
+		if _, err := tx.ExecContext(ctx, "UPDATE receipts SET seq = ?, data = ? WHERE receipt_id = ?;", seq, updatedData, curr.receiptID); err != nil {
+			return fmt.Errorf("update seq for receipt %s: %w", curr.receiptID, err)
+		}
+
+		if int(seq) == len(allNodes) {
+			break
+		}
+
+		h := sha256.Sum256([]byte(curr.executorSignature))
+		nextHash := hex.EncodeToString(h[:])
+		nextList := byPrevHash[nextHash]
+		if len(nextList) == 0 {
+			return fmt.Errorf("%w: migration failed for pair (%s, %s): broken chain after receipt %s (missing link for hash %s)", ErrChainBroken, emitter, executor, curr.receiptID, nextHash)
+		}
+		curr = nextList[0]
+	}
+
+	if len(visited) != len(allNodes) {
+		return fmt.Errorf("%w: migration failed for pair (%s, %s): unreachable disconnected receipts detected", ErrChainBroken, emitter, executor)
+	}
+
+	return nil
 }
 
 // SaveReceipt persists a receipt to the chain atomically using a SQLite transaction.
@@ -173,7 +320,10 @@ func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) err
 		expectedSeq,
 	)
 	if err != nil {
-		return fmt.Errorf("%w: insert receipt: %v", ErrSequenceConflict, err)
+		if strings.Contains(err.Error(), "UNIQUE") && strings.Contains(err.Error(), "seq") {
+			return fmt.Errorf("%w: insert receipt: %v", ErrSequenceConflict, err)
+		}
+		return fmt.Errorf("insert receipt: %w", err)
 	}
 	return tx.Commit()
 }
@@ -189,8 +339,9 @@ func nullable(s string) *string {
 // GetReceipt retrieves a receipt by its ID.
 func (cs *ChainStore) GetReceipt(ctx context.Context, receiptID string) (*SettlementReceipt, error) {
 	var data string
+	var seq int64
 	err := cs.db.QueryRowContext(ctx,
-		"SELECT data FROM receipts WHERE receipt_id = ?", receiptID).Scan(&data)
+		"SELECT data, seq FROM receipts WHERE receipt_id = ?", receiptID).Scan(&data, &seq)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrReceiptNotFound
@@ -201,13 +352,14 @@ func (cs *ChainStore) GetReceipt(ctx context.Context, receiptID string) (*Settle
 	if err := json.Unmarshal([]byte(data), &r); err != nil {
 		return nil, fmt.Errorf("unmarshal receipt: %w", err)
 	}
+	r.SequenceNumber = seq
 	return &r, nil
 }
 
 // GetChain returns all receipts for an agent pair in chronological order.
 func (cs *ChainStore) GetChain(ctx context.Context, emitterID, executorID string) ([]*SettlementReceipt, error) {
 	rows, err := cs.db.QueryContext(ctx, `
-		SELECT data FROM receipts
+		SELECT data, seq FROM receipts
 		WHERE emitter_agent_id = ? AND executor_agent_id = ?
 		ORDER BY seq ASC, executor_signed_at ASC
 	`, emitterID, executorID)
@@ -219,13 +371,15 @@ func (cs *ChainStore) GetChain(ctx context.Context, emitterID, executorID string
 	var receipts []*SettlementReceipt
 	for rows.Next() {
 		var data string
-		if err := rows.Scan(&data); err != nil {
+		var seq int64
+		if err := rows.Scan(&data, &seq); err != nil {
 			return nil, err
 		}
 		var r SettlementReceipt
 		if err := json.Unmarshal([]byte(data), &r); err != nil {
 			return nil, fmt.Errorf("unmarshal receipt: %w", err)
 		}
+		r.SequenceNumber = seq
 		receipts = append(receipts, &r)
 	}
 	return receipts, rows.Err()
@@ -325,12 +479,13 @@ func (cs *ChainStore) InjectReceipt(ctx context.Context, r *SettlementReceipt) e
 // GetLastReceipt returns the most recent receipt for an agent pair.
 func (cs *ChainStore) GetLastReceipt(ctx context.Context, emitterID, executorID string) (*SettlementReceipt, error) {
 	var data string
+	var seq int64
 	err := cs.db.QueryRowContext(ctx, `
-		SELECT data FROM receipts
+		SELECT data, seq FROM receipts
 		WHERE emitter_agent_id = ? AND executor_agent_id = ?
 		ORDER BY seq DESC, executor_signed_at DESC
 		LIMIT 1
-	`, emitterID, executorID).Scan(&data)
+	`, emitterID, executorID).Scan(&data, &seq)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrReceiptNotFound
@@ -341,6 +496,7 @@ func (cs *ChainStore) GetLastReceipt(ctx context.Context, emitterID, executorID 
 	if err := json.Unmarshal([]byte(data), &r); err != nil {
 		return nil, fmt.Errorf("unmarshal receipt: %w", err)
 	}
+	r.SequenceNumber = seq
 	return &r, nil
 }
 
@@ -363,6 +519,11 @@ func (cs *ChainStore) VerifyChain(
 //   - previous_receipt_hash == SHA-256(executor_signature of previous receipt) (empty for first)
 //   - Executor signature is valid against executorPublicKey (detects content modification)
 //   - Emitter acceptance signature is valid against emitterPublicKey (if present)
+//
+// Limitations:
+//   - Deletion or truncation of the tail (the last receipt in the chain) cannot be detected
+//     without an external state anchor (see Issue #41). A truncated chain prefix [1..k]
+//     is internally consistent and passes verification.
 func VerifyChainIntegrity(
 	chain []*SettlementReceipt,
 	executorPublicKey, emitterPublicKey []byte,

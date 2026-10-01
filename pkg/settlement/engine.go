@@ -125,50 +125,49 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 			return nil, ctx.Err()
 		}
 
-		eng.chainMu.Lock()
-		last, err := eng.chainStore.GetLastReceipt(ctx, in.Envelope.EmitterAgentID, in.Envelope.ExecutorAgentID)
-		if err != nil && !errors.Is(err, receipt.ErrReceiptNotFound) {
-			eng.chainMu.Unlock()
-			return nil, fmt.Errorf("get last receipt: %w", err)
-		}
-		var prevHash string
-		if last != nil {
-			h := sha256.Sum256([]byte(last.ExecutorSignature))
-			prevHash = hex.EncodeToString(h[:])
-		}
+		saveErr := func() error {
+			eng.chainMu.Lock()
+			defer eng.chainMu.Unlock()
 
-		r = &receipt.SettlementReceipt{
-			ProtocolVersion:     receipt.CurrentProtocolVersion,
-			MeshID:              in.Envelope.MeshID,
-			ReceiptID:           generateReceiptID(),
-			ContractID:          in.Envelope.EnvelopeID,
-			EnvelopeHash:        expectedHash,
-			EmitterAgentID:      in.Envelope.EmitterAgentID,
-			ExecutorAgentID:     in.Envelope.ExecutorAgentID,
-			Verdict:             verdict,
-			Territory:           eng.convertTerritory(in.Envelope.Territory),
-			Assertions:          eng.convertResults(results),
-			PreviousReceiptHash: prevHash,
-			ExecutorSignedAt:    time.Time{},
-		}
+			last, err := eng.chainStore.GetLastReceipt(ctx, in.Envelope.EmitterAgentID, in.Envelope.ExecutorAgentID)
+			if err != nil && !errors.Is(err, receipt.ErrReceiptNotFound) {
+				return fmt.Errorf("get last receipt: %w", err)
+			}
+			var prevHash string
+			if last != nil {
+				h := sha256.Sum256([]byte(last.ExecutorSignature))
+				prevHash = hex.EncodeToString(h[:])
+			}
 
-		// 7. Sign.
-		if err := receipt.SignReceipt(r, eng.executorSigner); err != nil {
-			eng.chainMu.Unlock()
-			return nil, fmt.Errorf("sign receipt: %w", err)
-		}
+			r = &receipt.SettlementReceipt{
+				ProtocolVersion:     receipt.CurrentProtocolVersion,
+				MeshID:              in.Envelope.MeshID,
+				ReceiptID:           generateReceiptID(),
+				ContractID:          in.Envelope.EnvelopeID,
+				EnvelopeHash:        expectedHash,
+				EmitterAgentID:      in.Envelope.EmitterAgentID,
+				ExecutorAgentID:     in.Envelope.ExecutorAgentID,
+				Verdict:             verdict,
+				Territory:           eng.convertTerritory(in.Envelope.Territory),
+				Assertions:          eng.convertResults(results),
+				PreviousReceiptHash: prevHash,
+				ExecutorSignedAt:    time.Time{},
+			}
 
-		// 8. Persist.
-		err = eng.chainStore.SaveReceipt(ctx, r)
-		eng.chainMu.Unlock()
+			// 7. Sign.
+			if err := receipt.SignReceipt(r, eng.executorSigner); err != nil {
+				return fmt.Errorf("sign receipt: %w", err)
+			}
 
-		if err == nil {
+			// 8. Persist.
+			return eng.chainStore.SaveReceipt(ctx, r)
+		}()
+
+		if saveErr == nil {
 			return &SettlementOutput{Receipt: r, RemediationUsed: remediationUsed}, nil
 		}
 
-		if errors.Is(err, receipt.ErrChainBroken) ||
-			errors.Is(err, receipt.ErrInvalidPreviousHash) ||
-			errors.Is(err, receipt.ErrSequenceConflict) {
+		if errors.Is(saveErr, receipt.ErrSequenceConflict) {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -177,7 +176,7 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 			}
 		}
 
-		return nil, fmt.Errorf("save receipt: %w", err)
+		return nil, fmt.Errorf("save receipt: %w", saveErr)
 	}
 
 	return nil, fmt.Errorf("save receipt: exceeded max retry attempts due to concurrent chain modifications")
