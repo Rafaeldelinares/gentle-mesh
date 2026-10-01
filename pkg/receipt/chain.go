@@ -178,27 +178,6 @@ func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) err
 	return tx.Commit()
 }
 
-// getLastReceiptUnlocked returns the last receipt for a pair. Caller must hold mu.
-func (cs *ChainStore) getLastReceiptUnlocked(ctx context.Context, emitterID, executorID string) (*SettlementReceipt, error) {
-	var data string
-	err := cs.db.QueryRowContext(ctx,
-		`SELECT data FROM receipts
-		 WHERE emitter_agent_id = ? AND executor_agent_id = ?
-		 ORDER BY seq DESC, executor_signed_at DESC LIMIT 1`,
-		emitterID, executorID).Scan(&data)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrReceiptNotFound
-		}
-		return nil, fmt.Errorf("query last receipt: %w", err)
-	}
-	var r SettlementReceipt
-	if err := json.Unmarshal([]byte(data), &r); err != nil {
-		return nil, fmt.Errorf("unmarshal receipt: %w", err)
-	}
-	return &r, nil
-}
-
 // nullable returns a pointer to the string, or nil if empty.
 func nullable(s string) *string {
 	if s == "" {
