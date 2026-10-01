@@ -1,0 +1,195 @@
+# docker-compose.yml — RFC-002 Distributed Integration Test Environment (TLS/HTTPS)
+# Usage: docker compose up --build
+#
+# Services:
+#   agent-a  — Emitter (A): creates CognitiveTaskEnvelope, sends over HTTPS
+#   agent-b  — Executor (B): receives, executes, settles over HTTPS
+#   agent-c  — Second Executor (C): fan-out test with multiple executors
+#   integration-test — Orchestrates full scenario, validates receipts and chain
+#
+# Network: gentle-mesh-net (isolated bridge)
+#
+# Volumes:
+#   agent-b-workspace — Git repo and calculator.py (workspace for executor B)
+#   agent-c-workspace — Workspace for executor C (fan-out test)
+#   agent-b-chain    — SQLite receipt chain for B
+#   agent-c-chain    — SQLite receipt chain for C
+#
+# Certificates are mounted as a bind mount from the host:
+#   ${CERTS_HOST_DIR:-/tmp/rfc002-certs}:/certs:ro
+#
+# The Go test harness generates certs on the host before docker compose up.
+
+networks:
+  gentle-mesh-net:
+    name: gentle-mesh-net
+    driver: bridge
+
+volumes:
+  agent-a-chain:
+  agent-b-workspace:
+  agent-c-workspace:
+  agent-b-chain:
+  agent-c-chain:
+
+services:
+  # ─────────────────────────────────────────────────────────────────
+  # Agent A — Emitter
+  # Creates the CognitiveTaskEnvelope and sends it to executors over HTTPS.
+  # ─────────────────────────────────────────────────────────────────
+  agent-a:
+    build:
+      context: ..
+      dockerfile: integration/Dockerfile.agent
+    image: gentle-mesh-agent-a:latest
+    container_name: agent-a
+    hostname: agent-a
+    networks:
+      - gentle-mesh-net
+    ports:
+      - "18443:8443"
+    volumes:
+      - ${CERTS_HOST_DIR:-/tmp/rfc002-certs}:/certs:ro
+      - agent-a-chain:/data   # A keeps its own audit copy of the chain
+    environment:
+      AGENT_ID: "agent-a"
+      GENTLE_MESH_ID: "gentle-mesh-dev"
+      AGENT_ROLE: "emitter"
+      CHAIN_DB_PATH: "/data/chain.db"
+    command: >
+      serve
+      --agent-id agent-a
+      --mesh-id gentle-mesh-dev
+      --role emitter
+      --port 8443
+      --tls-cert /certs/server.crt
+      --tls-key  /certs/server.key
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://localhost:8443/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ─────────────────────────────────────────────────────────────────
+  # Agent B — Executor (primary)
+  # Receives the envelope, executes the task, settles with assertions.
+  # ─────────────────────────────────────────────────────────────────
+  agent-b:
+    build:
+      context: ..
+      dockerfile: integration/Dockerfile.agent
+    image: gentle-mesh-agent-b:latest
+    container_name: agent-b
+    hostname: agent-b
+    networks:
+      - gentle-mesh-net
+    ports:
+      - "28443:8443"
+    volumes:
+      - ${CERTS_HOST_DIR:-/tmp/rfc002-certs}:/certs:ro
+      - agent-b-workspace:/srv/workspace
+      - agent-b-chain:/data
+    environment:
+      AGENT_ID: "agent-b"
+      GENTLE_MESH_ID: "gentle-mesh-dev"
+      AGENT_ROLE: "executor"
+      CHAIN_DB_PATH: "/data/chain.db"
+      WORKSPACE_DIR: "/srv/workspace"
+      MAX_REMEDIATIONS: "1"
+    command: >
+      serve
+      --agent-id agent-b
+      --mesh-id gentle-mesh-dev
+      --role executor
+      --port 8443
+      --tls-cert /certs/server.crt
+      --tls-key  /certs/server.key
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://localhost:8443/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ─────────────────────────────────────────────────────────────────
+  # Agent C — Executor (fan-out target)
+  # Separate executor for multi-destination fan-out test.
+  # ─────────────────────────────────────────────────────────────────
+  agent-c:
+    build:
+      context: ..
+      dockerfile: integration/Dockerfile.agent
+    image: gentle-mesh-agent-c:latest
+    container_name: agent-c
+    hostname: agent-c
+    networks:
+      - gentle-mesh-net
+    ports:
+      - "38443:8443"
+    volumes:
+      - ${CERTS_HOST_DIR:-/tmp/rfc002-certs}:/certs:ro
+      - agent-c-workspace:/srv/workspace
+      - agent-c-chain:/data
+    environment:
+      AGENT_ID: "agent-c"
+      GENTLE_MESH_ID: "gentle-mesh-dev"
+      AGENT_ROLE: "executor"
+      CHAIN_DB_PATH: "/data/chain.db"
+      WORKSPACE_DIR: "/srv/workspace"
+      MAX_REMEDIATIONS: "1"
+    command: >
+      serve
+      --agent-id agent-c
+      --mesh-id gentle-mesh-dev
+      --role executor
+      --port 8443
+      --tls-cert /certs/server.crt
+      --tls-key  /certs/server.key
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://localhost:8443/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ─────────────────────────────────────────────────────────────────
+  # Integration test runner
+  # Orchestrates the full scenario and validates results over HTTPS.
+  # ─────────────────────────────────────────────────────────────────
+  integration-test:
+    profiles:
+      - runner
+    build:
+      context: ..
+      dockerfile: integration/Dockerfile.agent
+    image: gentle-mesh-agent-test:latest
+    container_name: integration-test
+    hostname: integration-test
+    networks:
+      - gentle-mesh-net
+    depends_on:
+      agent-a:
+        condition: service_healthy
+      agent-b:
+        condition: service_healthy
+      agent-c:
+        condition: service_healthy
+    volumes:
+      - ${CERTS_HOST_DIR:-/tmp/rfc002-certs}:/certs:ro
+      - agent-b-workspace:/srv/workspace
+      - agent-b-chain:/data/agent-b
+      - agent-c-chain:/data/agent-c
+    environment:
+      AGENT_A_URL: "https://agent-a:8443"
+      AGENT_B_URL: "https://agent-b:8443"
+      AGENT_C_URL: "https://agent-c:8443"
+      WORKSPACE_DIR: "/srv/workspace"
+    command: >
+      test-scenario
+      --agent-a https://agent-a:8443
+      --agent-b https://agent-b:8443
+      --agent-c https://agent-c:8443
+      --ca-cert /certs/ca.crt
+      --insecure
+    entrypoint: ["/usr/local/bin/agent"]
