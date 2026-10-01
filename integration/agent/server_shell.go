@@ -36,6 +36,7 @@ type ShellServer struct {
 	agentID    string
 	meshID     string
 	tlsOpts    []TLSClientOption
+	chainMu    sync.Mutex
 }
 
 // shellWrapper holds shell configuration (mirrors pkg/shell.Config).
@@ -319,6 +320,10 @@ func (s *ShellServer) executeLocal(ctx context.Context, assertions []envelope.As
 	if agentID == "" {
 		agentID = "local-shell"
 	}
+
+	// Lock chainMu to serialize receipt creation, signing, and saving.
+	s.chainMu.Lock()
+	defer s.chainMu.Unlock()
 
 	last, err := s.chainStore.GetLastReceipt(ctx, agentID, agentID)
 	if err != nil && !errors.Is(err, receipt.ErrReceiptNotFound) {

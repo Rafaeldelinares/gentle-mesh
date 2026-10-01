@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
@@ -43,6 +44,7 @@ type Shell struct {
 	evaluator  *settlement.Evaluator
 	chainStore *receipt.ChainStore
 	db         *sql.DB
+	chainMu    sync.Mutex
 }
 
 // New creates a new Shell. In local mode (RemoteURL == ""), gentle-mesh
@@ -233,6 +235,10 @@ func (s *Shell) Execute(ctx context.Context, assertions []envelope.Assertion) (*
 	if agentID == "" {
 		agentID = "local-shell"
 	}
+
+	// Lock chainMu to serialize receipt creation, signing, and saving.
+	s.chainMu.Lock()
+	defer s.chainMu.Unlock()
 
 	last, err := s.chainStore.GetLastReceipt(ctx, agentID, agentID)
 	if err != nil && !errors.Is(err, receipt.ErrReceiptNotFound) {

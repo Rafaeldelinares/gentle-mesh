@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -1368,5 +1370,69 @@ func TestComputeVerdict_FileAssertion(t *testing.T) {
 	}
 	if failed != 1 {
 		t.Errorf("failed = %d, want 1", failed)
+	}
+}
+
+func TestSettle_ConcurrentWrites_SamePair(t *testing.T) {
+	eng, cs, cleanup := setupEngine(t)
+	defer cleanup()
+
+	const numGoroutines = 10
+	var wg sync.WaitGroup
+	errCh := make(chan error, numGoroutines)
+	receiptsCh := make(chan *receipt.SettlementReceipt, numGoroutines)
+
+	startBarrier := make(chan struct{})
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-startBarrier
+
+			env := validEnvelope()
+			env.EnvelopeID = fmt.Sprintf("contract-concurrent-%d", idx)
+
+			in := SettlementInput{
+				Envelope:        env,
+				EmitterAgentID:  "agent-a",
+				ExecutorAgentID: "agent-b",
+			}
+
+			out, err := eng.Settle(context.Background(), in)
+			if err != nil {
+				errCh <- fmt.Errorf("worker %d: %w", idx, err)
+				return
+			}
+			receiptsCh <- out.Receipt
+		}(i)
+	}
+
+	close(startBarrier)
+	wg.Wait()
+	close(errCh)
+	close(receiptsCh)
+
+	for err := range errCh {
+		t.Errorf("concurrent Settle error: %v", err)
+	}
+
+	chain, err := cs.GetChain(context.Background(), "agent-a", "agent-b")
+	if err != nil {
+		t.Fatalf("GetChain failed: %v", err)
+	}
+
+	if len(chain) != numGoroutines {
+		t.Fatalf("chain length = %d, want %d", len(chain), numGoroutines)
+	}
+
+	results, err := receipt.VerifyChainIntegrity(chain, eng.executorSigner.PublicKey(), nil)
+	if err != nil {
+		t.Fatalf("VerifyChainIntegrity error: %v", err)
+	}
+	for i, res := range results {
+		if !res.Valid {
+			t.Fatalf("receipt[%d] invalid: %s", i, res.Error)
+		}
 	}
 }

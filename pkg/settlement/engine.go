@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
@@ -24,6 +25,7 @@ type Engine struct {
 	chainStore     *receipt.ChainStore
 	executorSigner signing.Signer
 	remMax         int
+	chainMu        sync.Mutex
 }
 
 // EngineConfig holds the dependencies for the settlement engine.
@@ -114,43 +116,71 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 		verdict, remediationUsed, results = eng.runRemediation(ctx, in, failedCount)
 	}
 
-	// 6. Build receipt with previous receipt hash (S7).
-	last, err := eng.chainStore.GetLastReceipt(ctx, in.Envelope.EmitterAgentID, in.Envelope.ExecutorAgentID)
-	if err != nil && !errors.Is(err, receipt.ErrReceiptNotFound) {
-		return nil, fmt.Errorf("get last receipt: %w", err)
-	}
-	var prevHash string
-	if last != nil {
-		h := sha256.Sum256([]byte(last.ExecutorSignature))
-		prevHash = hex.EncodeToString(h[:])
-	}
+	// 6. Build, sign, and persist receipt under chainMu with retry for optimistic contention.
+	var r *receipt.SettlementReceipt
+	const maxSaveAttempts = 10
 
-	r := &receipt.SettlementReceipt{
-		ProtocolVersion:     receipt.CurrentProtocolVersion,
-		MeshID:              in.Envelope.MeshID,
-		ReceiptID:           generateReceiptID(),
-		ContractID:          in.Envelope.EnvelopeID,
-		EnvelopeHash:        expectedHash,
-		EmitterAgentID:      in.Envelope.EmitterAgentID,
-		ExecutorAgentID:     in.Envelope.ExecutorAgentID,
-		Verdict:             verdict,
-		Territory:           eng.convertTerritory(in.Envelope.Territory),
-		Assertions:          eng.convertResults(results),
-		PreviousReceiptHash: prevHash,
-		ExecutorSignedAt:    time.Time{},
-	}
+	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 
-	// 7. Sign.
-	if err := receipt.SignReceipt(r, eng.executorSigner); err != nil {
-		return nil, fmt.Errorf("sign receipt: %w", err)
-	}
+		eng.chainMu.Lock()
+		last, err := eng.chainStore.GetLastReceipt(ctx, in.Envelope.EmitterAgentID, in.Envelope.ExecutorAgentID)
+		if err != nil && !errors.Is(err, receipt.ErrReceiptNotFound) {
+			eng.chainMu.Unlock()
+			return nil, fmt.Errorf("get last receipt: %w", err)
+		}
+		var prevHash string
+		if last != nil {
+			h := sha256.Sum256([]byte(last.ExecutorSignature))
+			prevHash = hex.EncodeToString(h[:])
+		}
 
-	// 8. Persist.
-	if err := eng.chainStore.SaveReceipt(ctx, r); err != nil {
+		r = &receipt.SettlementReceipt{
+			ProtocolVersion:     receipt.CurrentProtocolVersion,
+			MeshID:              in.Envelope.MeshID,
+			ReceiptID:           generateReceiptID(),
+			ContractID:          in.Envelope.EnvelopeID,
+			EnvelopeHash:        expectedHash,
+			EmitterAgentID:      in.Envelope.EmitterAgentID,
+			ExecutorAgentID:     in.Envelope.ExecutorAgentID,
+			Verdict:             verdict,
+			Territory:           eng.convertTerritory(in.Envelope.Territory),
+			Assertions:          eng.convertResults(results),
+			PreviousReceiptHash: prevHash,
+			ExecutorSignedAt:    time.Time{},
+		}
+
+		// 7. Sign.
+		if err := receipt.SignReceipt(r, eng.executorSigner); err != nil {
+			eng.chainMu.Unlock()
+			return nil, fmt.Errorf("sign receipt: %w", err)
+		}
+
+		// 8. Persist.
+		err = eng.chainStore.SaveReceipt(ctx, r)
+		eng.chainMu.Unlock()
+
+		if err == nil {
+			return &SettlementOutput{Receipt: r, RemediationUsed: remediationUsed}, nil
+		}
+
+		if errors.Is(err, receipt.ErrChainBroken) ||
+			errors.Is(err, receipt.ErrInvalidPreviousHash) ||
+			errors.Is(err, receipt.ErrSequenceConflict) {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt*10) * time.Millisecond):
+				continue
+			}
+		}
+
 		return nil, fmt.Errorf("save receipt: %w", err)
 	}
 
-	return &SettlementOutput{Receipt: r, RemediationUsed: remediationUsed}, nil
+	return nil, fmt.Errorf("save receipt: exceeded max retry attempts due to concurrent chain modifications")
 }
 
 // runRemediation runs up to remMax remediation cycles.
