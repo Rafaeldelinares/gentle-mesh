@@ -424,3 +424,58 @@ func TestMigration_Concurrent_InitSchema(t *testing.T) {
 	}
 }
 
+// TestMigration_SignatureVerification_OldChain_3Receipts verifies that an old chain
+// of 3 receipts (signed before sequence numbers existed) passes VerifyChainIntegrity
+// with Valid=true and ExecutorSignatureValid=true on every receipt after schema migration.
+func TestMigration_SignatureVerification_OldChain_3Receipts(t *testing.T) {
+	db, _ := setupOldSchemaDB(t)
+	defer db.Close()
+
+	_, signer := makeTestSigners(t)
+
+	var prevHash string
+	for i := 1; i <= 3; i++ {
+		r := makeSignedReceipt(t, "agent-a", "agent-b", prevHash, fmt.Sprintf("contract-%d", i), signer)
+		insertOldReceipt(t, db, r)
+		h := sha256.Sum256([]byte(r.ExecutorSignature))
+		prevHash = hex.EncodeToString(h[:])
+	}
+
+	cs := NewChainStore(db)
+	if err := cs.InitSchema(context.Background()); err != nil {
+		t.Fatalf("InitSchema failed: %v", err)
+	}
+
+	chain, err := cs.GetChain(context.Background(), "agent-a", "agent-b")
+	if err != nil {
+		t.Fatalf("GetChain failed: %v", err)
+	}
+	if len(chain) != 3 {
+		t.Fatalf("expected 3 receipts, got %d", len(chain))
+	}
+
+	results, err := VerifyChainIntegrity(chain, signer.PublicKey(), nil)
+	if err != nil {
+		t.Fatalf("VerifyChainIntegrity failed: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 verification results, got %d", len(results))
+	}
+
+	for i, res := range results {
+		if !res.Valid {
+			t.Errorf("receipt %d (seq=%d) Valid is false: %s", i, res.SequenceNumber, res.Error)
+		}
+		if !res.ExecutorSignatureValid {
+			t.Errorf("receipt %d (seq=%d) ExecutorSignatureValid is false", i, res.SequenceNumber)
+		}
+		if !res.SequenceValid {
+			t.Errorf("receipt %d (seq=%d) SequenceValid is false", i, res.SequenceNumber)
+		}
+		if !res.PreviousHashValid {
+			t.Errorf("receipt %d (seq=%d) PreviousHashValid is false", i, res.SequenceNumber)
+		}
+	}
+}
+
+
