@@ -167,7 +167,7 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 			return &SettlementOutput{Receipt: r, RemediationUsed: remediationUsed}, nil
 		}
 
-		if errors.Is(saveErr, receipt.ErrSequenceConflict) {
+		if errors.Is(saveErr, receipt.ErrSequenceConflict) || errors.Is(saveErr, receipt.ErrInvalidPreviousHash) {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
