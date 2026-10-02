@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -187,6 +188,37 @@ func TestMigration_OldSchema_MultipleReceiptsPerPair(t *testing.T) {
 	}
 }
 
+// assertDatabaseIntact verifies that a rollback after migration failure left the database
+// completely intact: no seq column, no idx_receipts_pair_seq index, and exactly the expected
+// count of original receipts with untampered data.
+func assertDatabaseIntact(t *testing.T, db *sql.DB, expectedReceiptCount int) {
+	t.Helper()
+
+	var seqColCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('receipts') WHERE name = 'seq';").Scan(&seqColCount); err != nil {
+		t.Fatalf("pragma seq column check failed: %v", err)
+	}
+	if seqColCount != 0 {
+		t.Errorf("expected seq column to NOT exist after rollback, got count=%d", seqColCount)
+	}
+
+	var idxCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_receipts_pair_seq';").Scan(&idxCount); err != nil {
+		t.Fatalf("index check failed: %v", err)
+	}
+	if idxCount != 0 {
+		t.Errorf("expected index idx_receipts_pair_seq to NOT exist after rollback, got count=%d", idxCount)
+	}
+
+	var rowCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM receipts;").Scan(&rowCount); err != nil {
+		t.Fatalf("receipts count check failed: %v", err)
+	}
+	if rowCount != expectedReceiptCount {
+		t.Errorf("expected %d receipts intact in database, got %d", expectedReceiptCount, rowCount)
+	}
+}
+
 // TestMigration_ForkedChain_Rejected verifies that an ambiguous/forked chain
 // (e.g. multiple root receipts for the same pair) fails migration with an explicit error
 // and leaves the database uncorrupted.
@@ -212,17 +244,44 @@ func TestMigration_ForkedChain_Rejected(t *testing.T) {
 		t.Errorf("expected error wrapping ErrChainBroken, got %v", err)
 	}
 
-	// Verify database is left in a valid state (no unique index created with corrupt seq)
-	var colCount int
-	err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('receipts') WHERE name = 'seq'").Scan(&colCount)
-	if err != nil {
-		t.Fatalf("pragma check failed: %v", err)
+	assertDatabaseIntact(t, db, 2)
+}
+
+// TestMigration_MidChainFork_Rejected verifies that a fork in the middle of a chain
+// (two receipts pointing to the same parent hash) fails migration with ErrChainBroken
+// and rolls back leaving the database intact.
+func TestMigration_MidChainFork_Rejected(t *testing.T) {
+	db, _ := setupOldSchemaDB(t)
+	defer db.Close()
+
+	_, signer := makeTestSigners(t)
+
+	r1 := makeSignedReceipt(t, "agent-a", "agent-b", "", "contract-1", signer)
+	insertOldReceipt(t, db, r1)
+	h := sha256.Sum256([]byte(r1.ExecutorSignature))
+	prevHash := hex.EncodeToString(h[:])
+
+	r2a := makeSignedReceipt(t, "agent-a", "agent-b", prevHash, "contract-2a", signer)
+	r2b := makeSignedReceipt(t, "agent-a", "agent-b", prevHash, "contract-2b", signer)
+	insertOldReceipt(t, db, r2a)
+	insertOldReceipt(t, db, r2b)
+
+	cs := NewChainStore(db)
+
+	err := cs.InitSchema(context.Background())
+	if err == nil {
+		t.Fatal("expected InitSchema to fail on mid-chain fork, got nil")
 	}
+	if !errors.Is(err, ErrChainBroken) {
+		t.Errorf("expected error wrapping ErrChainBroken, got %v", err)
+	}
+
+	assertDatabaseIntact(t, db, 3)
 }
 
 // TestMigration_BrokenChain_Rejected verifies that a broken hash chain
 // (missing link / invalid previous_receipt_hash) fails migration with an explicit error
-// and rolls back cleanly.
+// and rolls back cleanly leaving the database intact.
 func TestMigration_BrokenChain_Rejected(t *testing.T) {
 	db, _ := setupOldSchemaDB(t)
 	defer db.Close()
@@ -246,4 +305,66 @@ func TestMigration_BrokenChain_Rejected(t *testing.T) {
 	if !errors.Is(err, ErrChainBroken) && !errors.Is(err, ErrInvalidPreviousHash) {
 		t.Errorf("expected error wrapping ErrChainBroken or ErrInvalidPreviousHash, got %v", err)
 	}
+
+	assertDatabaseIntact(t, db, 2)
 }
+
+// TestMigration_Concurrent_InitSchema verifies that two concurrent InitSchema calls
+// on the same database file (one migrating, the other concurrently arriving) execute
+// cleanly without database locks or duplicate sequence assignments.
+func TestMigration_Concurrent_InitSchema(t *testing.T) {
+	dbInit, dbPath := setupOldSchemaDB(t)
+	_, signer := makeTestSigners(t)
+	r1 := makeSignedReceipt(t, "agent-a", "agent-b", "", "contract-1", signer)
+	insertOldReceipt(t, dbInit, r1)
+	h := sha256.Sum256([]byte(r1.ExecutorSignature))
+	r2 := makeSignedReceipt(t, "agent-a", "agent-b", hex.EncodeToString(h[:]), "contract-2", signer)
+	insertOldReceipt(t, dbInit, r2)
+	dbInit.Close()
+
+	db1, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db1: %v", err)
+	}
+	defer db1.Close()
+	db2, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db2: %v", err)
+	}
+	defer db2.Close()
+
+	cs1 := NewChainStore(db1)
+	cs2 := NewChainStore(db2)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var err1, err2 error
+	go func() {
+		defer wg.Done()
+		err1 = cs1.InitSchema(context.Background())
+	}()
+	go func() {
+		defer wg.Done()
+		err2 = cs2.InitSchema(context.Background())
+	}()
+	wg.Wait()
+
+	if err1 != nil {
+		t.Fatalf("cs1.InitSchema failed: %v", err1)
+	}
+	if err2 != nil {
+		t.Fatalf("cs2.InitSchema failed: %v", err2)
+	}
+
+	chain, err := cs1.GetChain(context.Background(), "agent-a", "agent-b")
+	if err != nil {
+		t.Fatalf("GetChain failed: %v", err)
+	}
+	if len(chain) != 2 {
+		t.Fatalf("expected chain length 2, got %d", len(chain))
+	}
+	if chain[0].SequenceNumber != 1 || chain[1].SequenceNumber != 2 {
+		t.Errorf("unexpected sequence numbers: %d, %d", chain[0].SequenceNumber, chain[1].SequenceNumber)
+	}
+}
+
