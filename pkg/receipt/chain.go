@@ -220,15 +220,18 @@ func backfillPairSequence(ctx context.Context, tx migrationExecutor, emitter, ex
 		}
 		visited[curr.receiptID] = true
 
-		// Update both seq and the embedded SequenceNumber in data JSON
-		updatedData := curr.dataJSON
+		// Update both seq and the embedded SequenceNumber in data JSON.
+		// Corrupted or unparseable JSON must fail the migration explicitly and roll back cleanly.
 		var r SettlementReceipt
-		if err := json.Unmarshal([]byte(curr.dataJSON), &r); err == nil {
-			r.SequenceNumber = seq
-			if b, err := json.Marshal(&r); err == nil {
-				updatedData = string(b)
-			}
+		if err := json.Unmarshal([]byte(curr.dataJSON), &r); err != nil {
+			return fmt.Errorf("%w: migration failed for pair (%s, %s): parse receipt data JSON for %s: %w", ErrChainBroken, emitter, executor, curr.receiptID, err)
 		}
+		r.SequenceNumber = seq
+		b, err := json.Marshal(&r)
+		if err != nil {
+			return fmt.Errorf("%w: migration failed for pair (%s, %s): marshal updated receipt data for %s: %w", ErrChainBroken, emitter, executor, curr.receiptID, err)
+		}
+		updatedData := string(b)
 
 		if _, err := tx.ExecContext(ctx, "UPDATE receipts SET seq = ?, data = ? WHERE receipt_id = ?;", seq, updatedData, curr.receiptID); err != nil {
 			return fmt.Errorf("update seq for receipt %s: %w", curr.receiptID, err)
@@ -238,6 +241,9 @@ func backfillPairSequence(ctx context.Context, tx migrationExecutor, emitter, ex
 			break
 		}
 
+		if curr.executorSignature == "" {
+			return fmt.Errorf("%w: migration failed for pair (%s, %s): missing executor signature on receipt %s", ErrChainBroken, emitter, executor, curr.receiptID)
+		}
 		h := sha256.Sum256([]byte(curr.executorSignature))
 		nextHash := hex.EncodeToString(h[:])
 		nextList := byPrevHash[nextHash]
