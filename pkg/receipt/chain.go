@@ -42,11 +42,28 @@ func NewChainStore(db *sql.DB) *ChainStore {
 	return &ChainStore{db: db}
 }
 
+// migrationExecutor abstracts *sql.Tx and *sql.Conn for migration statements.
+type migrationExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // InitSchema creates the receipts table and indexes atomically and idempotently.
 // If the table already exists without the seq column, it executes an atomic migration:
-// adding the column, reconstructing the sequential sequence numbers (1..N) following
-// the previous_receipt_hash cryptographic chain, and creating the unique index.
+// acquiring an immediate transaction, adding the column, reconstructing sequential sequence
+// numbers (1..N) following previous_receipt_hash cryptographic chain links, and creating the unique index.
 func (cs *ChainStore) InitSchema(ctx context.Context) error {
+	conn, err := cs.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire db connection for schema init: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout = 5000;"); err != nil {
+		return fmt.Errorf("set busy timeout: %w", err)
+	}
+
 	schema := `
 	CREATE TABLE IF NOT EXISTS receipts (
 		receipt_id            TEXT NOT NULL,
@@ -72,41 +89,50 @@ func (cs *ChainStore) InitSchema(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_receipts_contract
 		ON receipts(contract_id);
 	`
-	if _, err := cs.db.ExecContext(ctx, schema); err != nil {
+	if _, err := conn.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("create base schema: %w", err)
 	}
 
-	return cs.migrateSeqSchema(ctx)
+	return cs.migrateSeqSchema(ctx, conn)
 }
 
-func (cs *ChainStore) migrateSeqSchema(ctx context.Context) error {
-	tx, err := cs.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin migration tx: %w", err)
+func (cs *ChainStore) migrateSeqSchema(ctx context.Context, conn *sql.Conn) error {
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE;"); err != nil {
+		return fmt.Errorf("begin immediate migration tx: %w", err)
 	}
-	defer tx.Rollback()
+
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK;")
+		}
+	}()
 
 	// Check if column 'seq' exists via pragma_table_info.
 	var seqColCount int
-	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info('receipts') WHERE name = 'seq';").Scan(&seqColCount); err != nil {
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info('receipts') WHERE name = 'seq';").Scan(&seqColCount); err != nil {
 		return fmt.Errorf("check seq column: %w", err)
 	}
 
 	if seqColCount == 0 {
-		if _, err := tx.ExecContext(ctx, "ALTER TABLE receipts ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;"); err != nil {
+		if _, err := conn.ExecContext(ctx, "ALTER TABLE receipts ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;"); err != nil {
 			return fmt.Errorf("alter table add column seq: %w", err)
 		}
-		if err := backfillReceiptSequences(ctx, tx); err != nil {
+		if err := backfillReceiptSequences(ctx, conn); err != nil {
 			return err
 		}
 	}
 
 	// Create unique index only after seq column is confirmed to exist and backfilled.
-	if _, err := tx.ExecContext(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_pair_seq ON receipts(emitter_agent_id, executor_agent_id, seq);"); err != nil {
+	if _, err := conn.ExecContext(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_pair_seq ON receipts(emitter_agent_id, executor_agent_id, seq);"); err != nil {
 		return fmt.Errorf("create unique index idx_receipts_pair_seq: %w", err)
 	}
 
-	return tx.Commit()
+	if _, err := conn.ExecContext(ctx, "COMMIT;"); err != nil {
+		return fmt.Errorf("commit migration tx: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 type receiptMigrationNode struct {
@@ -116,7 +142,7 @@ type receiptMigrationNode struct {
 	dataJSON          string
 }
 
-func backfillReceiptSequences(ctx context.Context, tx *sql.Tx) error {
+func backfillReceiptSequences(ctx context.Context, tx migrationExecutor) error {
 	pairRows, err := tx.QueryContext(ctx, "SELECT DISTINCT emitter_agent_id, executor_agent_id FROM receipts;")
 	if err != nil {
 		return fmt.Errorf("query distinct agent pairs: %w", err)
@@ -141,7 +167,7 @@ func backfillReceiptSequences(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
-func backfillPairSequence(ctx context.Context, tx *sql.Tx, emitter, executor string) error {
+func backfillPairSequence(ctx context.Context, tx migrationExecutor, emitter, executor string) error {
 	rows, err := tx.QueryContext(ctx,
 		"SELECT receipt_id, previous_receipt_hash, executor_signature, data FROM receipts WHERE emitter_agent_id = ? AND executor_agent_id = ?;",
 		emitter, executor)
