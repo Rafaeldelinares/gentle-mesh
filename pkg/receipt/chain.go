@@ -210,12 +210,12 @@ func backfillPairSequence(ctx context.Context, tx migrationExecutor, emitter, ex
 		return fmt.Errorf("%w: migration failed for pair (%s, %s): no root receipt found", ErrChainBroken, emitter, executor)
 	}
 	if len(roots) > 1 {
-		return fmt.Errorf("%w: migration failed for pair (%s, %s): multiple root receipts found (chain forked/ambiguous)", ErrChainBroken, emitter, executor)
+		return fmt.Errorf("%w: migration failed for pair (%s, %s): multiple root receipts found (chain forked/ambiguous, first root %s)", ErrChainBroken, emitter, executor, roots[0].receiptID)
 	}
 
 	for prevH, list := range byPrevHash {
 		if len(list) > 1 {
-			return fmt.Errorf("%w: migration failed for pair (%s, %s): fork detected at previous hash %q", ErrChainBroken, emitter, executor, prevH)
+			return fmt.Errorf("%w: migration failed for pair (%s, %s): fork detected at previous hash %q (first receipt %s)", ErrChainBroken, emitter, executor, prevH, list[0].receiptID)
 		}
 	}
 
@@ -241,7 +241,7 @@ func backfillPairSequence(ctx context.Context, tx migrationExecutor, emitter, ex
 		updatedData := string(b)
 
 		if _, err := tx.ExecContext(ctx, "UPDATE receipts SET seq = ?, data = ? WHERE receipt_id = ?;", seq, updatedData, curr.receiptID); err != nil {
-			return fmt.Errorf("update seq for receipt %s: %w", curr.receiptID, err)
+			return fmt.Errorf("update seq for pair (%s, %s) receipt %s: %w", emitter, executor, curr.receiptID, err)
 		}
 
 		if int(seq) == len(allNodes) {
@@ -261,6 +261,11 @@ func backfillPairSequence(ctx context.Context, tx migrationExecutor, emitter, ex
 	}
 
 	if len(visited) != len(allNodes) {
+		for _, n := range allNodes {
+			if !visited[n.receiptID] {
+				return fmt.Errorf("%w: migration failed for pair (%s, %s): unreachable disconnected receipt %s (chain is not contiguous)", ErrChainBroken, emitter, executor, n.receiptID)
+			}
+		}
 		return fmt.Errorf("%w: migration failed for pair (%s, %s): unreachable disconnected receipts detected", ErrChainBroken, emitter, executor)
 	}
 
