@@ -14,6 +14,9 @@ import (
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
 	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // Errors for chain operations.
@@ -49,10 +52,8 @@ type migrationExecutor interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// InitSchema creates the receipts table and indexes atomically and idempotently.
-// If the table already exists without the seq column, it executes an atomic migration:
-// acquiring an immediate transaction, adding the column, reconstructing sequential sequence
-// numbers (1..N) following previous_receipt_hash cryptographic chain links, and creating the unique index.
+// InitSchema initializes the receipts storage schema and indexes idempotently,
+// performing an atomic migration if upgrading from a legacy schema version.
 func (cs *ChainStore) InitSchema(ctx context.Context) error {
 	conn, err := cs.db.Conn(ctx)
 	if err != nil {
@@ -157,6 +158,9 @@ func backfillReceiptSequences(ctx context.Context, tx migrationExecutor) error {
 		}
 		pairs = append(pairs, [2]string{em, ex})
 	}
+	if err := pairRows.Err(); err != nil {
+		return fmt.Errorf("iterate distinct agent pairs: %w", err)
+	}
 	_ = pairRows.Close()
 
 	for _, p := range pairs {
@@ -191,6 +195,9 @@ func backfillPairSequence(ctx context.Context, tx migrationExecutor, emitter, ex
 		node := &receiptMigrationNode{receiptID: id, prevHash: prevHash, executorSignature: sig, dataJSON: data}
 		allNodes = append(allNodes, node)
 		byPrevHash[prevHash] = append(byPrevHash[prevHash], node)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate receipts for pair (%s, %s): %w", emitter, executor, err)
 	}
 	_ = rows.Close()
 
@@ -273,16 +280,33 @@ func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) err
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
-	tx, err := cs.db.BeginTx(ctx, nil)
+	// Use a dedicated connection so that BEGIN IMMEDIATE (not the driver default
+	// DEFERRED) takes the write lock up front and busy_timeout makes concurrent
+	// writers wait instead of failing with SQLITE_BUSY.
+	conn, err := cs.db.Conn(ctx)
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+		return fmt.Errorf("acquire db connection: %w", err)
 	}
-	defer tx.Rollback()
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout = 5000;"); err != nil {
+		return fmt.Errorf("set busy timeout: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE;"); err != nil {
+		return fmt.Errorf("begin immediate tx: %w", err)
+	}
+
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK;")
+		}
+	}()
 
 	// Query last receipt for this pair inside the transaction.
 	var lastData string
 	var lastSeq int64
-	err = tx.QueryRowContext(ctx,
+	err = conn.QueryRowContext(ctx,
 		`SELECT data, seq FROM receipts
 		 WHERE emitter_agent_id = ? AND executor_agent_id = ?
 		 ORDER BY seq DESC, executor_signed_at DESC LIMIT 1`,
@@ -339,7 +363,7 @@ func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) err
 		s := r.EmitterAcceptanceAt.Format(time.RFC3339)
 		acceptanceAt = &s
 	}
-	_, err = tx.ExecContext(ctx, query,
+	_, err = conn.ExecContext(ctx, query,
 		r.ReceiptID, r.ContractID, r.EnvelopeHash,
 		r.EmitterAgentID, r.ExecutorAgentID, string(r.Verdict),
 		nullable(r.PreviousReceiptHash), r.ExecutorSignature,
@@ -352,12 +376,35 @@ func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) err
 		expectedSeq,
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") && strings.Contains(err.Error(), "seq") {
+		if isPairSeqUniqueViolation(err) {
 			return fmt.Errorf("%w: insert receipt: %v", ErrSequenceConflict, err)
 		}
 		return fmt.Errorf("insert receipt: %w", err)
 	}
-	return tx.Commit()
+
+	if _, err := conn.ExecContext(ctx, "COMMIT;"); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// isPairSeqUniqueViolation reports whether err is a SQLite UNIQUE constraint
+// violation of the (emitter_agent_id, executor_agent_id, seq) pair index.
+//
+// The primary signal is the SQLite extended result code 2067
+// (SQLITE_CONSTRAINT_UNIQUE). The textual column signature is consulted only to
+// distinguish idx_receipts_pair_seq from any other unique constraint; it never
+// replaces the numeric code.
+func isPairSeqUniqueViolation(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) || sqliteErr.Code() != sqlite3.SQLITE_CONSTRAINT_UNIQUE {
+		return false
+	}
+	msg := sqliteErr.Error()
+	return strings.Contains(msg, "receipts.emitter_agent_id") &&
+		strings.Contains(msg, "receipts.executor_agent_id") &&
+		strings.Contains(msg, "receipts.seq")
 }
 
 // nullable returns a pointer to the string, or nil if empty.
