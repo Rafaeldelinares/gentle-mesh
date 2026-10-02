@@ -309,17 +309,70 @@ func TestMigration_BrokenChain_Rejected(t *testing.T) {
 	assertDatabaseIntact(t, db, 2)
 }
 
+// TestMigration_CorruptReceiptJSON_Rejected verifies that a receipt with corrupt data JSON
+// causes InitSchema to fail with an explicit ErrChainBroken error and rolls back leaving
+// the database intact.
+func TestMigration_CorruptReceiptJSON_Rejected(t *testing.T) {
+	db, _ := setupOldSchemaDB(t)
+	defer db.Close()
+
+	_, signer := makeTestSigners(t)
+	r := makeSignedReceipt(t, "agent-a", "agent-b", "", "contract-1", signer)
+
+	query := `
+	INSERT INTO receipts (
+		receipt_id, contract_id, envelope_hash, emitter_agent_id, executor_agent_id,
+		verdict, previous_receipt_hash, executor_signature, executor_signed_at,
+		emitter_acceptance, emitter_acceptance_at, emitter_signature,
+		dispute_reason, data
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+	`
+	_, err := db.Exec(query,
+		r.ReceiptID,
+		r.ContractID,
+		r.EnvelopeHash,
+		r.EmitterAgentID,
+		r.ExecutorAgentID,
+		string(r.Verdict),
+		r.PreviousReceiptHash,
+		r.ExecutorSignature,
+		r.ExecutorSignedAt.Format(time.RFC3339Nano),
+		r.EmitterAcceptance,
+		r.EmitterAcceptanceAt,
+		r.EmitterSignature,
+		r.DisputeReason,
+		"{invalid-corrupted-json-payload",
+	)
+	if err != nil {
+		t.Fatalf("insert corrupt receipt failed: %v", err)
+	}
+
+	cs := NewChainStore(db)
+	err = cs.InitSchema(context.Background())
+	if err == nil {
+		t.Fatal("expected InitSchema to fail on corrupt receipt data JSON, got nil")
+	}
+	if !errors.Is(err, ErrChainBroken) {
+		t.Errorf("expected error wrapping ErrChainBroken, got %v", err)
+	}
+
+	assertDatabaseIntact(t, db, 1)
+}
+
 // TestMigration_Concurrent_InitSchema verifies that two concurrent InitSchema calls
 // on the same database file (one migrating, the other concurrently arriving) execute
-// cleanly without database locks or duplicate sequence assignments.
+// cleanly without database locks or duplicate sequence assignments across 5 sequential receipts.
 func TestMigration_Concurrent_InitSchema(t *testing.T) {
 	dbInit, dbPath := setupOldSchemaDB(t)
 	_, signer := makeTestSigners(t)
-	r1 := makeSignedReceipt(t, "agent-a", "agent-b", "", "contract-1", signer)
-	insertOldReceipt(t, dbInit, r1)
-	h := sha256.Sum256([]byte(r1.ExecutorSignature))
-	r2 := makeSignedReceipt(t, "agent-a", "agent-b", hex.EncodeToString(h[:]), "contract-2", signer)
-	insertOldReceipt(t, dbInit, r2)
+
+	var prevHash string
+	for i := 1; i <= 5; i++ {
+		r := makeSignedReceipt(t, "agent-a", "agent-b", prevHash, fmt.Sprintf("contract-%d", i), signer)
+		insertOldReceipt(t, dbInit, r)
+		h := sha256.Sum256([]byte(r.ExecutorSignature))
+		prevHash = hex.EncodeToString(h[:])
+	}
 	dbInit.Close()
 
 	db1, err := sql.Open("sqlite", dbPath)
@@ -360,11 +413,14 @@ func TestMigration_Concurrent_InitSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetChain failed: %v", err)
 	}
-	if len(chain) != 2 {
-		t.Fatalf("expected chain length 2, got %d", len(chain))
+	if len(chain) != 5 {
+		t.Fatalf("expected chain length 5, got %d", len(chain))
 	}
-	if chain[0].SequenceNumber != 1 || chain[1].SequenceNumber != 2 {
-		t.Errorf("unexpected sequence numbers: %d, %d", chain[0].SequenceNumber, chain[1].SequenceNumber)
+	for i := 0; i < 5; i++ {
+		expectedSeq := int64(i + 1)
+		if chain[i].SequenceNumber != expectedSeq {
+			t.Errorf("receipt %d expected seq %d, got %d", i, expectedSeq, chain[i].SequenceNumber)
+		}
 	}
 }
 
