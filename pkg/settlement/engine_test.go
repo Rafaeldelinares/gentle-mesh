@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1436,3 +1438,258 @@ func TestSettle_ConcurrentWrites_SamePair(t *testing.T) {
 		}
 	}
 }
+
+// hookSigner wraps a signing.Signer and executes a hook before Sign.
+type hookSigner struct {
+	signing.Signer
+	mu         sync.Mutex
+	signCount  int
+	beforeSign func(attempt int) error
+}
+
+func (h *hookSigner) Sign(data []byte) (string, error) {
+	h.mu.Lock()
+	h.signCount++
+	attempt := h.signCount
+	hook := h.beforeSign
+	h.mu.Unlock()
+
+	if hook != nil {
+		if err := hook(attempt); err != nil {
+			return "", err
+		}
+	}
+	return h.Signer.Sign(data)
+}
+
+func TestSettle_RetryOnInvalidPreviousHash_Succeeds(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	cs := receipt.NewChainStore(db)
+	if err := cs.InitSchema(context.Background()); err != nil {
+		t.Fatalf("InitSchema: %v", err)
+	}
+	ev := NewEvaluator(dir)
+
+	baseSigner, err := signing.GenerateSigner("agent-b")
+	if err != nil {
+		t.Fatalf("GenerateSigner: %v", err)
+	}
+
+	hSigner := &hookSigner{
+		Signer: baseSigner,
+		beforeSign: func(attempt int) error {
+			// On attempt 1, simulate a concurrent writer that saves a receipt
+			// after GetLastReceipt was called but before SaveReceipt runs.
+			if attempt == 1 {
+				competing := &receipt.SettlementReceipt{
+					ProtocolVersion:  receipt.CurrentProtocolVersion,
+					MeshID:           "gentle-mesh-dev",
+					ReceiptID:        "rcpt-competing-1",
+					ContractID:       "contract-competing-1",
+					EnvelopeHash:     "hash-competing-1",
+					EmitterAgentID:   "agent-a",
+					ExecutorAgentID:  "agent-b",
+					Verdict:          receipt.VerdictSettledClean,
+					ExecutorSignedAt: time.Now(),
+				}
+				if err := receipt.SignReceipt(competing, baseSigner); err != nil {
+					return fmt.Errorf("sign competing receipt: %w", err)
+				}
+				if err := cs.SaveReceipt(context.Background(), competing); err != nil {
+					return fmt.Errorf("save competing receipt: %w", err)
+				}
+			}
+			return nil
+		},
+	}
+
+	eng, err := NewEngine(EngineConfig{
+		Evaluator:      ev,
+		ChainStore:     cs,
+		ExecutorSigner: hSigner,
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	env := validEnvelope()
+	in := SettlementInput{
+		Envelope:        env,
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+	}
+
+	out, err := eng.Settle(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Settle failed: %v", err)
+	}
+
+	if out.Receipt.SequenceNumber != 2 {
+		t.Errorf("SequenceNumber = %d, want 2", out.Receipt.SequenceNumber)
+	}
+	if hSigner.signCount < 2 {
+		t.Errorf("signCount = %d, expected at least 2 attempts (retry)", hSigner.signCount)
+	}
+
+	chain, err := cs.GetChain(context.Background(), "agent-a", "agent-b")
+	if err != nil {
+		t.Fatalf("GetChain failed: %v", err)
+	}
+	if len(chain) != 2 {
+		t.Fatalf("chain length = %d, want 2", len(chain))
+	}
+	results, err := receipt.VerifyChainIntegrity(chain, baseSigner.PublicKey(), nil)
+	if err != nil {
+		t.Fatalf("VerifyChainIntegrity: %v", err)
+	}
+	for i, res := range results {
+		if !res.Valid {
+			t.Errorf("receipt[%d] invalid: %s", i, res.Error)
+		}
+	}
+}
+
+func TestSettle_RetryExhausted_ReturnsExplicitError(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	cs := receipt.NewChainStore(db)
+	if err := cs.InitSchema(context.Background()); err != nil {
+		t.Fatalf("InitSchema: %v", err)
+	}
+	ev := NewEvaluator(dir)
+
+	baseSigner, err := signing.GenerateSigner("agent-b")
+	if err != nil {
+		t.Fatalf("GenerateSigner: %v", err)
+	}
+
+	hSigner := &hookSigner{
+		Signer: baseSigner,
+		beforeSign: func(attempt int) error {
+			// On every attempt, save a competing receipt to always cause ErrInvalidPreviousHash
+			competing := &receipt.SettlementReceipt{
+				ProtocolVersion:  receipt.CurrentProtocolVersion,
+				MeshID:           "gentle-mesh-dev",
+				ReceiptID:        fmt.Sprintf("rcpt-competing-%d", attempt),
+				ContractID:       fmt.Sprintf("contract-competing-%d", attempt),
+				EnvelopeHash:     fmt.Sprintf("hash-competing-%d", attempt),
+				EmitterAgentID:   "agent-a",
+				ExecutorAgentID:  "agent-b",
+				Verdict:          receipt.VerdictSettledClean,
+				ExecutorSignedAt: time.Now(),
+			}
+			if err := receipt.SignReceipt(competing, baseSigner); err != nil {
+				return err
+			}
+			return cs.SaveReceipt(context.Background(), competing)
+		},
+	}
+
+	eng, err := NewEngine(EngineConfig{
+		Evaluator:      ev,
+		ChainStore:     cs,
+		ExecutorSigner: hSigner,
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	env := validEnvelope()
+	in := SettlementInput{
+		Envelope:        env,
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+	}
+
+	_, err = eng.Settle(context.Background(), in)
+	if err == nil {
+		t.Fatal("expected Settle to fail when retries exhausted, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeded max retry attempts due to concurrent chain modifications") {
+		t.Fatalf("expected error containing 'exceeded max retry attempts...', got: %v", err)
+	}
+	if hSigner.signCount != 10 {
+		t.Errorf("signCount = %d, want 10 (maxSaveAttempts)", hSigner.signCount)
+	}
+}
+
+func TestSettle_PermanentError_NoRetry_SigningFailure(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+
+	cs := receipt.NewChainStore(db)
+	if err := cs.InitSchema(context.Background()); err != nil {
+		t.Fatalf("InitSchema: %v", err)
+	}
+	ev := NewEvaluator(dir)
+
+	baseSigner, err := signing.GenerateSigner("agent-b")
+	if err != nil {
+		t.Fatalf("GenerateSigner: %v", err)
+	}
+
+	keyErr := errors.New("cryptographic key revoked")
+	hSigner := &hookSigner{
+		Signer: baseSigner,
+		beforeSign: func(attempt int) error {
+			return keyErr
+		},
+	}
+
+	eng, err := NewEngine(EngineConfig{
+		Evaluator:      ev,
+		ChainStore:     cs,
+		ExecutorSigner: hSigner,
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	env := validEnvelope()
+	in := SettlementInput{
+		Envelope:        env,
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+	}
+
+	_, err = eng.Settle(context.Background(), in)
+	if err == nil {
+		t.Fatal("expected Settle to fail on signing error, got nil")
+	}
+	if !errors.Is(err, keyErr) {
+		t.Errorf("expected error wrapping keyErr, got %v", err)
+	}
+	if hSigner.signCount != 1 {
+		t.Errorf("signCount = %d, want 1 (permanent error must not be retried)", hSigner.signCount)
+	}
+}
+
+func TestErrorIs_ErrChainBroken_DoesNotMatch_ErrInvalidPreviousHash(t *testing.T) {
+	genericBroken := fmt.Errorf("%w: corruption in storage", receipt.ErrChainBroken)
+	if errors.Is(genericBroken, receipt.ErrInvalidPreviousHash) {
+		t.Fatal("generic ErrChainBroken must NOT match ErrInvalidPreviousHash")
+	}
+	invalidPrev := fmt.Errorf("%w: mismatch", receipt.ErrInvalidPreviousHash)
+	if !errors.Is(invalidPrev, receipt.ErrInvalidPreviousHash) {
+		t.Fatal("ErrInvalidPreviousHash must match ErrInvalidPreviousHash")
+	}
+	if !errors.Is(invalidPrev, receipt.ErrChainBroken) {
+		t.Fatal("ErrInvalidPreviousHash must also match ErrChainBroken (as parent)")
+	}
+}
+
