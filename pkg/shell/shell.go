@@ -78,9 +78,9 @@ func New(cfg Config) (*Shell, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("enable WAL: %w", err)
+		return nil, fmt.Errorf("configure chain db pragmas: %w", err)
 	}
 
 	chainStore := receipt.NewChainStore(db)
