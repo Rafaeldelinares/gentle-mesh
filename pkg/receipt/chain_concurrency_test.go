@@ -16,15 +16,16 @@ import (
 )
 
 // openChainDBAt opens an independent *sql.DB handle to the given SQLite file,
-// mimicking a second process/instance sharing the same database. WAL mode is
-// enabled to mirror the production server store (pkg/server/store).
+// mimicking a second process/instance sharing the same database. It mirrors the
+// production chain-store configuration: WAL journal mode and a single pooled
+// connection (pkg/shell/shell.go, integration/agent/server.go).
 func openChainDBAt(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatalf("sql.Open(%s): %v", path, err)
 	}
-	db.SetMaxOpenConns(4)
+	db.SetMaxOpenConns(1)
 	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
 		db.Close()
 		t.Fatalf("enable WAL on %s: %v", path, err)

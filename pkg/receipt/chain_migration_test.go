@@ -375,16 +375,10 @@ func TestMigration_Concurrent_InitSchema(t *testing.T) {
 	}
 	dbInit.Close()
 
-	db1, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open db1: %v", err)
-	}
-	defer db1.Close()
-	db2, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open db2: %v", err)
-	}
-	defer db2.Close()
+	// Mirror the production chain-store configuration: WAL journal mode and a
+	// single pooled connection per independent handle/process.
+	db1 := openChainDBAt(t, dbPath)
+	db2 := openChainDBAt(t, dbPath)
 
 	cs1 := NewChainStore(db1)
 	cs2 := NewChainStore(db2)
