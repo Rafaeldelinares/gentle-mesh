@@ -24,7 +24,7 @@ El protocolo asume que los procesos de ejecución de los agentes (LLMs, subproce
 | **A1** | **Claves Privadas de Nodos** | Claves asimétricas Ed25519 (`pkg/keystore`) y pares mTLS (`/nodes/<id>`). | Suplantación de identidad (Spoofing) y firma fraudulenta de tareas y recibos. |
 | **A2** | **Integridad Territorial Git** | Ramas y árboles de trabajo (`repo:branch`) en los hosts ejecutores. | Contaminación de código fuente o ejecución de código cruzado no autorizado. |
 | **A3** | **Determinismo de Liquidación** | Veredicto falsable de las aserciones (`pkg/settlement`) ejecutadas por el arnés Go. | Aceptación de tareas rotas ("Green Checkbox fallacy") o fraude de completitud. |
-| **A4** | **Cadena Inmutable de Recibos** | Historial encadenado por SHA-256 (`prev_receipt_hash`, `seq`) en SQLite WAL. | Repudio de acuerdos, reescritura de auditoría o disputas inconsistentes. |
+| **A4** | **Cadena Inmutable de Recibos** | Historial encadenado por SHA-256 (`prev_receipt_hash`, `seq`) en SQLite WAL. **La firma del ejecutor no cubre `prev_receipt_hash` ni `seq`: un actor con escritura en la base puede borrar un recibo intermedio o reordenarlos y recalcular ambos sin invalidar ninguna firma (issue #43).** | Repudio de acuerdos, reescritura de auditoría o disputas inconsistentes. |
 | **A5** | **Contención del Host Ejecutor** | Sistema operativo, red y filesystem del nodo ejecutor frente a comandos arbitrarios. | RCE, fuga de credenciales o denegación de servicio del host. |
 
 ---
@@ -129,7 +129,7 @@ Todas las rutas analizadas corresponden exactamente a los handlers registrados e
 | **S3** | Deny-by-default | Elevation of Privilege | Perfil mínimo por defecto (sin red, sin exec); rechazo explícito `REJECTED_CAPABILITY`. |
 | **S4** | Política en host | Elevation of Privilege | Políticas impuestas por arnés Go fuera del alcance de modificación del LLM. |
 | **S6** | Sin ejecución de datos | Tampering, RCE, DoS | JCS RFC 8785, `DisallowUnknownFields()`, structs fijas, sin deserialización dinámica. |
-| **S7** | Integridad de la historia | Tampering & Repudiation | Cadena criptográfica SHA-256 validada **al escribir** bajo mutex (`ErrChainBroken`). |
+| **S7** | Integridad de la historia | Tampering & Repudiation | Cadena criptográfica SHA-256 validada **al escribir** bajo mutex (`ErrChainBroken`). La verificación valida coherencia interna de enlace y secuencia, **no autenticidad estructural**: borrado intermedio y reordenamiento no se detectan mientras `prev_receipt_hash` no esté firmado (issue #43). |
 | **S8** | Revocación | Spoofing tras compromiso | Kill switch y control de ciclo de vida de certificados sin retención de claves privadas. |
 | **S9** | Sin downgrade | Tampering & Protocol Attack | `protocol_version` "2" estricto; rechazo inmediato de v1 o versiones desconocidas. |
 | **R1** | Idempotencia | Replay & DoS | Deduplicación por `envelope_id`; reenvíos devuelven el recibo existente. |

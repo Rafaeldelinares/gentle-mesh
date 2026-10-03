@@ -604,10 +604,20 @@ func (cs *ChainStore) VerifyChain(
 //   - Executor signature is valid against executorPublicKey (detects content modification)
 //   - Emitter acceptance signature is valid against emitterPublicKey (if present)
 //
+// It validates INTERNAL COHERENCE of the chain link and sequence, not their
+// structural authenticity. Because ComputeReceiptHash clears
+// previous_receipt_hash and sequence_number, neither field is covered by any
+// signature; an actor able to write to the database can delete a middle receipt
+// or reorder receipts and recompute prev and seq so the result stays contiguous,
+// without invalidating any signature. Only per-receipt content modification is
+// cryptographically detected (see Issue #43).
+//
 // Limitations:
 //   - Deletion or truncation of the tail (the last receipt in the chain) cannot be detected
 //     without an external state anchor (see Issue #41). A truncated chain prefix [1..k]
 //     is internally consistent and passes verification.
+//   - Deletion of a middle receipt and reordering of receipts are likewise not detected
+//     because the chain link and sequence are unsigned (see Issue #43).
 func VerifyChainIntegrity(
 	chain []*SettlementReceipt,
 	executorPublicKey, emitterPublicKey []byte,

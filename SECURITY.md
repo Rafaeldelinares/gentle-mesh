@@ -81,7 +81,7 @@ See `docs/rfcs/002-goals-and-non-goals.md` for the complete objective and non-ob
 │  • S2: verify Ed25519 before executing or persisting        │
 │  • S3: deny-by-default (minimal profile if no capabilities) │
 │  • S6: JSON canonical only, no arbitrary code execution     │
-│  • S7: receipts signed + SHA-256 chained, verifiable        │
+│  • S7: receipts signed + SHA-256 chained (see #43)          │
 │  • S9: protocol_version enforced, no downgrade              │
 ├─────────────────────────────────────────────────────────────┤
 │  NOT protected by this protocol:                           │
@@ -100,6 +100,7 @@ See `docs/rfcs/002-goals-and-non-goals.md` for the complete objective and non-ob
 - No revocation propagation in MVP (S8 — deferred to Phase 3)
 - No hardware key storage (HSM/KMS) in MVP (N4 — deferred)
 - No external chain anchoring in MVP
+- The executor signature does NOT cover `previous_receipt_hash` (nor `sequence_number`): an actor with database write access can delete a middle receipt or reorder receipts and recompute prev/seq without invalidating any signature (issue #43). `VerifyChainIntegrity` validates internal coherence, not structural authenticity.
 
 ## Version policy
 
