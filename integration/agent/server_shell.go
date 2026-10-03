@@ -36,6 +36,7 @@ type ShellServer struct {
 	agentID    string
 	meshID     string
 	tlsOpts    []TLSClientOption
+	chainMu    sync.Mutex
 }
 
 // shellWrapper holds shell configuration (mirrors pkg/shell.Config).
@@ -320,17 +321,32 @@ func (s *ShellServer) executeLocal(ctx context.Context, assertions []envelope.As
 		agentID = "local-shell"
 	}
 
+	// Lock chainMu to serialize receipt creation, signing, and saving.
+	s.chainMu.Lock()
+	defer s.chainMu.Unlock()
+
+	last, err := s.chainStore.GetLastReceipt(ctx, agentID, agentID)
+	if err != nil && !errors.Is(err, receipt.ErrReceiptNotFound) {
+		return nil, fmt.Errorf("get last receipt: %w", err)
+	}
+	var prevHash string
+	if last != nil {
+		h := sha256.Sum256([]byte(last.ExecutorSignature))
+		prevHash = hex.EncodeToString(h[:])
+	}
+
 	rec := &receipt.SettlementReceipt{
-		ProtocolVersion:  receipt.CurrentProtocolVersion,
-		MeshID:           meshID,
-		ReceiptID:        fmt.Sprintf("rcpt-%d", signedAt.UnixNano()),
-		ContractID:       fmt.Sprintf("contract-%d", signedAt.UnixNano()),
-		EnvelopeHash:     envHash,
-		EmitterAgentID:   agentID,
-		ExecutorAgentID:  agentID,
-		Verdict:          verdict,
-		Assertions:       convertResults(results),
-		ExecutorSignedAt: signedAt,
+		ProtocolVersion:     receipt.CurrentProtocolVersion,
+		MeshID:              meshID,
+		ReceiptID:           fmt.Sprintf("rcpt-%d", signedAt.UnixNano()),
+		ContractID:          fmt.Sprintf("contract-%d", signedAt.UnixNano()),
+		EnvelopeHash:        envHash,
+		EmitterAgentID:      agentID,
+		ExecutorAgentID:     agentID,
+		Verdict:             verdict,
+		Assertions:          convertResults(results),
+		PreviousReceiptHash: prevHash,
+		ExecutorSignedAt:    signedAt,
 	}
 
 	canonicalJSON, err := jcs.Marshal(rec)

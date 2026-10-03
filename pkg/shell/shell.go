@@ -8,11 +8,13 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
@@ -42,6 +44,7 @@ type Shell struct {
 	evaluator  *settlement.Evaluator
 	chainStore *receipt.ChainStore
 	db         *sql.DB
+	chainMu    sync.Mutex
 }
 
 // New creates a new Shell. In local mode (RemoteURL == ""), gentle-mesh
@@ -75,9 +78,9 @@ func New(cfg Config) (*Shell, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("enable WAL: %w", err)
+		return nil, fmt.Errorf("configure chain db pragmas: %w", err)
 	}
 
 	chainStore := receipt.NewChainStore(db)
@@ -233,17 +236,32 @@ func (s *Shell) Execute(ctx context.Context, assertions []envelope.Assertion) (*
 		agentID = "local-shell"
 	}
 
+	// Lock chainMu to serialize receipt creation, signing, and saving.
+	s.chainMu.Lock()
+	defer s.chainMu.Unlock()
+
+	last, err := s.chainStore.GetLastReceipt(ctx, agentID, agentID)
+	if err != nil && !errors.Is(err, receipt.ErrReceiptNotFound) {
+		return nil, fmt.Errorf("get last receipt: %w", err)
+	}
+	var prevHash string
+	if last != nil {
+		h := sha256.Sum256([]byte(last.ExecutorSignature))
+		prevHash = hex.EncodeToString(h[:])
+	}
+
 	rec := &receipt.SettlementReceipt{
-		ProtocolVersion:  receipt.CurrentProtocolVersion,
-		MeshID:           meshID,
-		ReceiptID:        fmt.Sprintf("rcpt-%d", signedAt.UnixNano()),
-		ContractID:       fmt.Sprintf("contract-%d", signedAt.UnixNano()),
-		EnvelopeHash:     envHash,
-		EmitterAgentID:   agentID,
-		ExecutorAgentID:  agentID,
-		Verdict:          verdict,
-		Assertions:       ConvertResults(results),
-		ExecutorSignedAt: signedAt,
+		ProtocolVersion:     receipt.CurrentProtocolVersion,
+		MeshID:              meshID,
+		ReceiptID:           fmt.Sprintf("rcpt-%d", signedAt.UnixNano()),
+		ContractID:          fmt.Sprintf("contract-%d", signedAt.UnixNano()),
+		EnvelopeHash:        envHash,
+		EmitterAgentID:      agentID,
+		ExecutorAgentID:     agentID,
+		Verdict:             verdict,
+		Assertions:          ConvertResults(results),
+		PreviousReceiptHash: prevHash,
+		ExecutorSignedAt:    signedAt,
 	}
 
 	// Sign receipt: hash the JCS-canonical receipt JSON, then sign the hash.
