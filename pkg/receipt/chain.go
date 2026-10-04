@@ -8,11 +8,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
 	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // Errors for chain operations.
@@ -21,6 +25,8 @@ var (
 	ErrChainBroken             = errors.New("receipt chain is broken")
 	ErrChainVerificationFailed = errors.New("chain verification failed")
 	ErrInvalidReceipt          = errors.New("invalid receipt")
+	ErrInvalidPreviousHash     = fmt.Errorf("%w: invalid previous receipt hash", ErrChainBroken)
+	ErrSequenceConflict        = errors.New("sequence conflict")
 )
 
 // ChainStore manages the receipt chain for an agent pair.
@@ -39,24 +45,43 @@ func NewChainStore(db *sql.DB) *ChainStore {
 	return &ChainStore{db: db}
 }
 
-// InitSchema creates the receipts table and indexes.
+// migrationExecutor abstracts *sql.Tx and *sql.Conn for migration statements.
+type migrationExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// InitSchema initializes the receipts storage schema and indexes idempotently,
+// performing an atomic migration if upgrading from a legacy schema version.
 func (cs *ChainStore) InitSchema(ctx context.Context) error {
+	conn, err := cs.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire db connection for schema init: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout = 5000;"); err != nil {
+		return fmt.Errorf("set busy timeout: %w", err)
+	}
+
 	schema := `
 	CREATE TABLE IF NOT EXISTS receipts (
-			receipt_id             TEXT NOT NULL,
-		contract_id            TEXT NOT NULL,
-		envelope_hash          TEXT NOT NULL,
-		emitter_agent_id       TEXT NOT NULL,
+		receipt_id            TEXT NOT NULL,
+		contract_id           TEXT NOT NULL,
+		envelope_hash         TEXT NOT NULL,
+		emitter_agent_id      TEXT NOT NULL,
 		executor_agent_id     TEXT NOT NULL,
 		verdict               TEXT NOT NULL,
-		previous_receipt_hash  TEXT,
-		executor_signature     TEXT NOT NULL,
-		executor_signed_at     TEXT NOT NULL,
+		previous_receipt_hash TEXT,
+		executor_signature    TEXT NOT NULL,
+		executor_signed_at    TEXT NOT NULL,
 		emitter_acceptance    TEXT,
 		emitter_acceptance_at TEXT,
-		emitter_signature      TEXT,
+		emitter_signature     TEXT,
 		dispute_reason        TEXT,
-		data                  TEXT NOT NULL
+		data                  TEXT NOT NULL,
+		seq                   INTEGER NOT NULL DEFAULT 0
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_receipts_pair
@@ -65,18 +90,190 @@ func (cs *ChainStore) InitSchema(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_receipts_contract
 		ON receipts(contract_id);
 	`
-	_, err := cs.db.ExecContext(ctx, schema)
-	return err
+	if _, err := conn.ExecContext(ctx, schema); err != nil {
+		return fmt.Errorf("create base schema: %w", err)
+	}
+
+	return cs.migrateSeqSchema(ctx, conn)
+}
+
+func (cs *ChainStore) migrateSeqSchema(ctx context.Context, conn *sql.Conn) error {
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE;"); err != nil {
+		return fmt.Errorf("begin immediate migration tx: %w", err)
+	}
+
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK;")
+		}
+	}()
+
+	// Check if column 'seq' exists via pragma_table_info.
+	var seqColCount int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info('receipts') WHERE name = 'seq';").Scan(&seqColCount); err != nil {
+		return fmt.Errorf("check seq column: %w", err)
+	}
+
+	if seqColCount == 0 {
+		if _, err := conn.ExecContext(ctx, "ALTER TABLE receipts ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;"); err != nil {
+			return fmt.Errorf("alter table add column seq: %w", err)
+		}
+		if err := backfillReceiptSequences(ctx, conn); err != nil {
+			return err
+		}
+	}
+
+	// Create unique index only after seq column is confirmed to exist and backfilled.
+	if _, err := conn.ExecContext(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_pair_seq ON receipts(emitter_agent_id, executor_agent_id, seq);"); err != nil {
+		return fmt.Errorf("create unique index idx_receipts_pair_seq: %w", err)
+	}
+
+	if _, err := conn.ExecContext(ctx, "COMMIT;"); err != nil {
+		return fmt.Errorf("commit migration tx: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+type receiptMigrationNode struct {
+	receiptID         string
+	prevHash          string
+	executorSignature string
+	dataJSON          string
+}
+
+func backfillReceiptSequences(ctx context.Context, tx migrationExecutor) error {
+	pairRows, err := tx.QueryContext(ctx, "SELECT DISTINCT emitter_agent_id, executor_agent_id FROM receipts;")
+	if err != nil {
+		return fmt.Errorf("query distinct agent pairs: %w", err)
+	}
+	defer pairRows.Close()
+
+	var pairs [][2]string
+	for pairRows.Next() {
+		var em, ex string
+		if err := pairRows.Scan(&em, &ex); err != nil {
+			return fmt.Errorf("scan agent pair: %w", err)
+		}
+		pairs = append(pairs, [2]string{em, ex})
+	}
+	if err := pairRows.Err(); err != nil {
+		return fmt.Errorf("iterate distinct agent pairs: %w", err)
+	}
+	_ = pairRows.Close()
+
+	for _, p := range pairs {
+		if err := backfillPairSequence(ctx, tx, p[0], p[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func backfillPairSequence(ctx context.Context, tx migrationExecutor, emitter, executor string) error {
+	rows, err := tx.QueryContext(ctx,
+		"SELECT receipt_id, previous_receipt_hash, executor_signature, data FROM receipts WHERE emitter_agent_id = ? AND executor_agent_id = ?;",
+		emitter, executor)
+	if err != nil {
+		return fmt.Errorf("query receipts for pair (%s, %s): %w", emitter, executor, err)
+	}
+	defer rows.Close()
+
+	var allNodes []*receiptMigrationNode
+	byPrevHash := make(map[string][]*receiptMigrationNode)
+	for rows.Next() {
+		var id, sig, data string
+		var prev sql.NullString
+		if err := rows.Scan(&id, &prev, &sig, &data); err != nil {
+			return fmt.Errorf("scan receipt: %w", err)
+		}
+		var prevHash string
+		if prev.Valid {
+			prevHash = prev.String
+		}
+		node := &receiptMigrationNode{receiptID: id, prevHash: prevHash, executorSignature: sig, dataJSON: data}
+		allNodes = append(allNodes, node)
+		byPrevHash[prevHash] = append(byPrevHash[prevHash], node)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate receipts for pair (%s, %s): %w", emitter, executor, err)
+	}
+	_ = rows.Close()
+
+	if len(allNodes) == 0 {
+		return nil
+	}
+
+	roots := byPrevHash[""]
+	if len(roots) == 0 {
+		return fmt.Errorf("%w: migration failed for pair (%s, %s): no root receipt found", ErrChainBroken, emitter, executor)
+	}
+	if len(roots) > 1 {
+		return fmt.Errorf("%w: migration failed for pair (%s, %s): multiple root receipts found (chain forked/ambiguous, first root %s)", ErrChainBroken, emitter, executor, roots[0].receiptID)
+	}
+
+	for prevH, list := range byPrevHash {
+		if len(list) > 1 {
+			return fmt.Errorf("%w: migration failed for pair (%s, %s): fork detected at previous hash %q (first receipt %s)", ErrChainBroken, emitter, executor, prevH, list[0].receiptID)
+		}
+	}
+
+	curr := roots[0]
+	visited := make(map[string]bool, len(allNodes))
+	for seq := int64(1); seq <= int64(len(allNodes)); seq++ {
+		if visited[curr.receiptID] {
+			return fmt.Errorf("%w: migration failed for pair (%s, %s): cycle detected at receipt %s", ErrChainBroken, emitter, executor, curr.receiptID)
+		}
+		visited[curr.receiptID] = true
+
+		// Update both seq and the embedded SequenceNumber in data JSON.
+		// Corrupted or unparseable JSON must fail the migration explicitly and roll back cleanly.
+		var r SettlementReceipt
+		if err := json.Unmarshal([]byte(curr.dataJSON), &r); err != nil {
+			return fmt.Errorf("%w: migration failed for pair (%s, %s): parse receipt data JSON for %s: %w", ErrChainBroken, emitter, executor, curr.receiptID, err)
+		}
+		r.SequenceNumber = seq
+		b, err := json.Marshal(&r)
+		if err != nil {
+			return fmt.Errorf("%w: migration failed for pair (%s, %s): marshal updated receipt data for %s: %w", ErrChainBroken, emitter, executor, curr.receiptID, err)
+		}
+		updatedData := string(b)
+
+		if _, err := tx.ExecContext(ctx, "UPDATE receipts SET seq = ?, data = ? WHERE receipt_id = ?;", seq, updatedData, curr.receiptID); err != nil {
+			return fmt.Errorf("update seq for pair (%s, %s) receipt %s: %w", emitter, executor, curr.receiptID, err)
+		}
+
+		if int(seq) == len(allNodes) {
+			break
+		}
+
+		if curr.executorSignature == "" {
+			return fmt.Errorf("%w: migration failed for pair (%s, %s): missing executor signature on receipt %s", ErrChainBroken, emitter, executor, curr.receiptID)
+		}
+		h := sha256.Sum256([]byte(curr.executorSignature))
+		nextHash := hex.EncodeToString(h[:])
+		nextList := byPrevHash[nextHash]
+		if len(nextList) == 0 {
+			return fmt.Errorf("%w: migration failed for pair (%s, %s): broken chain after receipt %s (missing link for hash %s)", ErrChainBroken, emitter, executor, curr.receiptID, nextHash)
+		}
+		curr = nextList[0]
+	}
+
+	if len(visited) != len(allNodes) {
+		for _, n := range allNodes {
+			if !visited[n.receiptID] {
+				return fmt.Errorf("%w: migration failed for pair (%s, %s): unreachable disconnected receipt %s (chain is not contiguous)", ErrChainBroken, emitter, executor, n.receiptID)
+			}
+		}
+		return fmt.Errorf("%w: migration failed for pair (%s, %s): unreachable disconnected receipts detected", ErrChainBroken, emitter, executor)
+	}
+
+	return nil
 }
 
 // SaveReceipt persists a receipt to the chain atomically using a SQLite transaction.
-// Chain integrity (prev_hash validation) is NOT done here — VerifyChain
-// validates chain structure independently. Application-level validation of
-// prev_hash in SaveReceipt is inherently incompatible with concurrent writes
-// because concurrent goroutines all read the same last receipt and compute
-// the same hash, but the DB state changes between read and validation.
-const maxSaveRetries = 3
-
+// It enforces S7 (chain integrity on write) and R4 (strictly monotonic sequence).
 func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) error {
 	if r == nil {
 		return ErrInvalidReceipt
@@ -88,66 +285,74 @@ func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) err
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
-	// If prev_hash is empty, compute it from the last receipt inside the critical
-	// section. This ensures that concurrent goroutines each see the correct
-	// previous receipt and compute distinct prev_hash values.
-	if r.PreviousReceiptHash == "" {
-		last, err := cs.getLastReceiptUnlocked(ctx, r.EmitterAgentID, r.ExecutorAgentID)
-		if err != nil && !errors.Is(err, ErrReceiptNotFound) {
-			return fmt.Errorf("get last receipt: %w", err)
-		}
-		if last != nil {
-			h := sha256.Sum256([]byte(last.ExecutorSignature))
-			r.PreviousReceiptHash = hex.EncodeToString(h[:])
-		}
+	// Use a dedicated connection so that BEGIN IMMEDIATE (not the driver default
+	// DEFERRED) takes the write lock up front and busy_timeout makes concurrent
+	// writers wait instead of failing with SQLITE_BUSY.
+	conn, err := cs.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire db connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout = 5000;"); err != nil {
+		return fmt.Errorf("set busy timeout: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE;"); err != nil {
+		return fmt.Errorf("begin immediate tx: %w", err)
 	}
 
-	var lastErr error
-	for attempt := 0; attempt < maxSaveRetries; attempt++ {
-		err := cs.saveReceiptOnce(ctx, r)
-		if err == nil {
-			return nil
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK;")
 		}
-		lastErr = err
-		if attempt < maxSaveRetries-1 {
-			time.Sleep(time.Millisecond * 5 * time.Duration(attempt+1))
-		}
-	}
-	return fmt.Errorf("save receipt after %d attempts: %w", maxSaveRetries, lastErr)
-}
+	}()
 
-// getLastReceiptUnlocked returns the last receipt for a pair. Caller must hold mu.
-func (cs *ChainStore) getLastReceiptUnlocked(ctx context.Context, emitterID, executorID string) (*SettlementReceipt, error) {
-	var data string
-	err := cs.db.QueryRowContext(ctx,
-		`SELECT data FROM receipts
+	// Query last receipt for this pair inside the transaction.
+	var lastData string
+	var lastSeq int64
+	err = conn.QueryRowContext(ctx,
+		`SELECT data, seq FROM receipts
 		 WHERE emitter_agent_id = ? AND executor_agent_id = ?
-		 ORDER BY executor_signed_at DESC LIMIT 1`,
-		emitterID, executorID).Scan(&data)
+		 ORDER BY seq DESC, executor_signed_at DESC LIMIT 1`,
+		r.EmitterAgentID, r.ExecutorAgentID).Scan(&lastData, &lastSeq)
+
+	var expectedSeq int64
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrReceiptNotFound
+			// First receipt for this pair (S7): previous_receipt_hash must be empty.
+			if r.PreviousReceiptHash != "" {
+				return fmt.Errorf("%w: first receipt must have empty previous_receipt_hash", ErrInvalidPreviousHash)
+			}
+			expectedSeq = 1
+		} else {
+			return fmt.Errorf("query last receipt: %w", err)
 		}
-		return nil, fmt.Errorf("query last receipt: %w", err)
-	}
-	var r SettlementReceipt
-	if err := json.Unmarshal([]byte(data), &r); err != nil {
-		return nil, fmt.Errorf("unmarshal receipt: %w", err)
-	}
-	return &r, nil
-}
+	} else {
+		// Subsequent receipt for this pair (S7): previous_receipt_hash must match previous executor signature hash.
+		var last SettlementReceipt
+		if unmarshalErr := json.Unmarshal([]byte(lastData), &last); unmarshalErr != nil {
+			return fmt.Errorf("unmarshal last receipt: %w", unmarshalErr)
+		}
 
-// saveReceiptOnce inserts a receipt inside a transaction (no prev_hash validation).
-func (cs *ChainStore) saveReceiptOnce(ctx context.Context, r *SettlementReceipt) error {
+		h := sha256.Sum256([]byte(last.ExecutorSignature))
+		expectedPrevHash := hex.EncodeToString(h[:])
+		if r.PreviousReceiptHash != expectedPrevHash {
+			return fmt.Errorf("%w: expected %s, got %s", ErrInvalidPreviousHash, expectedPrevHash, r.PreviousReceiptHash)
+		}
+		expectedSeq = lastSeq + 1
+	}
+
+	// Validate or assign sequence number (R4).
+	if r.SequenceNumber != 0 && r.SequenceNumber != expectedSeq {
+		return fmt.Errorf("%w: expected sequence %d, got %d", ErrSequenceConflict, expectedSeq, r.SequenceNumber)
+	}
+	r.SequenceNumber = expectedSeq
+
 	data, err := json.Marshal(r)
 	if err != nil {
 		return fmt.Errorf("marshal receipt: %w", err)
 	}
-	tx, err := cs.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
 
 	query := `
 	INSERT INTO receipts (
@@ -155,15 +360,15 @@ func (cs *ChainStore) saveReceiptOnce(ctx context.Context, r *SettlementReceipt)
 		emitter_agent_id, executor_agent_id, verdict,
 		previous_receipt_hash, executor_signature, executor_signed_at,
 		emitter_acceptance, emitter_acceptance_at, emitter_signature,
-		dispute_reason, data
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		dispute_reason, data, seq
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	var acceptanceAt *string
 	if r.EmitterAcceptanceAt != nil {
 		s := r.EmitterAcceptanceAt.Format(time.RFC3339)
 		acceptanceAt = &s
 	}
-	_, err = tx.ExecContext(ctx, query,
+	_, err = conn.ExecContext(ctx, query,
 		r.ReceiptID, r.ContractID, r.EnvelopeHash,
 		r.EmitterAgentID, r.ExecutorAgentID, string(r.Verdict),
 		nullable(r.PreviousReceiptHash), r.ExecutorSignature,
@@ -173,11 +378,38 @@ func (cs *ChainStore) saveReceiptOnce(ctx context.Context, r *SettlementReceipt)
 		nullable(r.EmitterSignature),
 		nullable(r.DisputeReason),
 		string(data),
+		expectedSeq,
 	)
 	if err != nil {
+		if isPairSeqUniqueViolation(err) {
+			return fmt.Errorf("%w: insert receipt: %v", ErrSequenceConflict, err)
+		}
 		return fmt.Errorf("insert receipt: %w", err)
 	}
-	return tx.Commit()
+
+	if _, err := conn.ExecContext(ctx, "COMMIT;"); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// isPairSeqUniqueViolation reports whether err is a SQLite UNIQUE constraint
+// violation of the (emitter_agent_id, executor_agent_id, seq) pair index.
+//
+// The primary signal is the SQLite extended result code 2067
+// (SQLITE_CONSTRAINT_UNIQUE). The textual column signature is consulted only to
+// distinguish idx_receipts_pair_seq from any other unique constraint; it never
+// replaces the numeric code.
+func isPairSeqUniqueViolation(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) || sqliteErr.Code() != sqlite3.SQLITE_CONSTRAINT_UNIQUE {
+		return false
+	}
+	msg := sqliteErr.Error()
+	return strings.Contains(msg, "receipts.emitter_agent_id") &&
+		strings.Contains(msg, "receipts.executor_agent_id") &&
+		strings.Contains(msg, "receipts.seq")
 }
 
 // nullable returns a pointer to the string, or nil if empty.
@@ -191,8 +423,9 @@ func nullable(s string) *string {
 // GetReceipt retrieves a receipt by its ID.
 func (cs *ChainStore) GetReceipt(ctx context.Context, receiptID string) (*SettlementReceipt, error) {
 	var data string
+	var seq int64
 	err := cs.db.QueryRowContext(ctx,
-		"SELECT data FROM receipts WHERE receipt_id = ?", receiptID).Scan(&data)
+		"SELECT data, seq FROM receipts WHERE receipt_id = ?", receiptID).Scan(&data, &seq)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrReceiptNotFound
@@ -203,15 +436,16 @@ func (cs *ChainStore) GetReceipt(ctx context.Context, receiptID string) (*Settle
 	if err := json.Unmarshal([]byte(data), &r); err != nil {
 		return nil, fmt.Errorf("unmarshal receipt: %w", err)
 	}
+	r.SequenceNumber = seq
 	return &r, nil
 }
 
 // GetChain returns all receipts for an agent pair in chronological order.
 func (cs *ChainStore) GetChain(ctx context.Context, emitterID, executorID string) ([]*SettlementReceipt, error) {
 	rows, err := cs.db.QueryContext(ctx, `
-		SELECT data FROM receipts
+		SELECT data, seq FROM receipts
 		WHERE emitter_agent_id = ? AND executor_agent_id = ?
-		ORDER BY executor_signed_at ASC
+		ORDER BY seq ASC, executor_signed_at ASC
 	`, emitterID, executorID)
 	if err != nil {
 		return nil, err
@@ -221,13 +455,15 @@ func (cs *ChainStore) GetChain(ctx context.Context, emitterID, executorID string
 	var receipts []*SettlementReceipt
 	for rows.Next() {
 		var data string
-		if err := rows.Scan(&data); err != nil {
+		var seq int64
+		if err := rows.Scan(&data, &seq); err != nil {
 			return nil, err
 		}
 		var r SettlementReceipt
 		if err := json.Unmarshal([]byte(data), &r); err != nil {
 			return nil, fmt.Errorf("unmarshal receipt: %w", err)
 		}
+		r.SequenceNumber = seq
 		receipts = append(receipts, &r)
 	}
 	return receipts, rows.Err()
@@ -298,8 +534,8 @@ func (cs *ChainStore) InjectReceipt(ctx context.Context, r *SettlementReceipt) e
 		emitter_agent_id, executor_agent_id, verdict,
 		previous_receipt_hash, executor_signature, executor_signed_at,
 		emitter_acceptance, emitter_acceptance_at, emitter_signature,
-		dispute_reason, data
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		dispute_reason, data, seq
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	var acceptanceAt *string
 	if r.EmitterAcceptanceAt != nil {
@@ -316,6 +552,7 @@ func (cs *ChainStore) InjectReceipt(ctx context.Context, r *SettlementReceipt) e
 		nullable(r.EmitterSignature),
 		nullable(r.DisputeReason),
 		string(data),
+		r.SequenceNumber,
 	)
 	if err != nil {
 		return fmt.Errorf("inject receipt: %w", err)
@@ -326,12 +563,13 @@ func (cs *ChainStore) InjectReceipt(ctx context.Context, r *SettlementReceipt) e
 // GetLastReceipt returns the most recent receipt for an agent pair.
 func (cs *ChainStore) GetLastReceipt(ctx context.Context, emitterID, executorID string) (*SettlementReceipt, error) {
 	var data string
+	var seq int64
 	err := cs.db.QueryRowContext(ctx, `
-		SELECT data FROM receipts
+		SELECT data, seq FROM receipts
 		WHERE emitter_agent_id = ? AND executor_agent_id = ?
-		ORDER BY executor_signed_at DESC
+		ORDER BY seq DESC, executor_signed_at DESC
 		LIMIT 1
-	`, emitterID, executorID).Scan(&data)
+	`, emitterID, executorID).Scan(&data, &seq)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrReceiptNotFound
@@ -342,14 +580,11 @@ func (cs *ChainStore) GetLastReceipt(ctx context.Context, emitterID, executorID 
 	if err := json.Unmarshal([]byte(data), &r); err != nil {
 		return nil, fmt.Errorf("unmarshal receipt: %w", err)
 	}
+	r.SequenceNumber = seq
 	return &r, nil
 }
 
-// VerifyChain cryptographically verifies the entire receipt chain.
-// It checks for each receipt:
-//   - previous_receipt_hash == SHA-256(executor_signature of previous receipt)
-//   - Executor signature is valid (using executorPublicKey)
-//   - Emitter acceptance signature is valid (using emitterPublicKey, if present)
+// VerifyChain cryptographically and sequentially verifies the entire receipt chain for an agent pair.
 func (cs *ChainStore) VerifyChain(
 	ctx context.Context,
 	emitterID, executorID string,
@@ -359,6 +594,34 @@ func (cs *ChainStore) VerifyChain(
 	if err != nil {
 		return nil, err
 	}
+	return VerifyChainIntegrity(chain, executorPublicKey, emitterPublicKey)
+}
+
+// VerifyChainIntegrity cryptographically and sequentially verifies a receipt chain.
+// It checks for each receipt:
+//   - Sequence number is strictly monotonic starting at 1 (detects gaps and reordering)
+//   - previous_receipt_hash == SHA-256(executor_signature of previous receipt) (empty for first)
+//   - Executor signature is valid against executorPublicKey (detects content modification)
+//   - Emitter acceptance signature is valid against emitterPublicKey (if present)
+//
+// It validates INTERNAL COHERENCE of the chain link and sequence, not their
+// structural authenticity. Because ComputeReceiptHash clears
+// previous_receipt_hash and sequence_number, neither field is covered by any
+// signature; an actor able to write to the database can delete a middle receipt
+// or reorder receipts and recompute prev and seq so the result stays contiguous,
+// without invalidating any signature. Only per-receipt content modification is
+// cryptographically detected (see Issue #43).
+//
+// Limitations:
+//   - Deletion or truncation of the tail (the last receipt in the chain) cannot be detected
+//     without an external state anchor (see Issue #41). A truncated chain prefix [1..k]
+//     is internally consistent and passes verification.
+//   - Deletion of a middle receipt and reordering of receipts are likewise not detected
+//     because the chain link and sequence are unsigned (see Issue #43).
+func VerifyChainIntegrity(
+	chain []*SettlementReceipt,
+	executorPublicKey, emitterPublicKey []byte,
+) ([]VerificationResult, error) {
 	if len(chain) == 0 {
 		return nil, ErrReceiptNotFound
 	}
@@ -367,16 +630,30 @@ func (cs *ChainStore) VerifyChain(
 
 	for i, r := range chain {
 		result := VerificationResult{
-			ReceiptID:  r.ReceiptID,
-			ContractID: r.ContractID,
-			Verdict:    r.Verdict,
-			Index:      i,
+			ReceiptID:      r.ReceiptID,
+			ContractID:     r.ContractID,
+			Verdict:        r.Verdict,
+			Index:          i,
+			SequenceNumber: r.SequenceNumber,
 		}
 
-		// 1. Verify chain link (previous_receipt_hash).
+		// 1. Verify sequence monotonicity (1, 2, 3...)
+		expectedSeq := int64(i + 1)
+		if r.SequenceNumber != expectedSeq {
+			result.SequenceValid = false
+			if r.SequenceNumber > expectedSeq {
+				result.Error = fmt.Sprintf("sequence gap detected at index %d: expected %d, got %d (receipt deleted)", i, expectedSeq, r.SequenceNumber)
+			} else {
+				result.Error = fmt.Sprintf("sequence out of order at index %d: expected %d, got %d", i, expectedSeq, r.SequenceNumber)
+			}
+		} else {
+			result.SequenceValid = true
+		}
+
+		// 2. Verify chain link (previous_receipt_hash).
 		if i == 0 {
-			result.PreviousHashValid = r.PreviousReceiptHash == ""
-			if !result.PreviousHashValid {
+			result.PreviousHashValid = (r.PreviousReceiptHash == "")
+			if !result.PreviousHashValid && result.Error == "" {
 				result.Error = "first receipt must have empty previous_receipt_hash"
 			}
 		} else {
@@ -384,39 +661,46 @@ func (cs *ChainStore) VerifyChain(
 			h := sha256.Sum256([]byte(prevSig))
 			hash := hex.EncodeToString(h[:])
 			result.PreviousHashValid = (hash == r.PreviousReceiptHash)
-			if !result.PreviousHashValid {
-				result.Error = fmt.Sprintf("chain broken: expected SHA-256(prev_sig)=%s, got %s",
-					hash, r.PreviousReceiptHash)
+			if !result.PreviousHashValid && result.Error == "" {
+				result.Error = fmt.Sprintf("chain broken: expected SHA-256(prev_sig)=%s, got %s", hash, r.PreviousReceiptHash)
 			}
 		}
 
-		// 2. Verify executor signature over receipt content.
+		// 3. Verify executor signature over receipt content.
 		if r.ExecutorSignature != "" {
 			receiptHash, err := ComputeReceiptHash(r)
 			if err != nil {
-				result.Error = fmt.Sprintf("compute receipt hash: %v", err)
+				result.ExecutorSignatureValid = false
+				if result.Error == "" {
+					result.Error = fmt.Sprintf("compute receipt hash: %v", err)
+				}
 			} else {
 				err := signing.Verify(executorPublicKey, []byte(receiptHash), r.ExecutorSignature)
 				result.ExecutorSignatureValid = (err == nil)
-				if err != nil {
+				if err != nil && result.Error == "" {
 					result.Error = fmt.Sprintf("executor signature invalid: %v", err)
 				}
 			}
 		} else {
 			result.ExecutorSignatureValid = false
-			result.Error = "missing executor signature"
+			if result.Error == "" {
+				result.Error = "missing executor signature"
+			}
 		}
 
-		// 3. Verify emitter acceptance/dispute signature (if present).
+		// 4. Verify emitter acceptance/dispute signature (if present).
 		switch {
 		case r.EmitterSignature != "" && r.EmitterAcceptance != "":
 			receiptHash, err := ComputeReceiptHash(r)
 			if err != nil {
-				result.Error = fmt.Sprintf("compute receipt hash for emitter: %v", err)
+				result.EmitterSignatureValid = false
+				if result.Error == "" {
+					result.Error = fmt.Sprintf("compute receipt hash for emitter: %v", err)
+				}
 			} else {
 				err := signing.Verify(emitterPublicKey, []byte(receiptHash), r.EmitterSignature)
 				result.EmitterSignatureValid = (err == nil)
-				if err != nil {
+				if err != nil && result.Error == "" {
 					result.Error = fmt.Sprintf("emitter signature invalid: %v", err)
 				}
 			}
@@ -428,7 +712,8 @@ func (cs *ChainStore) VerifyChain(
 			result.EmitterSignatureValid = true
 		}
 
-		result.Valid = result.PreviousHashValid &&
+		result.Valid = result.SequenceValid &&
+			result.PreviousHashValid &&
 			result.ExecutorSignatureValid &&
 			result.EmitterSignatureValid
 
@@ -444,7 +729,9 @@ type VerificationResult struct {
 	ContractID             string
 	Verdict                Verdict
 	Index                  int
+	SequenceNumber         int64
 	PreviousHashValid      bool
+	SequenceValid          bool
 	ExecutorSignatureValid bool
 	EmitterSignatureValid  bool
 	Valid                  bool
@@ -467,6 +754,7 @@ func ComputeReceiptHash(r *SettlementReceipt) (string, error) {
 	cleared.EmitterSignature = ""
 	cleared.DisputeReason = ""
 	cleared.PreviousReceiptHash = ""
+	cleared.SequenceNumber = 0
 
 	data, err := jcs.Marshal(&cleared)
 	if err != nil {

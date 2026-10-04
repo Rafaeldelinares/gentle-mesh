@@ -70,6 +70,10 @@ type SettlementReceipt struct {
 	// previous receipt in this (A,B) pair's chain. Empty for the first receipt.
 	PreviousReceiptHash string `json:"previous_receipt_hash,omitempty"`
 
+	// SequenceNumber is a strictly monotonic sequence number (1, 2, 3...)
+	// for the (EmitterAgentID, ExecutorAgentID) pair assigned atomically at persist time (R4).
+	SequenceNumber int64 `json:"sequence_number,omitempty"`
+
 	// EmitterAcceptance is A's formal response: ACCEPTED or DISPUTED.
 	EmitterAcceptance Acceptance `json:"emitter_acceptance,omitempty"`
 
