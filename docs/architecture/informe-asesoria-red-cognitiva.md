@@ -19,7 +19,7 @@
 **La Propuesta (RFC-002):** Convertir a Gentle Mesh en una **Red Cognitiva de Agentes** basada en:
 1. **Cognitive Task Envelope:** Contrato explícito con requerimientos de recursos, precondiciones y aserciones de éxito.
 2. **Pre-flight Handshake:** Negociación previa entre nodos para garantizar idoneidad técnica antes de consumir cómputo o tokens.
-3. **Task Settlement (Liquidación Determinista):** Verificación matemática/falsable de resultados por parte del arnés (independiente de la opinión del LLM) con emisión de un **Recibo de Liquidación** inmutable.
+3. **Task Settlement (Liquidación Determinista):** Verificación matemática/falsable de resultados por parte del arnés (independiente de la opinión del LLM) con emisión de un **Recibo de Liquidación** firmado y encadenado por hash. **La inmutabilidad es aspiracional hoy:** los enlaces y la secuencia no están firmados (issue #43) y la firma del emisor no cubre la decisión (issue #48).
 
 Buscamos la perspectiva y crítica de asesores externos en **cuatro dilemas de diseño distribuidos** detallados en la Sección 5.
 

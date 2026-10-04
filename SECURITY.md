@@ -15,7 +15,7 @@ Found a security issue? We take all reports seriously.
 Report privately via one of:
 
 1. **GitHub Security Advisories** (preferred)
-   → https://github.com/Rafaeldelinares/rfc002/security/advisories/new
+   → https://github.com/Rafaeldelinares/gentle-mesh/security/advisories/new
 
 2. **Email** (if GitHub is unavailable)
    → Contact via GitHub profile
@@ -101,6 +101,7 @@ See `docs/rfcs/002-goals-and-non-goals.md` for the complete objective and non-ob
 - No hardware key storage (HSM/KMS) in MVP (N4 — deferred)
 - No external chain anchoring in MVP
 - The executor signature does NOT cover `previous_receipt_hash` (nor `sequence_number`): an actor with database write access can delete a middle receipt or reorder receipts and recompute prev/seq without invalidating any signature (issue #43). `VerifyChainIntegrity` validates internal coherence, not structural authenticity.
+- The emitter signature does NOT cover the acceptance/dispute decision, its reason or its timestamp: `ComputeReceiptHash` clears `emitter_acceptance`, `emitter_acceptance_at` and `dispute_reason`. The counter-signature sent by the emitter is stored without being verified at all, and the decision is set by the server (issue #48). Flipping ACCEPTED↔DISPUTED and rewriting the reason passes both `VerifyEmitterSignature` and `VerifyChainIntegrity`.
 
 ## Version policy
 

@@ -598,6 +598,23 @@ De acuerdo con RFC 8785 (§3.2.2.3) y RFC 7493:
   - Si futuras extensiones del protocolo requieren identificadores de 64 bits o marcas temporales en nanosegundos como enteros de 64 bits, **deben ser codificados como cadenas de texto (`string`)** o formateados según RFC 3339 (como se hace con `created_at`, `executor_signed_at`).
 - **Codificación Unicode:** Las cadenas deben ser UTF-8 válido y no pueden contener sustitutos huérfanos (*lone surrogates*, `U+D800` a `U+DFFF`) ni caracteres de control sin escapar.
 
+### 7.6 Known divergences (spec ↔ implementation)
+
+Estado a la fecha de esta revisión. Cada divergencia está rastreada en un issue; **no** se considera un comportamiento deseable ni definitivo.
+
+| ID | Qué se firma | La spec dice (§) | La implementación hace | Issue |
+|---|---|---|---|---|
+| **D1** | `previous_receipt_hash` (ejecutor) | **Incluido** en el contenido firmable del ejecutor (línea 556) | **Excluido**: `ComputeReceiptHash` lo pone a cero | **#43** |
+| **D2** | `sequence_number` (ejecutor) | No listado | Excluido; `SaveReceipt` lo asigna **después** de firmar | **#43** |
+| **D3** | `protocol_version` | No listado | Firmado (tag sin `omitempty`) | (a documentar) |
+| **D4** | `mesh_id` | No listado | Firmado (tag sin `omitempty`) | (a documentar) |
+| **D5** | `remediation_chain` | No listado | Firmado cuando no está vacío | (a documentar) |
+| **D6** | Contenido firmable del **emisor** | **No definido en ningún apartado de §7** | Firma el mismo payload que el ejecutor → **no cubre decisión, motivo ni fecha**; la contrafirma se persiste sin verificar | **#48** |
+| **D7** | §7.4 `executor.Sign(hex_bytes)` | Ambiguo: ¿bytes del hex o string hex? | Firma el **string hex** de 64 caracteres ASCII | **#38** |
+| **D8** | Esquema recibo vs envelope/lease | §7.2 define el del recibo (hash hex) | El recibo firma el hex; envelope/lease firman **bytes JCS** | **#38** |
+
+**Nota sobre verificabilidad:** D1 y D6 no son matices de redacción: `VerifyChainIntegrity` devuelve `Valid=true` en cadenas reescritas y en decisiones invertidas, respectivamente. La resolución propuesta es un esquema de firma **v2** (versión dentro de lo firmado, bytes JCS, `prev` incluido y payload propio del emisor), manteniendo la verificación **v1** para los recibos históricos, que no se pueden re-firmar.
+
 ---
 
 ## 8. Estado del Contrato

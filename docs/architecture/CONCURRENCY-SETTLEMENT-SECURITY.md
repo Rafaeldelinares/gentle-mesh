@@ -435,7 +435,7 @@ func HashHex(data []byte) (string, error) {
 SHA-256 (not HMAC-SHA256) is used because:
 - The content being hashed is already authenticated by Ed25519 signatures
 - HMAC requires a shared secret key, which would need to be distributed to all agents
-- The Ed25519 signature provides authentication, integrity, and non-repudiation
+- The Ed25519 signature provides authentication and integrity of the receipt content. **Non-repudiation is partial**: the executor's signature does not cover `previous_receipt_hash` (issue #43) and the emitter's signature does not cover the acceptance/dispute decision, its reason or its timestamp, nor is it verified when persisted (issue #48).
 
 ---
 
