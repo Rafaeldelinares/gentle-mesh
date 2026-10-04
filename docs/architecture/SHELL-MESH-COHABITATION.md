@@ -1043,10 +1043,10 @@ For the coupling to be considered correct, all six criteria must hold:
 ┌──────────────────────────────────────────────────────────────┐
 │ Security Properties                                           │
 ├──────────────────────────────────────────────────────────────┤
-│ Non-repudiation  │ Both emitter AND executor sign their msgs │
+│ Non-repudiation  │ Emitter decision binding: pending (#48)   │
 │ Integrity        │ JCS RFC 8785 + SHA-256 (not HMAC)         │
 │ Authenticity     │ Ed25519 signatures (not password/API keys) │
-│ Auditability     │ Immutable receipt chain in SQLite WAL     │
+│ Auditability     │ Hash-linked chain; limits: #43            │
 │ Zero-trust       │ mTLS + cert validation for remote nodes   │
 │ Separation       │ ChainDB separate from git workspace       │
 │ Key isolation    │ Keystore at 0600, never in git            │

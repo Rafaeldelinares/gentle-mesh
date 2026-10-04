@@ -39,7 +39,7 @@
   1. **Pre-flight Handshake territorial:** Verificación síncrona local de precondiciones (`repo:branch`, herramientas de sistema, VRAM, estado de árbol de trabajo) *antes* de aceptar la tarea y gastar tokens.
   2. **Aserciones de Liquidación Deterministas:** Reglas falsables evaluadas por el arnés Go nativo del host, aislado de la alucinación del LLM (tests con exit code 0, hashes de archivos modificados, invariantes SQL).
   3. **Aceptación / Disputa Bilateral:** Contrafirma obligatoria del emisor o emisión de disputa formal (`/dispute`) con firma criptográfica.
-  4. **Cadena de Recibos Inmutable:** Encadenamiento secuencial (`prev_receipt_hash`, `seq`) auditado.
+  4. **Cadena de Recibos con Integridad Verificable:** Encadenamiento secuencial (`prev_receipt_hash`, `seq`) auditado. **Los enlaces y la secuencia aún no están firmados (issue #43) y la firma del emisor no cubre la decisión (issue #48); hasta entonces, la cadena es tamper-evident por recibo, no estructuralmente.**
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
