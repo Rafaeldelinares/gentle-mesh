@@ -8,7 +8,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,7 +17,6 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
 	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
 	"github.com/gentleman-programming/gentle-mesh/pkg/settlement"
 	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
@@ -236,52 +234,26 @@ func (s *Shell) Execute(ctx context.Context, assertions []envelope.Assertion) (*
 		agentID = "local-shell"
 	}
 
-	// Lock chainMu to serialize receipt creation, signing, and saving.
-	s.chainMu.Lock()
-	defer s.chainMu.Unlock()
-
-	last, err := s.chainStore.GetLastReceipt(ctx, agentID, agentID)
-	if err != nil && !errors.Is(err, receipt.ErrReceiptNotFound) {
-		return nil, fmt.Errorf("get last receipt: %w", err)
-	}
-	var prevHash string
-	if last != nil {
-		h := sha256.Sum256([]byte(last.ExecutorSignature))
-		prevHash = hex.EncodeToString(h[:])
-	}
-
-	rec := &receipt.SettlementReceipt{
-		ProtocolVersion:     receipt.CurrentProtocolVersion,
-		MeshID:              meshID,
-		ReceiptID:           fmt.Sprintf("rcpt-%d", signedAt.UnixNano()),
-		ContractID:          fmt.Sprintf("contract-%d", signedAt.UnixNano()),
-		EnvelopeHash:        envHash,
-		EmitterAgentID:      agentID,
-		ExecutorAgentID:     agentID,
-		Verdict:             verdict,
-		Assertions:          ConvertResults(results),
-		PreviousReceiptHash: prevHash,
-		ExecutorSignedAt:    signedAt,
-	}
-
-	// Sign receipt: hash the JCS-canonical receipt JSON, then sign the hash.
-	canonicalJSON, err := jcs.Marshal(rec)
+	// Append through the shared helper: it reloads the chain head, assigns a fresh
+	// crypto/rand receipt_id, signs and saves, retrying only transient contention.
+	contractID := fmt.Sprintf("contract-%d", signedAt.UnixNano())
+	rec, err := receipt.SignAndSaveReceipt(ctx, s.chainStore, receipt.AppendConfig{
+		EmitterAgentID:  agentID,
+		ExecutorAgentID: agentID,
+		Signer:          s.signer,
+		Lock:            &s.chainMu,
+	}, func() (*receipt.SettlementReceipt, error) {
+		return &receipt.SettlementReceipt{
+			ProtocolVersion: receipt.CurrentProtocolVersion,
+			MeshID:          meshID,
+			ContractID:      contractID,
+			EnvelopeHash:    envHash,
+			Verdict:         verdict,
+			Assertions:      ConvertResults(results),
+		}, nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("JCS marshal receipt: %w", err)
-	}
-	hashHex, err := jcs.HashHex(canonicalJSON)
-	if err != nil {
-		return nil, fmt.Errorf("compute receipt hash: %w", err)
-	}
-	sig, err := signing.SignEnvelope(s.signer, hashHex)
-	if err != nil {
-		return nil, fmt.Errorf("Ed25519 sign: %w", err)
-	}
-	rec.ExecutorSignature = sig
-
-	// Append to chain.
-	if err := s.chainStore.SaveReceipt(context.Background(), rec); err != nil {
-		return nil, fmt.Errorf("save receipt to chain: %w", err)
+		return nil, err
 	}
 
 	return rec, nil
