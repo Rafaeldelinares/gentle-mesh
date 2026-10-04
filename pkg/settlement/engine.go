@@ -2,9 +2,6 @@ package settlement
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -116,70 +113,29 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 		verdict, remediationUsed, results = eng.runRemediation(ctx, in, failedCount)
 	}
 
-	// 6. Build, sign, and persist receipt under chainMu with retry for optimistic contention.
-	var r *receipt.SettlementReceipt
-	const maxSaveAttempts = 10
-
-	for attempt := 0; attempt < maxSaveAttempts; attempt++ {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-
-		saveErr := func() error {
-			eng.chainMu.Lock()
-			defer eng.chainMu.Unlock()
-
-			last, err := eng.chainStore.GetLastReceipt(ctx, in.Envelope.EmitterAgentID, in.Envelope.ExecutorAgentID)
-			if err != nil && !errors.Is(err, receipt.ErrReceiptNotFound) {
-				return fmt.Errorf("get last receipt: %w", err)
-			}
-			var prevHash string
-			if last != nil {
-				h := sha256.Sum256([]byte(last.ExecutorSignature))
-				prevHash = hex.EncodeToString(h[:])
-			}
-
-			r = &receipt.SettlementReceipt{
-				ProtocolVersion:     receipt.CurrentProtocolVersion,
-				MeshID:              in.Envelope.MeshID,
-				ReceiptID:           generateReceiptID(),
-				ContractID:          in.Envelope.EnvelopeID,
-				EnvelopeHash:        expectedHash,
-				EmitterAgentID:      in.Envelope.EmitterAgentID,
-				ExecutorAgentID:     in.Envelope.ExecutorAgentID,
-				Verdict:             verdict,
-				Territory:           eng.convertTerritory(in.Envelope.Territory),
-				Assertions:          eng.convertResults(results),
-				PreviousReceiptHash: prevHash,
-				ExecutorSignedAt:    time.Time{},
-			}
-
-			// 7. Sign.
-			if err := receipt.SignReceipt(r, eng.executorSigner); err != nil {
-				return fmt.Errorf("sign receipt: %w", err)
-			}
-
-			// 8. Persist.
-			return eng.chainStore.SaveReceipt(ctx, r)
-		}()
-
-		if saveErr == nil {
-			return &SettlementOutput{Receipt: r, RemediationUsed: remediationUsed}, nil
-		}
-
-		if errors.Is(saveErr, receipt.ErrSequenceConflict) || errors.Is(saveErr, receipt.ErrInvalidPreviousHash) {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(time.Duration(attempt*10) * time.Millisecond):
-				continue
-			}
-		}
-
-		return nil, fmt.Errorf("save receipt: %w", saveErr)
+	// 6. Build, sign, and persist the receipt through the shared append helper,
+	// which reloads the chain head and retries transient contention.
+	rec, err := receipt.SignAndSaveReceipt(ctx, eng.chainStore, receipt.AppendConfig{
+		EmitterAgentID:  in.Envelope.EmitterAgentID,
+		ExecutorAgentID: in.Envelope.ExecutorAgentID,
+		Signer:          eng.executorSigner,
+		Lock:            &eng.chainMu,
+	}, func() (*receipt.SettlementReceipt, error) {
+		return &receipt.SettlementReceipt{
+			ProtocolVersion: receipt.CurrentProtocolVersion,
+			MeshID:          in.Envelope.MeshID,
+			ContractID:      in.Envelope.EnvelopeID,
+			EnvelopeHash:    expectedHash,
+			Verdict:         verdict,
+			Territory:       eng.convertTerritory(in.Envelope.Territory),
+			Assertions:      eng.convertResults(results),
+		}, nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, fmt.Errorf("save receipt: exceeded max retry attempts due to concurrent chain modifications")
+	return &SettlementOutput{Receipt: rec, RemediationUsed: remediationUsed}, nil
 }
 
 // runRemediation runs up to remMax remediation cycles.
@@ -336,20 +292,6 @@ func (eng *Engine) convertTerritory(t envelope.Territory) receipt.Territory {
 		Branch:        t.Branch,
 		WorkspacePath: t.WorkspacePath,
 	}
-}
-
-// generateReceiptID generates a unique receipt ID using crypto/rand.
-// Uses 16 random bytes (128 bits) encoded as hex — safe for concurrent calls.
-func generateReceiptID() string {
-	b := make([]byte, 16)
-	// crypto/rand.Read never fails in practice; in the extremely rare case it does,
-	// fall back to nanosecond timestamp to avoid blocking.
-	if _, err := rand.Read(b); err != nil {
-		ts := time.Now().UTC().UnixNano()
-		h := sha256.Sum256([]byte(fmt.Sprintf("%d-%x", ts, ts)))
-		return hex.EncodeToString(h[:16])
-	}
-	return hex.EncodeToString(b)
 }
 
 // VerifyReceipt verifies a receipt's executor signature.

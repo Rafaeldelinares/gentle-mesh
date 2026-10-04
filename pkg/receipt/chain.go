@@ -161,6 +161,8 @@ func backfillReceiptSequences(ctx context.Context, tx migrationExecutor) error {
 	if err := pairRows.Err(); err != nil {
 		return fmt.Errorf("iterate distinct agent pairs: %w", err)
 	}
+	// Close explicitly (the deferred Close still runs): releasing the read cursor
+	// before the per-pair backfill keeps the connection free of an open cursor.
 	_ = pairRows.Close()
 
 	for _, p := range pairs {
@@ -199,6 +201,8 @@ func backfillPairSequence(ctx context.Context, tx migrationExecutor, emitter, ex
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate receipts for pair (%s, %s): %w", emitter, executor, err)
 	}
+	// Close explicitly (the deferred Close still runs): the UPDATEs below run on the
+	// SAME connection, so the read cursor must be released before writing.
 	_ = rows.Close()
 
 	if len(allNodes) == 0 {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
+	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
 )
 
 // Two independent ShellServer instances (separate *sql.DB handles over the same
@@ -94,6 +95,51 @@ func TestShellServer_ExecuteLocal_TwoInstances_Contention(t *testing.T) {
 			if want := hex.EncodeToString(h[:]); r.PreviousReceiptHash != want {
 				t.Errorf("chain[%d] broken link: got %s want %s", i, r.PreviousReceiptHash, want)
 			}
+		}
+	}
+}
+
+// ShellServer receipts must be signed with the receipt signing scheme so
+// VerifyChainIntegrity accepts them (same fix as pkg/shell).
+func TestShellServer_ReceiptsVerifyWithChainIntegrity(t *testing.T) {
+	dir := t.TempDir()
+	chainDB := filepath.Join(dir, "chain.db")
+
+	srv, err := NewShellServer("agent-sign", "mesh-sign", dir, chainDB, 5*time.Second)
+	if err != nil {
+		t.Fatalf("NewShellServer: %v", err)
+	}
+	defer srv.Close()
+
+	assertions := []envelope.Assertion{{
+		ID:     "ok",
+		Type:   envelope.AssertionCommandExitCode,
+		Params: envelope.AssertionParams{Command: "true", ExpectedExitCode: 0},
+	}}
+	for i := 0; i < 3; i++ {
+		if _, err := srv.executeLocal(context.Background(), assertions); err != nil {
+			t.Fatalf("executeLocal %d: %v", i, err)
+		}
+	}
+
+	chain, err := srv.chainStore.GetChain(context.Background(), "agent-sign", "agent-sign")
+	if err != nil {
+		t.Fatalf("GetChain: %v", err)
+	}
+	if len(chain) != 3 {
+		t.Fatalf("chain length = %d, want 3", len(chain))
+	}
+
+	results, err := receipt.VerifyChainIntegrity(chain, srv.signer.PublicKey(), nil)
+	if err != nil {
+		t.Fatalf("VerifyChainIntegrity: %v", err)
+	}
+	for i, r := range results {
+		if !r.ExecutorSignatureValid {
+			t.Errorf("chain[%d] executor signature invalid: %s", i, r.Error)
+		}
+		if !r.Valid {
+			t.Errorf("chain[%d] not valid: %s", i, r.Error)
 		}
 	}
 }
