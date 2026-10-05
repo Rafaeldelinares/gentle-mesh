@@ -1,9 +1,11 @@
 package http_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -87,7 +89,7 @@ func TestServer_CORSAllowsDefaultOrigins(t *testing.T) {
 
 			got := resp.Header.Get("Access-Control-Allow-Origin")
 			if got == "*" {
-				t.Errorf("Access-Control-Allow-Origin must never be '*' when Origin is present, got '*'", )
+				t.Errorf("Access-Control-Allow-Origin must never be '*' when Origin is present, got '*'")
 			}
 			if got != origin {
 				t.Errorf("expected Access-Control-Allow-Origin %q, got %q", origin, got)
@@ -116,7 +118,7 @@ func TestServer_CORSNeverWildcardWithOrigin(t *testing.T) {
 
 	got := resp.Header.Get("Access-Control-Allow-Origin")
 	if got == "*" {
-		t.Fatalf("expected Access-Control-Allow-Origin != '*', got '*'", )
+		t.Fatalf("expected Access-Control-Allow-Origin != '*', got '*'")
 	}
 	if got != origin {
 		t.Errorf("expected Access-Control-Allow-Origin %q, got %q", origin, got)
@@ -354,5 +356,91 @@ func TestServer_PiRunnerAllowedWithInsecureNoAuth(t *testing.T) {
 	startErr := <-errCh
 	if startErr != nil && !errors.Is(startErr, http.ErrServerClosed) {
 		t.Errorf("Start() returned unexpected error when InsecureNoAuth is true: %v", startErr)
+	}
+}
+
+func TestServer_PiRunnerAllowedWithToken(t *testing.T) {
+	tasksDir := t.TempDir()
+	workspaceRoot := t.TempDir()
+	piRunner := runner.NewPiRunner(runner.PiRunnerOptions{
+		WorkspaceRoot: workspaceRoot,
+	})
+
+	cfg := meshhttp.ServerConfig{
+		Addr:             "0.0.0.0:0",
+		TasksDir:         tasksDir,
+		HeartbeatTimeout: 5 * time.Second,
+		TaskTTL:          time.Hour,
+		WorkspaceRoot:    workspaceRoot,
+		DBPath:           "none",
+		Runner:           piRunner,
+		BearerToken:      "mesh-secret-token",
+	}
+
+	srv, err := meshhttp.NewServer(cfg)
+	if err != nil {
+		t.Fatalf("failed creating server: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.Start()
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatalf("failed to shutdown server: %v", err)
+	}
+
+	startErr := <-errCh
+	if startErr != nil && !errors.Is(startErr, http.ErrServerClosed) {
+		t.Errorf("Start() returned unexpected error when a bearer token is configured: %v", startErr)
+	}
+}
+
+func TestServer_NonPiRunnerWarnsOnNonLoopbackWithoutAuth(t *testing.T) {
+	var logBuf bytes.Buffer
+	prevWriter := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(prevWriter)
+
+	tasksDir := t.TempDir()
+	cfg := meshhttp.ServerConfig{
+		Addr:             "0.0.0.0:0",
+		TasksDir:         tasksDir,
+		HeartbeatTimeout: 5 * time.Second,
+		TaskTTL:          time.Hour,
+		WorkspaceRoot:    tasksDir,
+		DBPath:           "none",
+		// Runner is nil, so the server selects the mesh/simulated runner.
+	}
+
+	srv, err := meshhttp.NewServer(cfg)
+	if err != nil {
+		t.Fatalf("failed creating server: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.Start()
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatalf("failed to shutdown server: %v", err)
+	}
+
+	startErr := <-errCh
+	if startErr != nil && !errors.Is(startErr, http.ErrServerClosed) {
+		t.Errorf("Start() returned unexpected error for a non-pi runner: %v", startErr)
+	}
+	if !strings.Contains(logBuf.String(), "WARNING") {
+		t.Errorf("expected a non-loopback warning to be logged, got %q", logBuf.String())
 	}
 }
