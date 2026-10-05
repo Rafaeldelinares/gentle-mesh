@@ -165,6 +165,28 @@ func AuthMiddleware(token string, next stdhttp.Handler) stdhttp.Handler {
 	})
 }
 
+// MTLSMiddleware validates that incoming HTTPS requests present a verified client certificate.
+// The bootstrap routes ("/healthz", "/healthz/", "/v1/mesh/ca", "/v1/certs/enroll") bypass this check.
+// If no verified client certificate is present, it responds with HTTP 401 and {"error":"client certificate required"}.
+func MTLSMiddleware(next stdhttp.Handler) stdhttp.Handler {
+	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/healthz/" ||
+			r.URL.Path == "/v1/mesh/ca" || r.URL.Path == "/v1/certs/enroll" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(stdhttp.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "client certificate required"})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 // PanicRecoveryMiddleware recovers from any unhandled panic during HTTP execution,
 // logs the stack trace, and writes HTTP 500 Internal Server Error with {"error":"internal server error"}.
 func PanicRecoveryMiddleware(next stdhttp.Handler) stdhttp.Handler {
