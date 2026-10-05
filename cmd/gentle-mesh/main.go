@@ -235,7 +235,6 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			return errors.New("-require-mtls requires -tls to be enabled")
 		}
 		serverConfig.RequireMTLS = true
-		fmt.Fprintf(stdout, "mTLS required: all connections must present valid client certificates\n")
 	} else if *addr == ":8443" || strings.HasPrefix(*addr, ":8443") {
 		// Auto-enable TLS if using common HTTPS port without -tls flag
 		fmt.Fprintf(stdout, "Auto-enabling TLS on port 8443...\n")
