@@ -140,6 +140,9 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	rateLimitRequests := fs.Int("rate-limit", 0, "Rate limit: requests per window (0 = disabled)")
 	rateLimitWindow := fs.Duration("rate-limit-window", 1*time.Minute, "Rate limit window duration")
 	rateLimitBurst := fs.Int("rate-limit-burst", 10, "Rate limit max burst size")
+	corsOrigins := fs.String("cors-origins", "", "Comma-separated list of additional allowed CORS origins")
+	allowedHosts := fs.String("allowed-hosts", "", "Comma-separated list of additional allowed host names")
+	insecureNoAuth := fs.Bool("insecure-no-auth", false, "Required to run -runner pi on a non-loopback address without token or mTLS")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -178,18 +181,21 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 
 	serverConfig := meshhttp.ServerConfig{
-		Addr:             *addr,
-		TasksDir:         *tasksDir,
-		DBPath:           *dbPath,
-		HeartbeatTimeout: *heartbeatTimeout,
-		TaskTTL:          *taskTTL,
-		BearerToken:      *token,
-		TerritoryMode:    mode,
-		WorkspaceRoot:    *workspace,
-		Runner:           selectedRunner,
+		Addr:              *addr,
+		TasksDir:          *tasksDir,
+		DBPath:            *dbPath,
+		HeartbeatTimeout:  *heartbeatTimeout,
+		TaskTTL:           *taskTTL,
+		BearerToken:       *token,
+		TerritoryMode:     mode,
+		WorkspaceRoot:     *workspace,
+		Runner:            selectedRunner,
 		RateLimitRequests: *rateLimitRequests,
 		RateLimitWindow:   *rateLimitWindow,
 		RateLimitBurst:    *rateLimitBurst,
+		CORSOrigins:       parseCommaSeparated(*corsOrigins),
+		AllowedHosts:      parseCommaSeparated(*allowedHosts),
+		InsecureNoAuth:    *insecureNoAuth,
 	}
 
 	// Configure TLS if enabled
