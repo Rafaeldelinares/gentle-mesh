@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -353,5 +354,43 @@ func TestBridge_MalformedInput(t *testing.T) {
 	}
 	if resp.ID != "req-ok" || !resp.Success {
 		t.Errorf("expected valid response to req-ok despite prior malformed line")
+	}
+}
+
+func TestBridge_UnsupportedCommandReturnsError(t *testing.T) {
+	bridge := client.NewBridge(client.Config{
+		CoordinatorURL: "http://coordinator.mesh.local:8080",
+	})
+
+	var out bytes.Buffer
+	in := strings.NewReader(`{"id":"unsupported-1","type":"not_a_real_command"}` + "\n")
+
+	err := bridge.Serve(context.Background(), in, &out)
+	if err == nil {
+		t.Fatal("expected Serve to return an explicit error for an unsupported command, got nil")
+	}
+	if !strings.Contains(err.Error(), "unsupported command") {
+		t.Errorf("expected error to mention unsupported command, got %v", err)
+	}
+
+	var resp struct {
+		ID      string `json:"id"`
+		Type    string `json:"type"`
+		Command string `json:"command"`
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	scanner := bufio.NewScanner(&out)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+			t.Fatalf("invalid response frame %q: %v", line, err)
+		}
+	}
+	if resp.Type != "response" || resp.Success || resp.Command != "not_a_real_command" || resp.Error == "" {
+		t.Errorf("expected an explicit error response frame, got %+v", resp)
 	}
 }
