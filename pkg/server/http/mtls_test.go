@@ -593,3 +593,74 @@ func TestServer_JoinRequiresBearerWhenTokenConfigured(t *testing.T) {
 		t.Fatalf("expected status 200 OK with valid bearer, got %d", respWithAuth.StatusCode)
 	}
 }
+
+func TestServer_MTLSJoinBindsCertificateIdentity(t *testing.T) {
+	tlsDir := t.TempDir()
+	ca, _, err := pki.EnsureMeshTLS(tlsDir, "Gentle Mesh Test", "testing", []string{"localhost"}, true)
+	if err != nil {
+		t.Fatalf("failed to init TLS: %v", err)
+	}
+
+	cfg := meshhttp.ServerConfig{
+		TasksDir:         t.TempDir(),
+		HeartbeatTimeout: 5 * time.Second,
+		TaskTTL:          1 * time.Hour,
+		TLSEnabled:       true,
+		TLSCertFile:      filepath.Join(tlsDir, pki.CertPemFile),
+		TLSKeyFile:       filepath.Join(tlsDir, pki.CertKeyFile),
+		MeshCA:           ca,
+		MeshCAPemFile:    filepath.Join(tlsDir, pki.CAPemFile),
+		RequireMTLS:      true,
+	}
+
+	_, addr := startTestServer(t, cfg)
+
+	nodeCert, _, err := ca.GenerateNodeCert("bound-node", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("failed to generate node cert: %v", err)
+	}
+	tlsCert := nodeCertToTLSCert(t, nodeCert)
+	client := createClient(t, ca, &tlsCert)
+
+	join := func(nodeID string) *http.Response {
+		body, err := json.Marshal(protocol.NodeJoinRequest{
+			NodeID:         nodeID,
+			Endpoint:       "http://127.0.0.1:9999",
+			MaxConcurrency: 1,
+		})
+		if err != nil {
+			t.Fatalf("failed to marshal join request: %v", err)
+		}
+		req, err := http.NewRequest(http.MethodPost, "https://"+addr+"/v1/mesh/join", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("failed to create join request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("POST /v1/mesh/join failed: %v", err)
+		}
+		return resp
+	}
+
+	// A certificate whose CN matches node_id is accepted.
+	respMatch := join("bound-node")
+	defer respMatch.Body.Close()
+	if respMatch.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200 for matching identity, got %d", respMatch.StatusCode)
+	}
+
+	// A certificate whose CN differs from node_id is rejected.
+	respMismatch := join("other-node")
+	defer respMismatch.Body.Close()
+	if respMismatch.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected status 403 for mismatched identity, got %d", respMismatch.StatusCode)
+	}
+	var errBody map[string]string
+	if err := json.NewDecoder(respMismatch.Body).Decode(&errBody); err != nil {
+		t.Fatalf("failed to decode error body: %v", err)
+	}
+	if errBody["error"] != "client certificate identity does not match node_id" {
+		t.Fatalf("unexpected error body: %q", errBody["error"])
+	}
+}
