@@ -13,6 +13,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -64,6 +65,11 @@ func NewBridge(cfg Config) *Bridge {
 }
 
 // clientCommand is a single newline-delimited command received on stdin.
+// ErrUnsupportedCommand is returned when the bridge receives a command type it
+// does not implement. The command is answered with an explicit error frame and
+// never forwarded to the coordinator.
+var ErrUnsupportedCommand = errors.New("unsupported command")
+
 type clientCommand struct {
 	ID      string `json:"id"`
 	Type    string `json:"type"`
@@ -248,7 +254,16 @@ func (b *Bridge) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 				s.handlePrompt(cctx, c)
 			}(cmd, promptCtx, cancel)
 		default:
-			// Unknown commands are ignored for forward compatibility.
+			// Unknown commands are answered with an explicit error frame and are
+			// never forwarded to the coordinator.
+			s.out.write(map[string]any{
+				"id":      cmd.ID,
+				"type":    "response",
+				"command": cmd.Type,
+				"success": false,
+				"error":   fmt.Sprintf("unsupported command: %q", cmd.Type),
+			})
+			return fmt.Errorf("%w: %q", ErrUnsupportedCommand, cmd.Type)
 		}
 	}
 
