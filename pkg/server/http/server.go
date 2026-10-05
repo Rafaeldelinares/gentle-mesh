@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	stdhttp "net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
@@ -40,6 +42,10 @@ type ServerConfig struct {
 	TerritoryManager     *federation.TerritoryManager
 	TerritoryMode        protocol.TerritoryMode
 	WorkspaceRoot        string
+	// Host & CORS configuration
+	CORSOrigins          []string
+	AllowedHosts         []string
+	InsecureNoAuth       bool
 	// TLS configuration
 	TLSEnabled     bool
 	TLSCertFile    string
@@ -255,9 +261,120 @@ func (s *Server) Handler() stdhttp.Handler {
 	if s.config.RequireMTLS {
 		h = MTLSMiddleware(h)
 	}
-	h = CORSMiddleware(h)
+	h = CORSMiddlewareWithOrigins(s.config.CORSOrigins, h)
+	allowedHosts := defaultAllowedHosts(s.config.Addr, s.config.AllowedHosts...)
+	h = HostMiddleware(allowedHosts, h)
 	h = PanicRecoveryMiddleware(h)
 	return h
+}
+
+// defaultAllowedHosts returns the default allowed hosts for Host validation:
+// always localhost, 127.0.0.1, ::1; adds the concrete host when non-wildcard;
+// adds all interface IPs when addr is wildcard ("", "0.0.0.0", "::");
+// appends any additional allowed hosts.
+func defaultAllowedHosts(addr string, extraAllowed ...string) []string {
+	seen := make(map[string]bool)
+	var result []string
+	add := func(h string) {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if stripped, _, err := net.SplitHostPort(h); err == nil {
+			h = stripped
+		}
+		if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
+			h = h[1 : len(h)-1]
+		}
+		h = strings.ToLower(strings.TrimSpace(h))
+		if h != "" && !seen[h] {
+			seen[h] = true
+			result = append(result, h)
+		}
+	}
+
+	add("localhost")
+	add("127.0.0.1")
+	add("::1")
+
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	host = strings.TrimSpace(host)
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		if addrs, err := net.InterfaceAddrs(); err == nil {
+			for _, a := range addrs {
+				var ip net.IP
+				switch v := a.(type) {
+				case *net.IPNet:
+					ip = v.IP
+				case *net.IPAddr:
+					ip = v.IP
+				}
+				if ip != nil {
+					add(ip.String())
+				}
+			}
+		}
+	} else {
+		add(host)
+	}
+
+	for _, e := range extraAllowed {
+		add(e)
+	}
+
+	return result
+}
+
+// isLoopbackAddr reports whether the given address binds strictly to loopback interfaces.
+// An address with no host (e.g. ":8443", ":8080") is NOT considered loopback.
+func isLoopbackAddr(addr string) bool {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	host = strings.TrimSpace(host)
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+	host = strings.ToLower(host)
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// validateExposure ensures that running dangerous runners (such as PiRunner) without authentication
+// is rejected on non-loopback addresses unless explicitly allowed via InsecureNoAuth.
+func (s *Server) validateExposure() error {
+	if s.config.InsecureNoAuth {
+		return nil
+	}
+	if isLoopbackAddr(s.config.Addr) {
+		return nil
+	}
+	if s.config.BearerToken != "" {
+		return nil
+	}
+	if s.config.RequireMTLS {
+		return nil
+	}
+
+	_, isPiRunner := s.runner.(*runner.PiRunner)
+	_, isPiConfig := s.config.Runner.(*runner.PiRunner)
+	if isPiRunner || isPiConfig {
+		return errors.New("cannot run PiRunner on non-loopback address without authentication (set BearerToken, RequireMTLS, or InsecureNoAuth)")
+	}
+
+	log.Printf("[gentle-mesh] WARNING: server running on non-loopback address %s without authentication", s.config.Addr)
+	return nil
 }
 
 // buildTLSConfig constructs the tls.Config for HTTPS and mTLS serving.
@@ -292,6 +409,10 @@ func (s *Server) buildTLSConfig() (*tls.Config, error) {
 
 // Start begins listening and serving HTTP or HTTPS requests on the configured address.
 func (s *Server) Start() error {
+	if err := s.validateExposure(); err != nil {
+		return err
+	}
+
 	if s.httpServer == nil {
 		s.httpServer = &stdhttp.Server{
 			Addr:              s.config.Addr,
