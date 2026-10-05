@@ -258,6 +258,9 @@ func (s *Server) Handler() stdhttp.Handler {
 	if s.config.BearerToken != "" {
 		h = AuthMiddleware(s.config.BearerToken, h)
 	}
+	if s.config.RequireMTLS {
+		h = MTLSMiddleware(h)
+	}
 	h = CORSMiddlewareWithOrigins(s.config.CORSOrigins, h)
 	allowedHosts := defaultAllowedHosts(s.config.Addr, s.config.AllowedHosts...)
 	h = HostMiddleware(allowedHosts, h)
@@ -374,6 +377,36 @@ func (s *Server) validateExposure() error {
 	return nil
 }
 
+// buildTLSConfig constructs the tls.Config for HTTPS and mTLS serving.
+func (s *Server) buildTLSConfig() (*tls.Config, error) {
+	if s.config.RequireMTLS && s.config.MeshCA == nil {
+		return nil, errors.New("mTLS required but mesh CA is not configured")
+	}
+
+	baseConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		ClientAuth: tls.NoClientCert,
+	}
+
+	if !s.config.RequireMTLS {
+		return baseConfig, nil
+	}
+
+	caPEM, err := pki.CertificateToPEM(s.config.MeshCA.Cert)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode mesh CA certificate to PEM: %w", err)
+	}
+
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM([]byte(caPEM)) {
+		return nil, errors.New("failed to append mesh CA certificate to client CA pool")
+	}
+
+	baseConfig.ClientAuth = tls.VerifyClientCertIfGiven
+	baseConfig.ClientCAs = pool
+	return baseConfig, nil
+}
+
 // Start begins listening and serving HTTP or HTTPS requests on the configured address.
 func (s *Server) Start() error {
 	if err := s.validateExposure(); err != nil {
@@ -391,17 +424,14 @@ func (s *Server) Start() error {
 
 	// Use HTTPS with TLS if enabled
 	if s.config.TLSEnabled && s.config.TLSCertFile != "" && s.config.TLSKeyFile != "" {
-		tlsConfig := &tls.Config{
-			MinVersion: tls.VersionTLS12,
+		tlsConfig, err := s.buildTLSConfig()
+		if err != nil {
+			return err
 		}
+		s.httpServer.TLSConfig = tlsConfig
 
-		// Configure mTLS if required
-		if s.config.RequireMTLS && s.config.MeshCA != nil {
-			tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
-			tlsConfig.ClientCAs = x509.NewCertPool()
-			tlsConfig.ClientCAs.AppendCertsFromPEM(s.config.MeshCA.Cert.Raw)
-		} else if s.config.TLSCertFile != "" {
-			tlsConfig.ClientAuth = tls.NoClientCert
+		if s.config.RequireMTLS {
+			log.Printf("[gentle-mesh] mTLS required: coordinator verifying client certificates")
 		}
 
 		if err := s.httpServer.ListenAndServeTLS(s.config.TLSCertFile, s.config.TLSKeyFile); err != nil && !errors.Is(err, stdhttp.ErrServerClosed) {
