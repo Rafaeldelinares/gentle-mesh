@@ -66,8 +66,7 @@ func startTestServer(t *testing.T, cfg meshhttp.ServerConfig) (*meshhttp.Server,
 		default:
 		}
 		dialer := &net.Dialer{Timeout: 50 * time.Millisecond}
-		tlsConfig := &tls.Config{InsecureSkipVerify: true}
-		conn, err := tls.DialWithDialer(dialer, "tcp", addr, tlsConfig)
+		conn, err := tls.DialWithDialer(dialer, "tcp", addr, probeTLSConfig(t, cfg.MeshCA))
 		if err == nil {
 			_ = conn.Close()
 			ready = true
@@ -83,20 +82,34 @@ func startTestServer(t *testing.T, cfg meshhttp.ServerConfig) (*meshhttp.Server,
 	return srv, addr
 }
 
-// createClient creates an HTTP client trusting the mesh CA with ServerName "localhost" and optional client certificate.
-func createClient(t *testing.T, ca *pki.MeshCA, clientCert *tls.Certificate) *http.Client {
+// meshCAPool builds a certificate pool from the mesh CA for client and probe trust.
+func meshCAPool(t *testing.T, ca *pki.MeshCA) *x509.CertPool {
 	t.Helper()
-	caPool := x509.NewCertPool()
+	if ca == nil {
+		return nil
+	}
 	caPEM, err := pki.CertificateToPEM(ca.Cert)
 	if err != nil {
 		t.Fatalf("failed to encode CA cert to PEM: %v", err)
 	}
-	if !caPool.AppendCertsFromPEM([]byte(caPEM)) {
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM([]byte(caPEM)) {
 		t.Fatal("failed to append CA certificate to pool")
 	}
+	return pool
+}
 
+// probeTLSConfig trusts the mesh CA for the readiness handshake.
+func probeTLSConfig(t *testing.T, ca *pki.MeshCA) *tls.Config {
+	t.Helper()
+	return &tls.Config{RootCAs: meshCAPool(t, ca), ServerName: "localhost"}
+}
+
+// createClient creates an HTTP client trusting the mesh CA with ServerName "localhost" and optional client certificate.
+func createClient(t *testing.T, ca *pki.MeshCA, clientCert *tls.Certificate) *http.Client {
+	t.Helper()
 	tlsConfig := &tls.Config{
-		RootCAs:    caPool,
+		RootCAs:    meshCAPool(t, ca),
 		ServerName: "localhost",
 	}
 	if clientCert != nil {
