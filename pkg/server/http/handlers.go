@@ -200,6 +200,16 @@ func (s *Server) handleMeshJoin(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 
+	if s.config.RequireMTLS {
+		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 ||
+			r.TLS.VerifiedChains[0][0].Subject.CommonName != req.NodeID {
+			writeJSON(w, stdhttp.StatusForbidden, map[string]string{
+				"error": "client certificate identity does not match node_id",
+			})
+			return
+		}
+	}
+
 	nodeInfo, err := s.registry.RegisterNode(req)
 	if err != nil {
 		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": err.Error()})
