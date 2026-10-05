@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] (v1.0.4)
+
+### Fixed
+
+- `gentle-mesh rpc` answers an unsupported command with an explicit error frame without terminating
+  the session. (#56)
+- A local `.engram/` directory is ignored. (#53)
+
+### Planned
+
+- `feat(cli): add TLS client flags` so the CLI clients (`nodes`, `radar`, `run`, `rpc`) can present a
+  client certificate and reach a coordinator started with `-require-mtls`.
+
 ## [v1.0.3] - Unreleased
 
 ### Security
@@ -27,12 +40,6 @@ the full description, the residual-risk guidance and the mitigation steps.
 - `SECURITY.md` with the private reporting channel and an honest scope statement. (#55)
 - Coordinator flags `-cors-origins`, `-allowed-hosts` and `-insecure-no-auth`. (#54)
 
-### Fixed
-
-- `gentle-mesh rpc` answers an unsupported command with an explicit error frame without terminating
-  the session. (#56)
-- A local `.engram/` directory is ignored. (#53)
-
 ### Changed
 
 - `POST /v1/mesh/join` requires the bearer token when `-token` is configured, and under
@@ -47,8 +54,7 @@ the full description, the residual-risk guidance and the mitigation steps.
 - `https://localhost` and `https://127.0.0.1` are not in the default CORS allowlist; add them with
   `-cors-origins`.
 - CLI clients (`nodes`, `radar`, `run`, `rpc`) do not present client certificates yet, so a
-  coordinator with `-require-mtls` is not reachable from them until v1.0.4
-  (`feat(cli): add TLS client flags`).
+  coordinator with `-require-mtls` is not reachable from them; the CLI flags are planned for v1.0.4.
 
 ## [v1.0.0] - 2024-09-25
 
