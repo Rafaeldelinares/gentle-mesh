@@ -248,7 +248,16 @@ func (b *Bridge) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 				s.handlePrompt(cctx, c)
 			}(cmd, promptCtx, cancel)
 		default:
-			// Unknown commands are ignored for forward compatibility.
+			// Unknown commands are answered with an explicit error frame and are
+			// never forwarded to the coordinator. The session keeps running so a
+			// newer frontend can still send commands this bridge does not know yet.
+			s.out.write(map[string]any{
+				"id":      cmd.ID,
+				"type":    "response",
+				"command": cmd.Type,
+				"success": false,
+				"error":   fmt.Sprintf("unsupported command: %q", cmd.Type),
+			})
 		}
 	}
 
