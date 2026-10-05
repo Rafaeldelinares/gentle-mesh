@@ -171,7 +171,7 @@ Para eliminar esa fricción, el cliente CLI incorpora el subcomando `gentle-mesh
 El puente se lanza con la **misma forma de argumentos** que un binario Pi local para poder sustituirlo sin cambiar la configuración del frontend:
 
 ```bash
-gentle-mesh rpc -coordinator https://100.107.67.35:8443
+gentle-mesh rpc -coordinator https://<coordinator-ip>:8443
 gentle-mesh rpc --mode rpc --approve --session /tmp/pi-session.json -coordinator https://localhost:8443
 ```
 
@@ -200,7 +200,7 @@ Para operar como una verdadera malla federada (Mesh), los nodos remotos anuncian
   ```json
   {
     "node_id": "vps-la-fabrica-gpu",
-    "endpoint": "https://100.64.0.15:8443",
+    "endpoint": "https://<coordinator-ip>:8443",
     "hardware": {
       "cpus": 32,
       "ram_gb": 64,
