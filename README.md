@@ -123,7 +123,7 @@ Gentle Mesh está diseñado para interoperar de forma nativa con interfaces grá
 ## 3. Demostración Rápida en Local (Entorno Seguro)
 
 ### Requisitos
-* Go 1.26.7+ o Docker / Docker Compose.
+* Go 1.26.7+ (mínimo declarado en `go.mod`) o Docker / Docker Compose.
 
 ### Ejecutar todas las pruebas con detector de carreras
 ```bash
@@ -421,17 +421,17 @@ curl -X POST https://localhost:8443/v1/webhooks \
 }
 ```
 
-#### 3.2.4 Seguridad
+#### 3.2.4 Firma de las entregas
 
-El servidor envía siempre las cabeceras `X-Webhook-Event` y `X-Webhook-ID`. Si registras el webhook con `secret`, cada entrega incluye además `X-Webhook-Signature` con la firma HMAC-SHA256 del payload:
+El servidor envía siempre las cabeceras `X-Webhook-Event` y `X-Webhook-ID`. Cuando el webhook se registró con `secret`, añade además `X-Webhook-Signature`: el HMAC-SHA256 del payload, en hexadecimal y con el prefijo `sha256=`.
 
 ```
 X-Webhook-Event: task.completed
 X-Webhook-ID: notif-1699999999123456789
-X-Webhook-Signature: sha256=<firma>   # solo si se configuró "secret"
+X-Webhook-Signature: sha256=<hex>   # solo si se configuró "secret"
 ```
 
-Para verificar la firma:
+Cálculo de la firma, reproducible en el receptor:
 
 ```python
 import hmac, hashlib
