@@ -42,7 +42,7 @@ Hoy en día, el uso de agentes de IA es aislado y solitario: un desarrollador co
 ## 2. Pila Tecnológica y Arquitectura
 
 * **Lenguaje:** Go 1.26.7+ estándar (`net/http`, `encoding/json`, `sync`, `context`, `database/sql`). Cero frameworks web externos ni librerías de C.
-* **Transporte:** HTTPS REST + Server-Sent Events (HTTPS/SSE) para streaming continuo y seguro de pensamientos (`thought`), llamadas a herramientas (`tool_call`) y resultados con cifrado de transporte TLS.
+* **Transporte:** HTTPS REST + Server-Sent Events (HTTPS/SSE) para streaming continuo y seguro de pensamientos (`thought`), llamadas a herramientas (`tool_call`) y resultados, con cifrado de transporte TLS; la autenticación mutua (mTLS) solo se exige con `-require-mtls`.
 * **Persistencia Dual y Resiliencia ante Caídas (Crash Recovery):**
   * **Streaming de Eventos:** Append-only logs en formato **JSONL** (`<tasks-dir>/{id}.jsonl`). Permite reconexión histórica instantánea vía el header estándar `Last-Event-ID` con consumo de RAM constante $O(1)$.
   * **Estado Maestro y Rehidratación:** Base de datos embebida **SQLite en Go puro** (`modernc.org/sqlite`, `CGO_ENABLED=0`) con modo **WAL** (*Write-Ahead Logging*). Si el servidor se apaga o reinicia, rehidrata automáticamente el catálogo de tareas sin pérdida de estado.
