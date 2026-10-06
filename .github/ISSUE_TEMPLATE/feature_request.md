@@ -25,7 +25,3 @@ assignees: ''
 ## Contexto adicional
 
 <!-- Diagramas, referencias, enlaces, notas que puedan ayudar a entender la propuesta -->
-
-## Etiquetas adicionales (opcional)
-
-<!-- Añade otras etiquetas del repositorio si corresponde: documentation, cryptography, distributed-systems, feat/rfc-002, etc. -->

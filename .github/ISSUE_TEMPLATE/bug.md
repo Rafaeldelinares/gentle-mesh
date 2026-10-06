@@ -33,7 +33,3 @@ assignees: ''
 ## Evidencia
 
 <!-- Logs, stack traces, screenshots, vídeos, archivos de configuración relevantes -->
-
-## Etiquetas adicionales (opcional)
-
-<!-- Añade otras etiquetas del repositorio si corresponde: documentation, cryptography, distributed-systems, integration-tests, feat/rfc-002, etc. -->

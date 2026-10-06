@@ -6,8 +6,4 @@ contact_links:
     about: >
       Para vulnerabilidades de seguridad, usa GitHub Security Advisories en lugar de issues públicos.
       No publiques detalles de seguridad en ningún canal público del repositorio.
-      Ver SECURITY.md para el alcance y las limitaciones conocidas.
-  - name: Discusión general
-    url: https://github.com/Rafaeldelinares/gentle-mesh/discussions
-    about: >
-      Para preguntas abiertas o ideas que aún no son issues concretos, usa las Discussions.
+      Ver SECURITY.md para el alcance.

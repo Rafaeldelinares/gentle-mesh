@@ -48,7 +48,7 @@
 
 **Herramienta o modelo:** <!-- ej: Claude (Anthropic), Copilot, GPT-4, Gentle-AI, otro -->
 
-**Alcance de la asistencia:** <!-- Marca con X las applicable -->
+**Alcance de la asistencia:** <!-- Marca las que apliquen -->
 - [ ] Investigación y planificación
 - [ ] Escritura de código o tests
 - [ ] Revisión y verificación
