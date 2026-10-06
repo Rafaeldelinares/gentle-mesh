@@ -37,6 +37,8 @@ Hoy en día, el uso de agentes de IA es aislado y solitario: un desarrollador co
 3. **Detección Preventiva de Colisiones y Live Stream Hooking:** La malla detecta choques de territorio antes de escribir una sola línea de código y permite que clientes secundarios se enganchen en vivo a tareas duplicadas ya en curso.
 4. **Binario Único en Go Puro:** Cero dependencias pesadas, compilación estática (`CGO_ENABLED=0`), arranque en milisegundos y consumo de memoria ridículamente bajo (~30 MB de RAM para un clúster de 6 nodos).
 
+**Enrutado de nodos explícito:** quien envía la tarea indica el rol (`agent`) y las etiquetas (`tags`) requeridas; el `registry` la entrega a un nodo compatible, elegido por capacidad y reparto de carga. La malla **coordina territorios** (evita que dos agentes toquen el mismo código a la vez); **no decide dónde se ejecuta** cada tarea.
+
 ---
 
 ## 2. Pila Tecnológica y Arquitectura
@@ -59,7 +61,7 @@ gentle-mesh/
 │   │   ├── registry/         # Catálogo de nodos, branch locking e idempotencia
 │   │   ├── store/            # TaskStore: MemoryStore y SQLiteStore embebido (WAL mode)
 │   │   ├── task/             # Gestor de tareas, state machine, crash recovery y logger JSONL
-│   │   ├── runner/           # Abstracción Runner, MeshRunner inteligente y SimulatedRunner
+│   │   ├── runner/           # Abstracción Runner, MeshRunner (rol/etiquetas) y SimulatedRunner
 │   │   ├── federation/       # Peering M2M y TerritoryManager para colisiones compartidas
 │   │   └── worker/           # Servidor worker autónomo con despacho remoto HTTP
 ├── docs/
