@@ -4,19 +4,24 @@
 > Este documento es el criterio de decisión del protocolo. Cualquier cambio a la especificación
 > o a la implementación debe poder justificarse contra estos objetivos y no contradecir ningún no-objetivo.
 
+> **Nota de lectura.** Este documento expresa los objetivos del protocolo y el criterio de decisión.
+> El estado real de cada objetivo —con su test y su incidencia— vive en la sección 7, «Estado de
+> conformidad». Que un objetivo figure en esta lista no significa que esté cumplido hoy.
+
 ## 1. Propósito
 
 gentle-mesh RFC-002 es un protocolo de **confianza y liquidación entre agentes**: permite que un agente
 (emisor) encargue trabajo a otro (ejecutor) de forma que:
 
 1. el ejecutor **solo pueda hacer lo autorizado**,
-2. ambos obtengan **evidencia verificable e inalterable** de lo que se pidió, lo que se hizo y lo que se comprobó,
+2. ambos obtengan **evidencia firmada y encadenada por recibo, con manipulación detectable en el contenido firmado** de lo que se pidió, lo que se hizo y lo que se comprobó (hoy los enlaces `previous_receipt_hash`/`seq` y la decisión del emisor no están firmados: incidencias #43 y #48),
 3. cualquier intento de salirse de lo autorizado **falle y deje rastro**.
 
 Promesa pública del protocolo:
 
-> *gentle-mesh no impide que un agente intente salirse; hace que no tenga por dónde,
-> que no pueda llevarse nada y que se sepa enseguida.*
+> *gentle-mesh no impide que un agente intente salirse; hace que cada acción quede registrada
+> en un recibo firmado por el ejecutor, que el emisor pueda aceptarlo o disputarlo, y que
+> cualquier manipulación del contenido firmado se detecte al verificar el recibo.* (estado real en la sección 7)
 
 ## 2. Modelo de adversario (resumen)
 
@@ -108,3 +113,56 @@ Cuando dos objetivos entren en conflicto, se aplica este orden:
 3. **Simplicidad** sobre generalidad: una capa pequeña y verificable antes que una flexible y opaca.
 4. **Estándares** sobre invención propia.
 5. **Evidencia** sobre confianza: si no hay test que lo demuestre, el objetivo no está cumplido.
+
+---
+
+## 7. Estado de conformidad
+
+Verificación sobre el commit `9a849a855087e144cdc02b4cb4eb24457b459d22` (rama
+`feat/rfc-002-settlement`), a fecha 2026-10-06. «Cumplido» significa que existe un test
+automatizado que demuestra el criterio medible.
+
+| Objetivo | Perfil mínimo | Estado | Test relacionado | Qué falta | Incidencia |
+|----------|---------------|--------|------------------------|-----------|------------|
+| S1 | sí | no cumplido | `integration/agent/tls_test.go:104` (débil) | Ligar CN/SAN al `agent_id` en el servidor RFC-002: el coordinador de `main` ya liga el CN al `node_id` en `/v1/mesh/join` desde la v1.0.3, pero el servidor de la RFC-002 no liga el CN al `agent_id` | [#66](https://github.com/Rafaeldelinares/gentle-mesh/issues/66) |
+| S2 | sí | no cumplido | — | Verificar la firma del emisor antes de ejecutar o persistir | [#67](https://github.com/Rafaeldelinares/gentle-mesh/issues/67), [#48](https://github.com/Rafaeldelinares/gentle-mesh/issues/48) (parcial) |
+| S3 | sí | sin código | — | Capacidades *deny-by-default* | ninguna |
+| S4 | no | sin código | — | Política aplicada fuera del proceso del agente | ninguna |
+| S5 | no | sin código | — | Delegación atenuada en cadena | ninguna |
+| S6 | sí | no cumplido | `pkg/jcs/jcs_redteam_test.go:12` (débil) | ejecución de cadenas recibidas, ver #35 | #35 |
+| S7 | sí | parcial | `pkg/receipt/chain_integrity_test.go:42,58` | Firmar los enlaces y la decisión del emisor | #43, #48, #41 |
+| S8 | no | no cumplido | — | Revocación efectiva y kill switch | #25 |
+| S9 | sí | cumplido | `pkg/envelope/version_test.go:11`; `pkg/receipt/version_test.go:11` | — | ninguna |
+| R1 | sí | no cumplido | — | Idempotencia por `envelope_id` | [#68](https://github.com/Rafaeldelinares/gentle-mesh/issues/68) |
+| R2 | sí | no cumplido | — | Expiración de lease y recibo `SETTLEMENT_TIMEOUT` | [#69](https://github.com/Rafaeldelinares/gentle-mesh/issues/69), [#8](https://github.com/Rafaeldelinares/gentle-mesh/issues/8) (parcial) |
+| R3 | no | no cumplido | — | Reintentos sin efectos duplicados | ninguna |
+| R4 | no | cumplido | `pkg/receipt/chain_integrity_test.go:142` | — | — |
+| R5 | sí | parcial | `pkg/envelope/envelope_test.go:447`; `pkg/receipt/receipt_test.go:8` | Máquina de estados de contrato con terminal garantizado | ninguna |
+| R6 | no | no cumplido | — | Test de independencia del reloj ajeno | ninguna |
+| R7 | sí | cumplido | `pkg/envelope/signer_test.go:241` | — | ninguna |
+| A1 | sí | parcial | — | Encargo de bajo riesgo sin declarar capacidades | ninguna |
+| A2 | sí | parcial | `pkg/shell/shell_test.go:17` | Motivo estructurado en un lease rechazado | #37 (parcial) |
+| A3 | no | no cumplido | — | Camino de un solo round-trip | ninguna |
+| A4 | no | parcial | `pkg/signing/signing_test.go:421`; `pkg/jcs/jcs_test.go:485` | Benchmark con aserción integrado en CI | ninguna |
+| A5 | no | sin código | — | Controles pesados solo cuando el riesgo supera el perfil mínimo | ninguna |
+| A6 | no | parcial | — | Cobertura de la política desde la librería | ninguna |
+| A7 | no | parcial | — | Capa de autorización separada y probada | ninguna |
+
+«(débil)» marca un test que existe pero no demuestra el criterio: pasaría aunque se quitara la lógica que debería comprobar.
+
+Los objetivos sin issue propio se siguen como casillas en el paraguas [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70).
+
+**Lectura honesta:** a la fecha y al commit indicados, del perfil mínimo conforme solo S9 y R7
+están demostrados por tests automatizados; el resto está parcialmente implementado o sin
+implementar, y ningún nodo del repositorio puede declararse hoy «gentle-mesh RFC-002 conforme».
+
+El recuento por estado es: 3 cumplidos (S9, R4, R7), 7 parciales (S7, R5, A1, A2, A4, A6, A7),
+9 no cumplidos (S1, S2, S6, S8, R1, R2, R3, R6, A3) y 4 sin código (S3, S4, S5, A5).
+
+### Método y límites de la comprobación
+
+La comprobación se hizo sobre el commit auditado leyendo el código y los tests, y ejecutando
+la suite con `go test -race`. Los tests E2E que requieren Docker se leyeron, pero no se
+ejecutaron; no se consultó el estado real del CI en GitHub; y el umbral de A4 (menos de 1 ms
+por mensaje) no está medido de extremo a extremo (el benchmark mide firma y verificación sin
+canonicalización, y no corre en CI).
