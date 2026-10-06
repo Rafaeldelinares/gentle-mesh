@@ -59,6 +59,18 @@ Proponemos introducir un **Transporte Enchufable (Pluggable Transport)** dentro 
 
 ---
 
+## 3b. Relación con las sesiones remotas de pi
+
+Gentle Mesh y las sesiones remotas de pi resuelven problemas distintos y pueden complementarse en el futuro, pero no son intercambiables.
+
+**pi** (el harness `@earendil-works/pi-coding-agent`, con los paquetes `pi-client` y `pi-server` en versión 1.0.4) proporciona transporte de sesiones remotas. Su protocolo A2A (versión 8, experimental) conecta un cliente local con una sesión de agente en otra máquina. El cliente ve el streaming de eventos como si el agente corriera en local.
+
+**Gentle Mesh** ataca la coordinación entre varios agentes y nodos sobre el mismo proyecto: territorios y colisiones, reparto de tareas entre nodos compatibles por carga, y seguridad de la malla con PKI y mTLS. No ofrece transporte de sesiones remotas de pi.
+
+**Relación futura.** Ambas herramientas usan HTTP y SSE como transporte base, lo que hace posible una integración en la que Gentle Mesh despache tareas a nodos que a su vez usan pi para ejecutar sesiones remotas. Este camino no está planificado ni desarrollado; es una posibilidad abierta que depende del feedback de la comunidad.
+
+---
+
 ## 4. Contrato de la API REST Mínima (v1)
 
 ### `POST /v1/tasks` (Despachar Misión)
