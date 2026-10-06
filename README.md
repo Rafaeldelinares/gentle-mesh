@@ -33,6 +33,8 @@
 - No sustituye a las sesiones remotas de pi: pi te conecta a un agente en otra máquina; Gentle Mesh coordina a varios.
 - La parte de recibos firmados (RFC-002) es experimental y no está en el binario.
 
+**RFC-002 (experimental).** El protocolo de liquidación entre agentes con recibos Ed25519 firmados y cadena SHA-256 es una extensión separada. No está integrada en el binario actual. A fecha de hoy, ningún nodo del repositorio cumple el perfil mínimo conforme (solo 2 de los 12 requisitos están demostrados por tests automatizados). El estado de conformidad vive en la rama [`feat/rfc-002-settlement`](https://github.com/Rafaeldelinares/gentle-mesh/tree/feat/rfc-002-settlement) y en el issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70).
+
 ---
 
 ## ⚠️ Nota de Gobernanza y Comunidad
@@ -42,6 +44,35 @@
 > **Este proyecto avanzará, evolucionará y se integrará de forma oficial única y exclusivamente bajo la revisión, orientación y aprobación explícita de [Alan Buscaglia (@gentleman-programming)](https://github.com/gentleman-programming), creador y líder del ecosistema Gentle AI.**  
 >
 > Hasta contar con su feedback y visto bueno, este repositorio permanece como un espacio de investigación abierta, validación técnica, prototipado riguroso y experimentación colaborativa por y para la comunidad.
+
+---
+
+## Estado y hoja de ruta
+
+**Hoy:** RFC-001 (transporte distribuido) en main, versión v1.0.3.
+
+**Próximo:** v1.0.4 incluirá flags TLS en los clientes CLI, la resolución de comandos RPC no soportados y tests de integración automatizados (enrollment, webhooks).
+
+**Después:** v1.1.0: hará seguro por defecto (ver [#57](https://github.com/Rafaeldelinares/gentle-mesh/issues/57)) y revocación de certificados (ver [#25](https://github.com/Rafaeldelinares/gentle-mesh/issues/25)).
+
+**Limitaciones conocidas:** no existe revocación de certificados (la validez es de 1 año; ver [#25](https://github.com/Rafaeldelinares/gentle-mesh/issues/25)); el servidor escucha en todas las interfaces de red sin autenticación por defecto (ver [#57](https://github.com/Rafaeldelinares/gentle-mesh/issues/57)).
+
+**Nota sobre plazos:** este proyecto es impulsado por la comunidad; no se ofrecen fechas de entrega.
+
+**Sobre RFC-002:** el protocolo de recibos firmados es experimental, no está integrado en el binario y ningún nodo cumple hoy el perfil mínimo conforme (solo 2 de los 12 requisitos están demostrados por tests automatizados). Ver el estado de conformidad en la rama `feat/rfc-002-settlement` y en el issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70).
+
+---
+
+## Relación con las sesiones remotas de pi
+
+**pi** (el harness `@earendil-works/pi-coding-agent`) te conecta a una sesión de un agente de IA en otra máquina. Usa el protocolo A2A (versión 8, experimental según su propia documentación) sobre HTTPS y Server-Sent Events para el streaming de eventos.
+
+**Gentle Mesh** coordina varios agentes y nodos que trabajan sobre el mismo proyecto. Sus preocupaciones son:
+- **Territorios y colisiones:** evita que dos tareas toquen el mismo código a la vez y da visibilidad de quién hace qué.
+- **Reparto de tareas entre nodos:** elige un nodo compatible por rol, etiquetas, capacidad y carga.
+- **Seguridad de la malla:** PKI, mTLS y enrollment de nodos con certificados verificados.
+
+Las dos herramientas atacan problemas distintos. Gentle Mesh no pretende sustituir las sesiones remotas de pi y no tiene hoy un adaptador que use el protocolo A2A de pi. Una integración futura es posible porque ambas se basan en HTTP y SSE, pero es un camino abierto sin desarrollo planificado.
 
 ---
 
@@ -58,6 +89,36 @@ Hoy en día, el uso de agentes de IA es aislado y solitario: un desarrollador co
 4. **Binario Único en Go Puro:** Cero dependencias pesadas, compilación estática (`CGO_ENABLED=0`), arranque en milisegundos y consumo de memoria ridículamente bajo (~30 MB de RAM para un clúster de 6 nodos).
 
 **Enrutado de nodos explícito:** quien envía la tarea indica el rol (`agent`) y las etiquetas (`tags`) requeridas; el `registry` la entrega a un nodo registrado que soporta ese rol y esas etiquetas. Si hay varios compatibles, elige por capacidad y reparto de carga; si no hay ninguno, la tarea cae al runner local o falla. La malla **coordina territorios** (evita que dos agentes toquen el mismo código a la vez); no planifica el trabajo.
+
+---
+
+## Alternativas y cómo se relaciona
+
+Gentle Mesh no es la única herramienta que intenta coordinar agentes de IA sobre el mismo proyecto. Existen otros enfoques con objetivos similares o parcialmente solapados.
+
+### Lo que ya existe
+
+**Git worktrees.** La forma más directa de aislar agentes es crear un worktree de Git por tarea (por ejemplo, `git worktree add ../rama-ana ana/feature-login`). Cada worktree tiene su propio directorio de trabajo y su propio índice; así dos agentes pueden editar el mismo fichero simultáneamente sin que Git lo detecte. El conflicto aparece al integrar, no al trabajar. Varias herramientas de agentes usan esto por debajo (por ejemplo, la opción `--worktree` de Claude Code).
+
+**[CoordinationHub](https://github.com/IronAdamant/coordinationhub)** — Python stdlib, cero dependencias de terceros, MCP server para Claude Code y cualquier cliente MCP. Tablón compartido con registro de agentes, bloqueos de fichero (con TTL y bloqueo por región), detector de conflictos en tiempo real y dashboard web. Desarrollo pausado desde mayo de 2026; proyecto estable según sus propios mantenedores.
+
+**[Wit](https://github.com/amaar-mc/wit)** — Bun, SQLite, protocolo JSON-RPC sobre Unix socket. Bloqueo semántico mediante tree-sitter (bloquea funciones o clases, no ficheros completos) y contratos de firma de función con git pre-commit hook. Solo máquina local, sin coordinación entre máquinas remotas.
+
+**[Shepherd](https://github.com/Korso-AI/Shepherd)** — MCP server stdio compatible con cualquier cliente MCP (Claude Code, Codex, Pi, Cursor). Hub con Fastify y Postgres; self-hosted o gestionado por Korso. Tablero React para visibilidad y gestión de leases entre agentes.
+
+**[MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail)** — FastMCP, HTTP, SQLite y Git. Capa de coordinación estilo correo electrónico: identidad persistente por agente, bandeja de entrada y salida, reservas de fichero (leases consultivos) y archivos Git para auditoría.
+
+*Proyectos verificados el 2026-10-06. No se han probado de forma práctica; las descripciones se basan en la documentación de sus repositorios.*
+
+### Qué cambia Gentle Mesh
+
+Gentle Mesh se distingue en tres puntos verificables en el código:
+
+- **El coordinador despacha las tareas** (`pkg/server/http/handlers.go`, `pkg/server/registry/`): el agente no necesita consultar una herramienta ni consultar un tablón por su cuenta; el coordinador recibe la tarea y la entrega al nodo más apropiado. La cola con auto-arranque (`queue` mode, `pkg/server/http/scheduler.go`) garantiza que una tarea que no puede ejecutarse ahora espera y arranca sola cuando se libera el territorio.
+- **Nodos remotos con mTLS.** Los nodos se unen a la malla con certificados emitidos por la CA del coordinador (`pkg/server/store/certstore.go`, `pkg/server/http/handlers.go`). Ninguna de las alternativas listadas ofrece autenticación mutua de certificados entre máquinas remotas de serie.
+- **Límites de lo que Gentle Mesh declara:** el coordinador solo conoce lo que cada tarea declara como superficie; no lee el código (`pkg/protocol/`, `pkg/server/http/scheduler.go`). Los bloqueos se basan en lo declarado, no en análisis estático ni en parseo de AST.
+
+Los worktrees aíslan los ficheros pero el conflicto aparece al integrar; Gentle Mesh intenta evitar que dos agentes trabajen la misma zona a la vez y dar visibilidad de quién hace qué. Son enfoques distintos y no se ha verificado que se combinen sin conflicto.
 
 ---
 
@@ -144,6 +205,8 @@ Gentle Mesh está diseñado para interoperar de forma nativa con interfaces grá
 
 ## 3. Demostración Rápida en Local (Entorno Seguro)
 
+> **Demo en vivo:** [docs/DEMO.md](docs/DEMO.md) — coordinator local sin TLS, dos tareas con superficies solapadas que demuestra la cola automática.
+
 ### Requisitos
 * Go 1.26.7+ (mínimo declarado en `go.mod`) o Docker / Docker Compose.
 
@@ -157,6 +220,7 @@ go test -v -race ./...
 ```bash
 go run ./cmd/gentle-mesh server -addr :8080 -workspace . -territory-mode queue
 ```
+*(~7 segundos de arranque en hardware de referencia con `go run`.)*
 El flag `-territory-mode` acepta `queue` (por defecto), `warn`, `strict` o `disabled`; consulta el semáforo inteligente en la sección 2.2.
 
 Para el camino TLS/mTLS usa `server -addr :8443 -tls -tls-init -require-mtls`. Ten en cuenta que los clientes CLI (`nodes`, `radar`, `run`, `rpc`) todavía **no** presentan certificado de cliente, así que no alcanzan un coordinador con `-require-mtls` hasta la v1.0.4.
@@ -166,6 +230,7 @@ El repositorio incluye una topología lista para probar en una red bridge aislad
 ```bash
 docker compose -f docker-compose.test.yml up -d
 ```
+*(~4 segundos de arranque en hardware de referencia si las imágenes ya están descargadas.)*
 
 ### Consultar los nodos registrados en la malla
 ```bash
