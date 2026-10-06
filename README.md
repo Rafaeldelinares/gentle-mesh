@@ -15,6 +15,26 @@
 
 ---
 
+## En pocas palabras
+
+**Gentle Mesh es una torre de control para agentes de IA que trabajan sobre el mismo proyecto.** Cada tarea avisa de qué parte del código va a tocar. Gentle Mesh lo anota en un radar que todos pueden mirar (`gentle-mesh radar`), detecta si dos tareas chocan y, según el modo elegido (`-territory-mode`), hace esperar a la segunda (`queue`, el de por defecto), solo avisa (`warn`), la rechaza (`strict`) o no comprueba nada (`disabled`). Solo se detecta lo que cada tarea declara: no se lee el código. Además, permite mandar el trabajo pesado (compilar, pasar tests) a otras máquinas, y lo reparte entre las compatibles (por rol y etiquetas) según su carga.
+
+**Un ejemplo.** Ana y Luis lanzan cada uno un agente sobre el mismo repositorio, y los dos quieren modificar el módulo de login.
+
+- **Sin Gentle Mesh:** nadie sabe qué está haciendo el otro agente. Los dos escriben sobre lo mismo y el conflicto aparece horas después, al juntar los cambios.
+- **Con Gentle Mesh:** la tarea de Ana se registra primero. Cuando llega la de Luis, Gentle Mesh ve que tocan lo mismo y, en el modo por defecto, la deja en cola (`status: "queued"`). Arranca sola cuando la de Ana termina. Y cualquiera puede mirar el radar para ver quién está tocando qué.
+
+**Qué no es**
+
+- No es un agente ni un modelo de IA: no escribe código ni decide qué hay que hacer. Eso lo indica quien manda la tarea.
+- No lee tu código: se fía de lo que cada tarea declara que va a tocar.
+- No sustituye a Git ni a la revisión humana.
+- No es un producto listo para producción ni un proyecto oficial de Gentle AI: es una propuesta y prueba de concepto (alfa) de la comunidad.
+- No sustituye a las sesiones remotas de pi: pi te conecta a un agente en otra máquina; Gentle Mesh coordina a varios.
+- La parte de recibos firmados (RFC-002) es experimental y no está en el binario.
+
+---
+
 ## ⚠️ Nota de Gobernanza y Comunidad
 
 > **Este repositorio es una propuesta de arquitectura técnica (RFC) y Prueba de Concepto (PoC) comunitaria creada para el ecosistema Gentle AI.**  
