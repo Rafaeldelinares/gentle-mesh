@@ -15,6 +15,26 @@
 
 ---
 
+## En pocas palabras
+
+**Gentle Mesh es una torre de control para agentes de IA que trabajan sobre el mismo proyecto.** Cada tarea avisa de qué parte del código va a tocar. Gentle Mesh lo anota en un radar que todos pueden mirar (`gentle-mesh radar`) y detecta dos choques: **misma rama** con otra tarea en curso, y **superficies declaradas que se solapan**, aunque las ramas sean distintas. El modo elegido (`-territory-mode`) decide qué hacer con el solapamiento de superficies: `queue` (por defecto) deja la tarea en cola y la arranca sola al liberarse el territorio; `warn` deja constancia en un evento `thought` y la deja pasar; `strict` la rechaza con `409`; `disabled` no comprueba ese solapamiento. El **bloqueo de rama** se aplica en los cuatro modos: en `queue` la tarea queda en cola, y en `warn`, `strict` y `disabled` se rechaza con `409`. Solo se detecta lo que cada tarea declara: no se lee el código. Además, permite mandar el trabajo pesado (compilar, pasar tests) a otras máquinas, y lo reparte entre las compatibles (por rol y etiquetas) según su carga.
+
+**Un ejemplo.** Ana y Luis lanzan cada uno un agente sobre el mismo repositorio, y los dos quieren modificar el módulo de login.
+
+- **Sin Gentle Mesh:** nadie sabe qué está haciendo el otro agente. Los dos escriben sobre lo mismo y el conflicto aparece horas después, al juntar los cambios.
+- **Con Gentle Mesh:** la tarea de Ana se registra primero. Cuando llega la de Luis, Gentle Mesh ve que tocan lo mismo y, en el modo por defecto, la deja en cola (`status: "queued"`). Arranca sola cuando la de Ana termina. Y cualquiera puede mirar el radar para ver quién está tocando qué.
+
+**Qué no es**
+
+- No es un agente ni un modelo de IA: no escribe código ni decide qué hay que hacer. Eso lo indica quien manda la tarea.
+- No lee tu código: se fía de lo que cada tarea declara que va a tocar.
+- No sustituye a Git ni a la revisión humana.
+- No es un producto listo para producción ni un proyecto oficial de Gentle AI: es una propuesta y prueba de concepto (alfa) de la comunidad.
+- No sustituye a las sesiones remotas de pi: pi te conecta a un agente en otra máquina; Gentle Mesh coordina a varios.
+- La parte de recibos firmados (RFC-002) es experimental y no está en el binario.
+
+---
+
 ## ⚠️ Nota de Gobernanza y Comunidad
 
 > **Este repositorio es una propuesta de arquitectura técnica (RFC) y Prueba de Concepto (PoC) comunitaria creada para el ecosistema Gentle AI.**  
@@ -101,9 +121,9 @@ Para resolverlo, el coordinador incorpora un **Semáforo Inteligente de Territor
    * El respeto del orden FIFO y el despacho secuencial garantizan que dos agentes jamás comiteen concurrentemente sobre el mismo ref de Git.
 3. **Los 4 modos soportados (`-territory-mode`):**
    * `queue` (**por defecto**): encola transparentemente ante conflictos de territorio y despacha de forma secuencial en orden FIFO.
-   * `warn`: despacha la tarea de inmediato pese al conflicto, pero emite una **advertencia no fatal** en el stream de eventos (un evento `thought`) para dejar constancia del solapamiento.
+   * `warn`: ante un solapamiento de superficies (ramas distintas), emite una **advertencia no fatal** en el stream de eventos (un evento `thought`) y despacha igualmente la tarea. Si la **rama** ya está bloqueada por otra tarea, la petición se rechaza con `HTTP 409 Conflict` (`registry.ErrBranchLocked`).
    * `strict`: rechaza de inmediato con `HTTP 409 Conflict` (modo estricto tradicional, útil para pipelines de CI que exigen exclusión dura).
-   * `disabled`: desactiva por completo la comprobación de conflictos territoriales y despacha siempre.
+   * `disabled`: desactiva la comprobación de conflictos territoriales **por solapamiento de superficies** y despacha siempre en ese caso. El **bloqueo de rama** sigue aplicándose: dos tareas sobre la misma rama con otra en curso se rechazan con `HTTP 409 Conflict`.
 4. **Configuración vía CLI:**
    * El subcomando `server` expone el flag `-territory-mode=queue|warn|strict|disabled`. Un valor desconocido aborta el arranque con un error explícito, evitando degradaciones silenciosas de política.
 
