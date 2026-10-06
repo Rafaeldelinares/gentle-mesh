@@ -129,7 +129,7 @@ Gentle Mesh está diseñado para interoperar de forma nativa con interfaces grá
 ```bash
 go test -v -race ./...
 ```
-*(Todos los paquetes cuentan con cobertura unitaria; el CI ejecuta `go test -race` en `./cmd/...` y `./pkg/...`).*
+*(Los paquetes `./cmd/...` y `./pkg/...` cuentan con cobertura unitaria y el CI ejecuta `go test -race` en ellos. Algunos paquetes auxiliares (por ejemplo `pkg/server/webhook/`) no tienen tests automatizados todavía.)*
 
 ### Levantar el coordinador en local (sin TLS, desarrollo)
 ```bash
