@@ -51,9 +51,9 @@
 
 **Hoy:** RFC-001 (transporte distribuido) en main, versión v1.0.3.
 
-**Próximo:** v1.0.4 incluirá flags TLS en los clientes CLI, la resolución de comandos RPC no soportados y tests de integración automatizados (enrollment, webhooks).
+**Próximo:** v1.0.4 está previsto que incluya flags TLS en los clientes CLI, la resolución de comandos RPC no soportados y tests de integración automatizados (enrollment, webhooks).
 
-**Después:** v1.1.0: hará seguro por defecto (ver [#57](https://github.com/Rafaeldelinares/gentle-mesh/issues/57)) y revocación de certificados (ver [#25](https://github.com/Rafaeldelinares/gentle-mesh/issues/25)).
+**Después:** v1.1.0 hará que el valor por defecto sea seguro (ver [#57](https://github.com/Rafaeldelinares/gentle-mesh/issues/57)) y revocación de certificados (ver [#25](https://github.com/Rafaeldelinares/gentle-mesh/issues/25)).
 
 **Limitaciones conocidas:** no existe revocación de certificados (la validez es de 1 año; ver [#25](https://github.com/Rafaeldelinares/gentle-mesh/issues/25)); el servidor escucha en todas las interfaces de red sin autenticación por defecto (ver [#57](https://github.com/Rafaeldelinares/gentle-mesh/issues/57)).
 
@@ -65,14 +65,14 @@
 
 ## Relación con las sesiones remotas de pi
 
-**pi** (el harness `@earendil-works/pi-coding-agent`) te conecta a una sesión de un agente de IA en otra máquina. Usa el protocolo A2A (versión 8, experimental según su propia documentación) sobre HTTPS y Server-Sent Events para el streaming de eventos.
+**pi** (el harness `@earendil-works/pi-coding-agent`, paquetes `@earendil-works/pi-protocol`, `@earendil-works/pi-client` y `@earendil-works/pi-server` en versión 1.0.4) proporciona sesiones remotas de agentes. El paquete `pi-protocol` implementa un protocolo CBOR neutral al transporte (versión 8, experimental); `pi-client` es un cliente sobre un `ByteTransport`; `pi-server` es experimental y se aloja en la aplicación que lo usa. pi no usa el protocolo A2A.
 
 **Gentle Mesh** coordina varios agentes y nodos que trabajan sobre el mismo proyecto. Sus preocupaciones son:
 - **Territorios y colisiones:** evita que dos tareas toquen el mismo código a la vez y da visibilidad de quién hace qué.
 - **Reparto de tareas entre nodos:** elige un nodo compatible por rol, etiquetas, capacidad y carga.
 - **Seguridad de la malla:** PKI, mTLS y enrollment de nodos con certificados verificados.
 
-Las dos herramientas atacan problemas distintos. Gentle Mesh no pretende sustituir las sesiones remotas de pi y no tiene hoy un adaptador que use el protocolo A2A de pi. Una integración futura es posible porque ambas se basan en HTTP y SSE, pero es un camino abierto sin desarrollo planificado.
+Las dos herramientas atacan problemas distintos. Gentle Mesh no pretende sustituir las sesiones remotas de pi y no tiene hoy un adaptador para el protocolo de pi. Una integración futura es posible porque ambas se basan en transporte HTTP, pero es un camino abierto sin desarrollo planificado.
 
 ---
 
@@ -220,7 +220,7 @@ go test -v -race ./...
 ```bash
 go run ./cmd/gentle-mesh server -addr :8080 -workspace . -territory-mode queue
 ```
-*(~7 segundos de arranque en hardware de referencia con `go run`.)*
+*(Con `go run` tarda ~5-8 segundos la primera vez por la compilación; un binario compilado arranca en ~0,5 segundos. No es un benchmark.)*
 El flag `-territory-mode` acepta `queue` (por defecto), `warn`, `strict` o `disabled`; consulta el semáforo inteligente en la sección 2.2.
 
 Para el camino TLS/mTLS usa `server -addr :8443 -tls -tls-init -require-mtls`. Ten en cuenta que los clientes CLI (`nodes`, `radar`, `run`, `rpc`) todavía **no** presentan certificado de cliente, así que no alcanzan un coordinador con `-require-mtls` hasta la v1.0.4.
@@ -230,7 +230,7 @@ El repositorio incluye una topología lista para probar en una red bridge aislad
 ```bash
 docker compose -f docker-compose.test.yml up -d
 ```
-*(~4 segundos de arranque en hardware de referencia si las imágenes ya están descargadas.)*
+*(~3 segundos en una máquina de desarrollo si las imágenes ya están descargadas. No es un benchmark.)*
 
 ### Consultar los nodos registrados en la malla
 ```bash
