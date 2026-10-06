@@ -63,11 +63,11 @@ Proponemos introducir un **Transporte Enchufable (Pluggable Transport)** dentro 
 
 Gentle Mesh y las sesiones remotas de pi resuelven problemas distintos y pueden complementarse en el futuro, pero no son intercambiables.
 
-**pi** (el harness `@earendil-works/pi-coding-agent`, con los paquetes `@earendil-works/pi-protocol`, `@earendil-works/pi-client` y `@earendil-works/pi-server` en versión 1.0.4) proporciona sesiones remotas de agentes. El paquete `pi-protocol` implementa un protocolo CBOR neutral al transporte (versión 8, experimental); `pi-client` es un cliente sobre un `ByteTransport`; `pi-server` es experimental y se aloja en la aplicación que lo usa. pi no usa el protocolo A2A.
+**pi** (`@earendil-works/pi-protocol` 1.0.4, `@earendil-works/pi-client` 1.0.4, `@earendil-works/pi-server` 1.0.4 y `@earendil-works/pi-coding-agent` 1.0.4) proporciona sesiones remotas de agentes. `pi-protocol` implementa un protocolo CBOR neutral al transporte (versión 8, experimental); `pi-client` es un cliente sobre un `ByteTransport`; `pi-server` es experimental y se aloja en la aplicación que lo usa. El subcomando `rpc` de gentle-mesh puentea el modo RPC de pi por stdin/stdout. Gentle Mesh no implementa el protocolo de sesiones remotas de pi-protocol.
 
 **Gentle Mesh** ataca la coordinación entre varios agentes y nodos sobre el mismo proyecto: territorios y colisiones, reparto de tareas entre nodos compatibles por carga, y seguridad de la malla con PKI y mTLS. No ofrece transporte de sesiones remotas de pi.
 
-**Relación futura.** Ambas herramientas usan transporte HTTP, lo que hace posible una integración en la que Gentle Mesh despache tareas a nodos que a su vez usan pi para ejecutar sesiones remotas. Este camino no está planificado ni desarrollado; es una posibilidad abierta que depende del feedback de la comunidad.
+**Relación futura.** Ambas herramientas se basan en transporte HTTP, lo que hace posible una integración en la que Gentle Mesh despache tareas a nodos que a su vez usan pi para ejecutar sesiones remotas. Este camino no está planificado ni desarrollado; es una posibilidad abierta que depende del feedback de la comunidad.
 
 ---
 

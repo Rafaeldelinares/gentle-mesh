@@ -51,9 +51,9 @@
 
 **Hoy:** RFC-001 (transporte distribuido) en main, versión v1.0.3.
 
-**Próximo:** v1.0.4 está previsto que incluya flags TLS en los clientes CLI, la resolución de comandos RPC no soportados y tests de integración automatizados (enrollment, webhooks).
+**Próximo (v1.0.4):** está previsto que incluya flags TLS en los clientes de la CLI, una respuesta de error explícita a los comandos RPC no soportados y tests de enrollment de extremo a extremo y de webhooks.
 
-**Después:** v1.1.0 hará que el valor por defecto sea seguro (ver [#57](https://github.com/Rafaeldelinares/gentle-mesh/issues/57)) y revocación de certificados (ver [#25](https://github.com/Rafaeldelinares/gentle-mesh/issues/25)).
+**Después (v1.1.0):** está previsto que la configuración por defecto sea segura (ver [#57](https://github.com/Rafaeldelinares/gentle-mesh/issues/57)) y que haya revocación de certificados (ver [#25](https://github.com/Rafaeldelinares/gentle-mesh/issues/25)).
 
 **Limitaciones conocidas:** no existe revocación de certificados (la validez es de 1 año; ver [#25](https://github.com/Rafaeldelinares/gentle-mesh/issues/25)); el servidor escucha en todas las interfaces de red sin autenticación por defecto (ver [#57](https://github.com/Rafaeldelinares/gentle-mesh/issues/57)).
 
@@ -65,14 +65,14 @@
 
 ## Relación con las sesiones remotas de pi
 
-**pi** (el harness `@earendil-works/pi-coding-agent`, paquetes `@earendil-works/pi-protocol`, `@earendil-works/pi-client` y `@earendil-works/pi-server` en versión 1.0.4) proporciona sesiones remotas de agentes. El paquete `pi-protocol` implementa un protocolo CBOR neutral al transporte (versión 8, experimental); `pi-client` es un cliente sobre un `ByteTransport`; `pi-server` es experimental y se aloja en la aplicación que lo usa. pi no usa el protocolo A2A.
+**pi** (`@earendil-works/pi-protocol` 1.0.4, `@earendil-works/pi-client` 1.0.4, `@earendil-works/pi-server` 1.0.4 y `@earendil-works/pi-coding-agent` 1.0.4) proporciona sesiones remotas de agentes. `pi-protocol` implementa un protocolo CBOR neutral al transporte (versión 8, experimental); `pi-client` es un cliente sobre un `ByteTransport`; `pi-server` es experimental y se aloja en la aplicación que lo usa. El subcomando `rpc` de gentle-mesh puentea el modo RPC de pi por stdin/stdout. Gentle Mesh no implementa el protocolo de sesiones remotas de pi-protocol.
 
 **Gentle Mesh** coordina varios agentes y nodos que trabajan sobre el mismo proyecto. Sus preocupaciones son:
 - **Territorios y colisiones:** evita que dos tareas toquen el mismo código a la vez y da visibilidad de quién hace qué.
 - **Reparto de tareas entre nodos:** elige un nodo compatible por rol, etiquetas, capacidad y carga.
 - **Seguridad de la malla:** PKI, mTLS y enrollment de nodos con certificados verificados.
 
-Las dos herramientas atacan problemas distintos. Gentle Mesh no pretende sustituir las sesiones remotas de pi y no tiene hoy un adaptador para el protocolo de pi. Una integración futura es posible porque ambas se basan en transporte HTTP, pero es un camino abierto sin desarrollo planificado.
+Las dos herramientas atacan problemas distintos. Gentle Mesh no pretende sustituir las sesiones remotas de pi y no tiene hoy un adaptador para el protocolo de sesiones remotas de pi. Una integración futura es posible porque ambas se basan en transporte HTTP, pero es un camino abierto sin desarrollo planificado.
 
 ---
 
@@ -100,15 +100,15 @@ Gentle Mesh no es la única herramienta que intenta coordinar agentes de IA sobr
 
 **Git worktrees.** La forma más directa de aislar agentes es crear un worktree de Git por tarea (por ejemplo, `git worktree add ../rama-ana ana/feature-login`). Cada worktree tiene su propio directorio de trabajo y su propio índice; así dos agentes pueden editar el mismo fichero simultáneamente sin que Git lo detecte. El conflicto aparece al integrar, no al trabajar. Varias herramientas de agentes usan esto por debajo (por ejemplo, la opción `--worktree` de Claude Code).
 
-**[CoordinationHub](https://github.com/IronAdamant/coordinationhub)** — Python stdlib, cero dependencias de terceros, MCP server para Claude Code y cualquier cliente MCP. Tablón compartido con registro de agentes, bloqueos de fichero (con TTL y bloqueo por región), detector de conflictos en tiempo real y dashboard web. Desarrollo pausado desde mayo de 2026; proyecto estable según sus propios mantenedores.
+**[CoordinationHub](https://github.com/IronAdamant/coordinationhub)** — MCP server en Python stdlib, cero dependencias de terceros. Tablón compartido con registro de agentes, bloqueos de fichero con TTL y bloqueo por región, y dashboard web. El desarrollo está pausado desde mayo de 2026.
 
-**[Wit](https://github.com/amaar-mc/wit)** — Bun, SQLite, protocolo JSON-RPC sobre Unix socket. Bloqueo semántico mediante tree-sitter (bloquea funciones o clases, no ficheros completos) y contratos de firma de función con git pre-commit hook. Solo máquina local, sin coordinación entre máquinas remotas.
+**[Wit](https://github.com/amaar-mc/wit)** — Bun, SQLite, protocolo JSON-RPC sobre Unix socket. Bloqueo semántico mediante tree-sitter y contratos de firma de función con git pre-commit hook. Solo máquina local.
 
-**[Shepherd](https://github.com/Korso-AI/Shepherd)** — MCP server stdio compatible con cualquier cliente MCP (Claude Code, Codex, Pi, Cursor). Hub con Fastify y Postgres; self-hosted o gestionado por Korso. Tablero React para visibilidad y gestión de leases entre agentes.
+**[Shepherd](https://github.com/Korso-AI/Shepherd)** — Hub con Fastify y Postgres, MCP server stdio compatible con cualquier cliente MCP (Claude Code, Codex, Pi, Cursor) y tablero React para visibilidad y leases.
 
-**[MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail)** — FastMCP, HTTP, SQLite y Git. Capa de coordinación estilo correo electrónico: identidad persistente por agente, bandeja de entrada y salida, reservas de fichero (leases consultivos) y archivos Git para auditoría.
+**[MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail)** — Servidor FastMCP con identidad persistente por agente, bandeja de entrada y salida, leases consultivos de fichero y archivos Git para auditoría.
 
-*Proyectos verificados el 2026-10-06. No se han probado de forma práctica; las descripciones se basan en la documentación de sus repositorios.*
+*Proyectos verificados el 2026-10-07 (HTTP 200). No se han probado de forma práctica; las descripciones se basan en la documentación de sus repositorios.*
 
 ### Qué cambia Gentle Mesh
 
