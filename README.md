@@ -137,7 +137,7 @@ go run ./cmd/gentle-mesh server -addr :8080 -workspace . -territory-mode queue
 ```
 El flag `-territory-mode` acepta `queue` (por defecto), `warn`, `strict` o `disabled`; consulta el semáforo inteligente en la sección 2.2.
 
-Para el camino TLS/mTLS usa `server -addr :8443 -tls -tls-init -require-mtls` (ver 3.1). Ten en cuenta que los clientes CLI (`nodes`, `radar`, `run`, `rpc`) todavía **no** presentan certificado de cliente, así que no alcanzan un coordinador con `-require-mtls` hasta la v1.0.4.
+Para el camino TLS/mTLS usa `server -addr :8443 -tls -tls-init -require-mtls`. Ten en cuenta que los clientes CLI (`nodes`, `radar`, `run`, `rpc`) todavía **no** presentan certificado de cliente, así que no alcanzan un coordinador con `-require-mtls` hasta la v1.0.4.
 
 ### Levantar el clúster de prueba de 6 nodos en Docker
 El repositorio incluye una topología lista para probar en una red bridge aislada (`gentle-mesh-net`):
@@ -281,7 +281,7 @@ gentle-mesh cert-revoke -node-id worker-alpha
 - `-tls-dir <path>` — Directorio con certificados
 - `-tls-init` — Generar nueva CA y certificados
 - `-require-mtls` — Exigir certificado de cliente verificado en las rutas protegidas (requiere `-tls` y una CA)
-- `-cors-origins <lista>` — Orígenes CORS adicionales, separados por comas (por defecto: `tauri://localhost`, `http://localhost`/`http://127.0.0.1` en cualquier puerto, Tailscale `100.64.0.0/10` y `*.ts.net`)
+- `-cors-origins <lista>` — Orígenes CORS adicionales, separados por comas, que se **suman** a la allowlist por defecto (`tauri://localhost`; `http://localhost`/`http://127.0.0.1` en cualquier puerto; Tailscale `100.64.0.0/10` y `*.ts.net`)
 - `-allowed-hosts <lista>` — Nombres de host adicionales permitidos, separados por comas (necesario para nombres cortos de MagicDNS o nombres propios; por defecto se deriva de la dirección de escucha más `localhost`, `127.0.0.1` y `::1`)
 - `-insecure-no-auth` — Permite arrancar `-runner pi` en una dirección no loopback sin `-token` ni `-require-mtls` (por defecto se rechaza)
 
@@ -403,7 +403,7 @@ curl -X POST https://localhost:8443/v1/webhooks \
 
 ```json
 {
-  "id": "notif-1234567890",
+  "id": "notif-1699999999123456789",
   "event": "task.completed",
   "timestamp": 1699999999,
   "task_id": "task-abc123",
@@ -412,19 +412,23 @@ curl -X POST https://localhost:8443/v1/webhooks \
   "task": {
     "task_id": "task-abc123",
     "status": "completed",
-    "agent": "worker"
+    "created_at": 1699999990,
+    "request": {
+      "agent": "worker",
+      "task": "..."
+    }
   }
 }
 ```
 
 #### 3.2.4 Seguridad
 
-Los webhooks incluyen firma HMAC-SHA256 para verificar autenticidad:
+El servidor envía siempre las cabeceras `X-Webhook-Event` y `X-Webhook-ID`. Si registras el webhook con `secret`, cada entrega incluye además `X-Webhook-Signature` con la firma HMAC-SHA256 del payload:
 
 ```
-X-Webhook-Signature: sha256=<firma>
 X-Webhook-Event: task.completed
-X-Webhook-ID: notif-123
+X-Webhook-ID: notif-1699999999123456789
+X-Webhook-Signature: sha256=<firma>   # solo si se configuró "secret"
 ```
 
 Para verificar la firma:
@@ -676,11 +680,11 @@ El repositorio incluye diagramas de arquitectura interactivos y autocontenidos (
 
 </div>
 
-Gentle-Mesh es una PoC/RFC comunitaria propuesta para el ecosistema: no es un proyecto oficial de Gentle AI ni cuenta con su respaldo mientras no lo apruebe Alan Buscaglia. Gentle AI™ y Engram™ son marcas de Alan Buscaglia (ver su TRADEMARKS.md, enlazado).
+Gentle-Mesh es una PoC/RFC comunitaria propuesta para el ecosistema: no es un proyecto oficial de Gentle AI ni cuenta con su respaldo mientras no lo apruebe Alan Buscaglia. Gentle AI™ y Engram™ son marcas de Alan Buscaglia (ver su [TRADEMARKS.md](https://github.com/Gentleman-Programming/gentle-ai/blob/main/TRADEMARKS.md)).
 
 Los cambios relevantes pasan por revisión RDD.
 
-Este repositorio se desarrolla con ayuda de agentes de IA bajo revisión y responsabilidad humana del mantenedor ([herramienta/modelo: completar por el mantenedor]).
+Este repositorio se desarrolla con ayuda de agentes de IA (flujo de Gentle-AI) bajo revisión y responsabilidad humana del mantenedor.
 
 ---
 
