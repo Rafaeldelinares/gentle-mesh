@@ -1,9 +1,9 @@
 # AGENTS.md — Convenciones y Competencias de Gentle Mesh
 
 > **Proyecto:** `gentle-mesh`  
-> **Ubicación:** `/home/rafael/proyectos/gentle-mesh`  
+> **Ubicación:** `<ruta-del-proyecto>`  
 > **Propósito:** Transporte distribuido federado y ejecución de subagentes remotos para el ecosistema Pi & Gentle AI.  
-> **Lenguaje:** Go (Golang 1.22+)  
+> **Lenguaje:** Go 1.26.7+  
 > **Destino Comunitario:** Propuesta RFC oficial para la comunidad de Gentleman Programming.  
 
 ---

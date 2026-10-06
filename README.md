@@ -15,7 +15,7 @@
 
 ---
 
-### ⚠️ Nota de Gobernanza y Comunidad
+## ⚠️ Nota de Gobernanza y Comunidad
 
 > **Este repositorio es una propuesta de arquitectura técnica (RFC) y Prueba de Concepto (PoC) comunitaria creada para el ecosistema Gentle AI.**  
 >
@@ -43,12 +43,12 @@ Hoy en día, el uso de agentes de IA es aislado y solitario: un desarrollador co
 
 ## 2. Pila Tecnológica y Arquitectura
 
-* **Lenguaje:** Go 1.22+ estándar (`net/http`, `encoding/json`, `sync`, `context`, `database/sql`). Cero frameworks web externos ni librerías de C.
-* **Transporte:** HTTPS REST + Server-Sent Events (HTTPS/SSE) para streaming continuo y seguro de pensamientos (`thought`), llamadas a herramientas (`tool_call`) y resultados con cifrado de nivel aplicación.
+* **Lenguaje:** Go 1.26.7+ estándar (`net/http`, `encoding/json`, `sync`, `context`, `database/sql`). Cero frameworks web externos ni librerías de C.
+* **Transporte:** HTTPS REST + Server-Sent Events (HTTPS/SSE) para streaming continuo y seguro de pensamientos (`thought`), llamadas a herramientas (`tool_call`) y resultados, con cifrado de transporte TLS; la autenticación mutua (mTLS) solo se exige con `-require-mtls`.
 * **Persistencia Dual y Resiliencia ante Caídas (Crash Recovery):**
   * **Streaming de Eventos:** Append-only logs en formato **JSONL** (`<tasks-dir>/{id}.jsonl`). Permite reconexión histórica instantánea vía el header estándar `Last-Event-ID` con consumo de RAM constante $O(1)$.
   * **Estado Maestro y Rehidratación:** Base de datos embebida **SQLite en Go puro** (`modernc.org/sqlite`, `CGO_ENABLED=0`) con modo **WAL** (*Write-Ahead Logging*). Si el servidor se apaga o reinicia, rehidrata automáticamente el catálogo de tareas sin pérdida de estado.
-* **Supervisión Autónoma:** Detección de inactividad, loop detection (bloqueo tras 3 fallas idénticas de herramientas) y auto-commit de seguridad (WIP) sin popups interactivos.
+* **Supervisión Autónoma (parcial):** el runner `pi` detecta inactividad (5 minutos sin salida → `TASK_INACTIVITY_TIMEOUT`). La detección de bucles y el auto-commit WIP **están planificados** (RFC-001 §8) y **no están implementados**.
 
 ```text
 gentle-mesh/
@@ -73,7 +73,7 @@ gentle-mesh/
 
 ### 2.1 Persistencia Dual y Recuperación ante Caídas (Crash Recovery)
 
-Para garantizar que Gentle Mesh funcione como un demonio de infraestructura confiable de grado de producción sin requerir servidores de base de datos externos (PostgreSQL, MySQL o Redis):
+Para funcionar como un demonio de infraestructura desatendido sin requerir servidores de base de datos externos (PostgreSQL, MySQL o Redis):
 
 1. **Separación de Responsabilidades en Almacenamiento:**
    * **JSONL para el flujo de eventos:** Los eventos de streaming se escriben directamente a archivos append-only con `fsync` selectivo en eventos críticos, garantizando velocidad de escritura y lectura lineal para clientes SSE.
@@ -125,23 +125,21 @@ Gentle Mesh está diseñado para interoperar de forma nativa con interfaces grá
 ## 3. Demostración Rápida en Local (Entorno Seguro)
 
 ### Requisitos
-* Go 1.22+ o Docker / Docker Compose.
+* Go 1.26.7+ (mínimo declarado en `go.mod`) o Docker / Docker Compose.
 
 ### Ejecutar todas las pruebas con detector de carreras
 ```bash
 go test -v -race ./...
 ```
-*(Todos los paquetes cuentan con cobertura unitaria y 0 race conditions).*
+*(Los paquetes `./cmd/...` y `./pkg/...` cuentan con cobertura unitaria y el CI ejecuta `go test -race` en ellos. Algunos paquetes auxiliares (por ejemplo `pkg/server/webhook/`) no tienen tests automatizados todavía.)*
 
-### Levantar el coordinador en local (Modo Seguro HTTPS/mTLS)
+### Levantar el coordinador en local (sin TLS, desarrollo)
 ```bash
-go run ./cmd/gentle-mesh server \
-  -addr :8443 \
-  -tls-cert gentle-mesh-ca.pem \
-  -tls-key gentle-mesh-ca.key \
-  -territory-mode queue
+go run ./cmd/gentle-mesh server -addr :8080 -workspace . -territory-mode queue
 ```
-El flag `-territory-mode` acepta `queue` (por defecto), `warn`, `strict` o `disabled`; consultá el semáforo inteligente en la sección 2.2.
+El flag `-territory-mode` acepta `queue` (por defecto), `warn`, `strict` o `disabled`; consulta el semáforo inteligente en la sección 2.2.
+
+Para el camino TLS/mTLS usa `server -addr :8443 -tls -tls-init -require-mtls`. Ten en cuenta que los clientes CLI (`nodes`, `radar`, `run`, `rpc`) todavía **no** presentan certificado de cliente, así que no alcanzan un coordinador con `-require-mtls` hasta la v1.0.4.
 
 ### Levantar el clúster de prueba de 6 nodos en Docker
 El repositorio incluye una topología lista para probar en una red bridge aislada (`gentle-mesh-net`):
@@ -151,26 +149,26 @@ docker compose -f docker-compose.test.yml up -d
 
 ### Consultar los nodos registrados en la malla
 ```bash
-go run ./cmd/gentle-mesh nodes -coordinator https://localhost:8443
+go run ./cmd/gentle-mesh nodes -coordinator http://localhost:8080
 ```
 Salida esperada:
 ```text
 NODE ID         ENDPOINT                     STATUS  CONCURRENCY  AGENTS   TAGS
-worker-alpha    https://worker-alpha:8081    online  0/2          worker   go,fast
-worker-beta     https://worker-beta:8081     online  0/4          worker   heavy,docker
-worker-gamma    https://worker-gamma:8081    online  0/2          explore  research
-worker-delta    https://worker-delta:8081    online  0/1          worker   gpu,ml
-worker-epsilon  https://worker-epsilon:8081  online  0/2          verify   ci,testing
+worker-alpha    http://worker-alpha:8081     online  0/2          worker   go,fast
+worker-beta     http://worker-beta:8081      online  0/4          worker   heavy,docker
+worker-gamma    http://worker-gamma:8081     online  0/2          explore  research
+worker-delta    http://worker-delta:8081     online  0/1          worker   gpu,ml
+worker-epsilon  http://worker-epsilon:8081   online  0/2          verify   ci,testing
 ```
 
 ### Consultar el Radar de Ámbitos y Actividad en Vivo
 ```bash
-go run ./cmd/gentle-mesh radar -coordinator https://localhost:8443
+go run ./cmd/gentle-mesh radar -coordinator http://localhost:8080
 ```
 
 ### Despachar una tarea con ámbito acotado
 ```bash
-go run ./cmd/gentle-mesh run -coordinator https://localhost:8443 \
+go run ./cmd/gentle-mesh run -coordinator http://localhost:8080 \
   -task "Refactorizar validación de JWT" \
   -domain "auth" \
   -blast-radius "isolated-branch" \
@@ -189,18 +187,18 @@ Acepta los mismos flags de compatibilidad que un entrypoint local de Pi (`--mode
 4. **Salida (`stdout`):** escribe líneas JSON-RPC estándar de Pi (`message_start`, `message_update`, `tool_execution_start`, `tool_execution_end`, `agent_settled`, `message_end`), de modo que el visor no distingue que la ejecución ocurrió en un nodo remoto.
 
 ```bash
-go run ./cmd/gentle-mesh rpc -coordinator https://100.107.67.35:8443
+go run ./cmd/gentle-mesh rpc -coordinator https://<coordinator-ip>:8443
 ```
 
 Flags propios del puente: `-coordinator` (por defecto `GENTLE_MESH_COORDINATOR` o `https://localhost:8443`), `-token` (opcional; por defecto `GENTLE_MESH_TOKEN`) y `-agent` (rol despachado por cada prompt, por defecto `worker`). Los flags `--mode`, `--approve` y `--session` se aceptan e ignoran, permitiendo lanzarlo con la misma forma de argumentos que un binario Pi local. El comando `abort` cancela todos los prompts en vuelo.
 
 ---
 
-## 3.5 Seguridad TLS/mTLS
+### 3.1 Seguridad TLS/mTLS
 
 Gentle Mesh soporta cifrado de tráfico con TLS y autenticación mutua (mTLS) para garantizar que solo nodos verificados puedan unirse a la malla.
 
-### 3.5.1 PKI Centralizada
+#### 3.1.1 PKI Centralizada
 
 El coordinator actúa como **CA raíz** de la malla, emitiendo certificados para cada nodo:
 
@@ -221,7 +219,7 @@ El coordinator actúa como **CA raíz** de la malla, emitiendo certificados para
     └──────────┘       └──────────┘       └──────────┘
 ```
 
-### 3.5.2 Inicializar TLS
+#### 3.1.2 Inicializar TLS
 
 ```bash
 # Genera CA + certificado de servidor automáticamente
@@ -234,7 +232,7 @@ Archivos generados:
 - `tls/cert.pem` — Certificado del servidor
 - `tls/cert.key` — Clave del servidor
 
-### 3.5.3 Modos de Seguridad
+#### 3.1.3 Modos de Seguridad
 
 | Modo | Descripción | Uso |
 |------|------------|-----|
@@ -242,9 +240,9 @@ Archivos generados:
 | **TLS** | Cifrado de canal (servidor → cliente) | `gentle-mesh server -tls` |
 | **mTLS** | Cifrado + autenticación mutua | `gentle-mesh server -tls -require-mtls` |
 
-### 3.5.4 mTLS: Autenticación Mutua
+#### 3.1.4 mTLS: Autenticación Mutua
 
-Con `-require-mtls`, el coordinator **exige** que cada cliente presente un certificado firmado por la CA de la malla:
+Con `-require-mtls`, el coordinator **exige** un certificado de cliente verificado en las rutas protegidas. Las rutas de arranque `/healthz`, `GET /v1/mesh/ca` y `POST /v1/certs/enroll` quedan accesibles **sin** certificado para permitir el enrollment:
 
 ```bash
 # 1. Iniciar coordinator con mTLS obligatorio
@@ -264,7 +262,7 @@ gentle-mesh worker \
   -key /tmp/mesh/tls/worker-alpha.key
 ```
 
-### 3.5.5 Comandos de Gestión de Certificados
+#### 3.1.5 Comandos de Gestión de Certificados
 
 ```bash
 # Emitir certificado para un nodo
@@ -278,13 +276,16 @@ gentle-mesh cert-list -tls-dir /tmp/mesh/tls
 gentle-mesh cert-revoke -node-id worker-alpha
 ```
 
-### 3.5.6 Flags TLS/mTLS
+#### 3.1.6 Flags TLS/mTLS
 
 **Server:**
 - `-tls` — Habilitar HTTPS
 - `-tls-dir <path>` — Directorio con certificados
 - `-tls-init` — Generar nueva CA y certificados
-- `-require-mtls` — Exigir certificados de cliente
+- `-require-mtls` — Exigir certificado de cliente verificado en las rutas protegidas (requiere `-tls` y una CA)
+- `-cors-origins <lista>` — Orígenes CORS adicionales, separados por comas, que se **suman** a la allowlist por defecto (`tauri://localhost`; `http://localhost`/`http://127.0.0.1` en cualquier puerto; Tailscale `100.64.0.0/10` y `*.ts.net`)
+- `-allowed-hosts <lista>` — Nombres de host adicionales permitidos, separados por comas (necesario para nombres cortos de MagicDNS o nombres propios; por defecto se deriva de la dirección de escucha más `localhost`, `127.0.0.1` y `::1`)
+- `-insecure-no-auth` — Permite arrancar `-runner pi` en una dirección no loopback sin `-token` ni `-require-mtls` (por defecto se rechaza)
 
 **Worker/Cliente:**
 - `-ca <path>` — CA para verificar el servidor
@@ -292,16 +293,17 @@ gentle-mesh cert-revoke -node-id worker-alpha
 - `-key <path>` — Clave del certificado (mTLS)
 - `-insecure-skip-tls-verify` — Para desarrollo (NO usar en producción)
 
-### 3.5.7 Descarga Automática de CA
+#### 3.1.7 Descarga Automática de CA
 
-Si el worker no tiene CA configurada, intenta descargarla automáticamente del coordinator:
+El worker exige confiar en el CA del coordinator cuando usa HTTPS. Las opciones son: `-ca <path>` (CA local), `-ca-cert-hash sha256:<hex>` (descarga el CA de `GET /v1/mesh/ca` y verifica la huella fijada) o `-insecure-skip-tls-verify` (solo desarrollo). Sin ninguna de ellas, el worker falla:
 
 ```bash
-# Sin especificar CA - el worker descarga automáticamente del coordinator
-gentle-mesh worker -coordinator https://coordinator:8443
+# Descarga el CA desde el coordinator y lo verifica contra la huella fijada
+gentle-mesh worker -coordinator https://coordinator:8443 \
+  -ca-cert-hash sha256:<huella-del-ca>
 ```
 
-### 3.5.8 Enrollment Automático con Tokens
+#### 3.1.8 Enrollment Automático con Tokens
 
 Para entornos de producción, Gentle Mesh soporta **enrollment automático de certificados** mediante tokens de invitación. Este flujo usa **CSR (Certificate Signing Request)** para que la clave privada del nodo **nunca salga de la máquina local**.
 
@@ -313,7 +315,8 @@ Para entornos de producción, Gentle Mesh soporta **enrollment automático de ce
    → Token: xyz123... (usar 1 vez, expira en 30 días)
 
 2. Worker usa token para enroll:
-   gentle-mesh worker -join-token xyz123... -coordinator https://mesh.example.com
+   gentle-mesh worker -join-token xyz123... -coordinator https://mesh.example.com \
+     -ca-cert-hash sha256:<huella-del-ca>
 
 3. Worker genera CSR localmente (clave privada stays local)
 
@@ -362,7 +365,7 @@ El enrollment automático usa un flujo **Zero-Knowledge**:
 - ✅ Tokens auditables y revocables
 - ✅ Perfect Forward Secrecy (cada nodo tiene su propia clave)
 
-### 3.5.9 Seguridad: Viewer vs Worker
+#### 3.1.9 Seguridad: Viewer vs Worker
 
 | Función | open-pi-viewer como Viewer | open-pi-viewer como Worker |
 |---------|---------------------------|---------------------------|
@@ -372,11 +375,104 @@ El enrollment automático usa un flujo **Zero-Knowledge**:
 
 ---
 
-## 3.7 Task Priority
+### 3.2 Webhooks de Notificación
+
+Gentle Mesh soporta **webhooks** para recibir notificaciones cuando las tareas terminan, fallan o expiran. Esto elimina la necesidad de hacer polling constante.
+
+#### 3.2.1 Registrar un Webhook
+
+```bash
+# Registrar webhook para recibir notificaciones
+curl -X POST https://localhost:8443/v1/webhooks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://tu-servidor.com/webhook",
+    "secret": "tu-secret-opcional",
+    "events": ["task.completed", "task.failed", "task.timeout"]
+  }'
+```
+
+#### 3.2.2 Eventos Soportados
+
+| Evento | Descripción |
+|--------|-------------|
+| `task.completed` | Tarea completada exitosamente |
+| `task.failed` | Tarea falló por error |
+| `task.timeout` | Tarea expiró por timeout |
+| `*` | Todos los eventos |
+
+#### 3.2.3 Payload del Webhook
+
+```json
+{
+  "id": "notif-1699999999123456789",
+  "event": "task.completed",
+  "timestamp": 1699999999,
+  "task_id": "task-abc123",
+  "status": "completed",
+  "result": "Resultado de la tarea...",
+  "task": {
+    "task_id": "task-abc123",
+    "status": "completed",
+    "created_at": 1699999990,
+    "request": {
+      "agent": "worker",
+      "task": "..."
+    }
+  }
+}
+```
+
+#### 3.2.4 Firma de las entregas
+
+El servidor envía siempre las cabeceras `X-Webhook-Event` y `X-Webhook-ID`. Cuando el webhook se registró con `secret`, añade además `X-Webhook-Signature`: el HMAC-SHA256 del payload, en hexadecimal y con el prefijo `sha256=`.
+
+```
+X-Webhook-Event: task.completed
+X-Webhook-ID: notif-1699999999123456789
+X-Webhook-Signature: sha256=<hex>   # solo si se configuró "secret"
+```
+
+Cálculo de la firma, reproducible en el receptor:
+
+```python
+import hmac, hashlib
+
+def verify_signature(payload, signature, secret):
+    expected = 'sha256=' + hmac.new(
+        secret.encode(),
+        payload,
+        hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(signature, expected)
+```
+
+#### 3.2.5 Listar y Eliminar Webhooks
+
+```bash
+# Listar webhooks
+curl https://localhost:8443/v1/webhooks
+
+# Eliminar webhook
+curl -X DELETE https://localhost:8443/v1/webhooks/wh-123
+```
+
+#### 3.2.6 Casos de Uso
+
+| Uso | Ejemplo |
+|-----|---------|
+| CI/CD | Notificar cuando termina un build |
+| Slack | Enviar mensajes a un canal |
+| Logging | Archivar resultados en S3/Datadog |
+| Monitoring | Alertar si una tarea falla |
+
+---
+
+### 3.3 Task Priority
 
 Gentle Mesh soporta **prioridad de tareas** para ejecutar tareas importantes primero.
 
-### 3.7.1 Configurar Prioridad
+#### 3.3.1 Configurar Prioridad
 
 ```bash
 # Tarea de alta prioridad (se ejecuta antes)
@@ -393,7 +489,7 @@ curl -X POST https://localhost:8443/v1/tasks \
   -d '{"agent": "worker", "task": "Limpieza", "priority": -100}'
 ```
 
-### 3.7.2 Escala de Prioridad
+#### 3.3.2 Escala de Prioridad
 
 | Valor | Significado |
 |-------|-------------|
@@ -403,7 +499,7 @@ curl -X POST https://localhost:8443/v1/tasks \
 | -1 a -99 | Baja prioridad |
 | -100 | Mínimo |
 
-### 3.7.3 Con Retry
+#### 3.3.3 Con Retry
 
 Combina prioridad y retry para tareas importantes:
 
@@ -419,11 +515,11 @@ curl -d '{
 
 ---
 
-## 3.8 Checkpoint / Resume
+### 3.4 Checkpoint / Resume
 
 Gentle Mesh soporta **checkpoint y resume** para tareas largas. El worker puede guardar progreso periódico y retomarlo si falla o si se desconecta.
 
-### 3.8.1 Guardar Checkpoint
+#### 3.4.1 Guardar Checkpoint
 
 ```bash
 # Guardar checkpoint durante ejecución
@@ -438,14 +534,14 @@ curl -X POST https://localhost:8443/v1/tasks/{task_id}/checkpoint \
   }'
 ```
 
-### 3.8.2 Obtener Checkpoint
+#### 3.4.2 Obtener Checkpoint
 
 ```bash
 # Recuperar último checkpoint
 curl https://localhost:8443/v1/tasks/{task_id}/checkpoint
 ```
 
-### 3.8.3 Eventos de Checkpoint
+#### 3.4.3 Eventos de Checkpoint
 
 Los suscriptores SSE reciben eventos `checkpoint`:
 
@@ -464,7 +560,7 @@ Los suscriptores SSE reciben eventos `checkpoint`:
 }
 ```
 
-### 3.8.4 Casos de Uso
+#### 3.4.4 Casos de Uso
 
 | Escenario | Solución |
 |-----------|----------|
@@ -475,18 +571,18 @@ Los suscriptores SSE reciben eventos `checkpoint`:
 
 ---
 
-## 3.9 Rate Limiting
+### 3.5 Rate Limiting
 
 Protege el coordinator de abuse con rate limiting configurable.
 
-### 3.9.1 Configurar Rate Limit
+#### 3.5.1 Configurar Rate Limit
 
 ```bash
 # 100 requests por minuto, burst de 20
 gentle-mesh server -rate-limit 100 -rate-limit-window 1m -rate-limit-burst 20
 ```
 
-### 3.9.2 Parámetros
+#### 3.5.2 Parámetros
 
 | Flag | Default | Descripción |
 |------|---------|-------------|
@@ -494,7 +590,7 @@ gentle-mesh server -rate-limit 100 -rate-limit-window 1m -rate-limit-burst 20
 | `-rate-limit-window` | 1m | Duración de la ventana |
 | `-rate-limit-burst` | 10 | Tamaño máximo de ráfaga |
 
-### 3.9.3 Respuesta de Rate Limit
+#### 3.5.3 Respuesta de Rate Limit
 
 ```json
 {
@@ -505,11 +601,11 @@ gentle-mesh server -rate-limit 100 -rate-limit-window 1m -rate-limit-burst 20
 
 ---
 
-## 3.10 Automatic Retry
+### 3.6 Automatic Retry
 
 Gentle Mesh soporta **reintento automático** para tareas que fallan, útil para operaciones no determinísticas o redes inestables.
 
-### 3.7.1 Configurar Retry
+#### 3.6.1 Configurar Retry
 
 ```bash
 # Enviar tarea con retry automático
@@ -523,14 +619,14 @@ curl -X POST https://localhost:8443/v1/tasks \
   }'
 ```
 
-### 3.7.2 Comportamiento
+#### 3.6.2 Comportamiento
 
 | Campo | Default | Descripción |
 |-------|---------|-------------|
 | `max_retries` | 0 (sin retry) | Número máximo de reintentos |
 | `retry_delay_seconds` | 30 | Segundos entre intentos |
 
-### 3.7.3 Eventos de Retry
+#### 3.6.3 Eventos de Retry
 
 El servidor emite eventos `retry` cuando programa un reintento:
 
@@ -547,101 +643,12 @@ El servidor emite eventos `retry` cuando programa un reintento:
 }
 ```
 
-### 3.7.4 Ejemplo con gentle-mesh run
+#### 3.6.4 Ejemplo con gentle-mesh run
 
 ```bash
 # Con max_retries=3 y retry_delay=60s
 gentle-mesh run -task "mi tarea" -max-retries 3 -retry-delay 60
 ```
-
----
-
-## 3.6 Webhooks de Notificación
-
-Gentle Mesh soporta **webhooks** para recibir notificaciones cuando las tareas terminan, fallan o expiran. Esto elimina la necesidad de hacer polling constante.
-
-### 3.6.1 Registrar un Webhook
-
-```bash
-# Registrar webhook para recibir notificaciones
-curl -X POST https://localhost:8443/v1/webhooks \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url": "https://tu-servidor.com/webhook",
-    "secret": "tu-secret-opcional",
-    "events": ["task.completed", "task.failed", "task.timeout"]
-  }'
-```
-
-### 3.6.2 Eventos Soportados
-
-| Evento | Descripción |
-|--------|-------------|
-| `task.completed` | Tarea completada exitosamente |
-| `task.failed` | Tarea falló por error |
-| `task.timeout` | Tarea expiró por timeout |
-| `*` | Todos los eventos |
-
-### 3.6.3 Payload del Webhook
-
-```json
-{
-  "id": "notif-1234567890",
-  "event": "task.completed",
-  "timestamp": 1699999999,
-  "task_id": "task-abc123",
-  "status": "completed",
-  "result": "Resultado de la tarea...",
-  "task": {
-    "task_id": "task-abc123",
-    "status": "completed",
-    "agent": "worker"
-  }
-}
-```
-
-### 3.6.4 Seguridad
-
-Los webhooks incluyen firma HMAC-SHA256 para verificar autenticidad:
-
-```
-X-Webhook-Signature: sha256=<firma>
-X-Webhook-Event: task.completed
-X-Webhook-ID: notif-123
-```
-
-Para verificar la firma:
-
-```python
-import hmac, hashlib
-
-def verify_signature(payload, signature, secret):
-    expected = 'sha256=' + hmac.new(
-        secret.encode(),
-        payload,
-        hashlib.sha256
-    ).hexdigest()
-    return hmac.compare_digest(signature, expected)
-```
-
-### 3.6.5 Listar y Eliminar Webhooks
-
-```bash
-# Listar webhooks
-curl https://localhost:8443/v1/webhooks
-
-# Eliminar webhook
-curl -X DELETE https://localhost:8443/v1/webhooks/wh-123
-```
-
-### 3.6.6 Casos de Uso
-
-| Uso | Ejemplo |
-|-----|---------|
-| CI/CD | Notificar cuando termina un build |
-| Slack | Enviar mensajes a un canal |
-| Logging | Archivar resultados en S3/Datadog |
-| Monitoring | Alertar si una tarea falla |
 
 ---
 
@@ -658,7 +665,7 @@ El repositorio incluye diagramas de arquitectura interactivos y autocontenidos (
 
 * 📁 **Archivos locales autocontenidos:** En [`docs/architecture/`](docs/architecture/) se encuentran los archivos `.html` originales. Al ser 100% autónomos y sin dependencias, también pueden abrirse con doble clic directamente en local desde cualquier navegador.
 * 📄 **[RFC 001 — Remote Agent Transport & M2M Federation](docs/rfcs/001-remote-agent-transport.md):** Especificación técnica canónica y formal.
-* 🤖 **[Guía de Evaluación Externa para LLMs](docs/EVALUATION_GUIDE_FOR_LLMS.md):** Prompt y metodología estructurada para someter este código a revisión con Claude 3.5 Sonnet o GPT-4o.
+* 🤖 **[Guía de Evaluación Externa para LLMs](docs/EVALUATION_GUIDE_FOR_LLMS.md):** Prompt y metodología estructurada para someter este código a una revisión externa por parte de otro modelo o evaluador.
 * 📋 **[Convenciones del Proyecto](AGENTS.md):** Reglas operativas, competencias y filosofía de desarrollo.
 
 ---
@@ -671,12 +678,18 @@ El repositorio incluye diagramas de arquitectura interactivos y autocontenidos (
   <img width="220" src="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/brand/built-with-gentle-ai.png" alt="Built with Gentle-AI" />
 </a>
 
-<p><sub>Construido y disciplinado con <strong><a href="https://github.com/Gentleman-Programming/gentle-ai">Gentle-AI</a></strong> — Memory, Workflows & Evidence.</sub></p>
+<p><sub>Construido y disciplinado con <strong><a href="https://github.com/Gentleman-Programming/gentle-ai">Gentle-AI™</a></strong> — Memory, Workflows & Evidence.</sub></p>
 
 </div>
+
+Gentle-Mesh es una PoC/RFC comunitaria propuesta para el ecosistema: no es un proyecto oficial de Gentle AI ni cuenta con su respaldo mientras no lo apruebe Alan Buscaglia. Gentle AI™ y Engram™ son marcas de Alan Buscaglia (ver su [TRADEMARKS.md](https://github.com/Gentleman-Programming/gentle-ai/blob/main/TRADEMARKS.md)).
+
+Los cambios relevantes pasan por revisión RDD.
+
+Este repositorio se desarrolla con ayuda de agentes de IA (flujo de Gentle-AI) bajo revisión y responsabilidad humana del mantenedor.
 
 ---
 
 ## 6. Licencia
 
-Código abierto bajo licencia MIT (o la que determine la gobernanza comunitaria de Gentleman Programming).
+Código abierto bajo licencia MIT; ver [LICENSE](LICENSE). Si el proyecto se integra en la organización Gentleman-Programming, cualquier cambio de licencia se acordaría con sus mantenedores.
