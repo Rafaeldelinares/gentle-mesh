@@ -164,9 +164,9 @@ go build -o gentle-mesh ./cmd/gentle-mesh
 # Copiar el fake-pi y verificar que ./pi este disponible en el PATH
 cp docs/demo/fake-pi ./pi
 chmod +x ./pi
-PATH="$(pwd):$PATH" command -v pi | grep -q '^./pi$' \
+PATH="$(pwd):$PATH" PI_PATH=$(command -v pi) \
+  && echo "pi disponible en: $PI_PATH" \
   || { echo "ERROR: ./pi no disponible en PATH"; exit 1; }
-echo "pi disponible en: $(command -v pi)"
 
 # Ejecutar el coordinador
 ./gentle-mesh server \

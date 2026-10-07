@@ -100,7 +100,7 @@ Gentle Mesh no es la única herramienta que intenta coordinar agentes de IA sobr
 
 **Git worktrees.** La forma más directa de aislar agentes es crear un worktree de Git por tarea (por ejemplo, `git worktree add ../rama-ana ana/feature-login`). Cada worktree tiene su propio directorio de trabajo y su propio índice; así dos agentes pueden editar el mismo fichero simultáneamente sin que Git lo detecte. El conflicto aparece al integrar, no al trabajar. Varias herramientas de agentes usan esto por debajo (por ejemplo, la opción `--worktree` de Claude Code).
 
-**[CoordinationHub](https://github.com/IronAdamant/coordinationhub)** — MCP server en Python stdlib, cero dependencias de terceros. Tablón compartido con registro de agentes, bloqueos de fichero con TTL y bloqueo por región, y dashboard web. El desarrollo está pausado desde mayo de 2026 ([README de CoordinationHub](https://github.com/IronAdamant/coordinationhub): "Project Status (May 2026): Development is now paused. This will be the final major update.").
+**[CoordinationHub](https://github.com/IronAdamant/coordinationhub)** — MCP server en Python stdlib, cero dependencias de terceros. Tablón compartido con registro de agentes, bloqueos de fichero con TTL y bloqueo por región, y dashboard web. Último commit: `2026-06-11` ([commit más reciente de CoordinationHub](https://github.com/IronAdamant/coordinationhub/commits): `2026-06-11T07:21:12Z`).
 
 **[Wit](https://github.com/amaar-mc/wit)** — Bun, SQLite, protocolo JSON-RPC sobre Unix socket. Bloqueo semántico mediante tree-sitter y contratos de firma de función con git pre-commit hook. Solo máquina local.
 
