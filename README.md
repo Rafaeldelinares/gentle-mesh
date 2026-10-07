@@ -65,7 +65,7 @@
 
 ## Relación con las sesiones remotas de pi
 
-**pi** (`@earendil-works/pi-protocol` 1.0.4, `@earendil-works/pi-client` 1.0.4, `@earendil-works/pi-server` 1.0.4 y `@earendil-works/pi-coding-agent` 1.0.4) proporciona sesiones remotas de agentes. `pi-protocol` implementa un protocolo CBOR neutral al transporte (versión 8, experimental); `pi-client` es un cliente sobre un `ByteTransport`; `pi-server` es experimental y se aloja en la aplicación que lo usa. El subcomando `rpc` de gentle-mesh puentea el modo RPC de pi por stdin/stdout. Gentle Mesh no implementa el protocolo de sesiones remotas de pi-protocol.
+**pi** (`@earendil-works/pi-protocol` 1.0.4, `@earendil-works/pi-client` 1.0.4, `@earendil-works/pi-server` 1.0.4 y `@earendil-works/pi-coding-agent` 1.0.4) proporciona sesiones remotas de agentes. `pi-protocol` implementa un protocolo CBOR neutral al transporte (versión 8, experimental: el protocolo no ofrece garantías de compatibilidad; ver README de `pi-protocol`); `pi-client` es un cliente sobre un `ByteTransport`; `pi-server` es experimental (npm: "experimental server package for pi") y se aloja en la aplicación que lo usa. El subcomando `rpc` de gentle-mesh puentea el modo RPC de pi por stdin/stdout. Gentle Mesh no implementa el protocolo de sesiones remotas de pi-protocol.
 
 **Gentle Mesh** coordina varios agentes y nodos que trabajan sobre el mismo proyecto. Sus preocupaciones son:
 - **Territorios y colisiones:** evita que dos tareas toquen el mismo código a la vez y da visibilidad de quién hace qué.
@@ -100,7 +100,7 @@ Gentle Mesh no es la única herramienta que intenta coordinar agentes de IA sobr
 
 **Git worktrees.** La forma más directa de aislar agentes es crear un worktree de Git por tarea (por ejemplo, `git worktree add ../rama-ana ana/feature-login`). Cada worktree tiene su propio directorio de trabajo y su propio índice; así dos agentes pueden editar el mismo fichero simultáneamente sin que Git lo detecte. El conflicto aparece al integrar, no al trabajar. Varias herramientas de agentes usan esto por debajo (por ejemplo, la opción `--worktree` de Claude Code).
 
-**[CoordinationHub](https://github.com/IronAdamant/coordinationhub)** — MCP server en Python stdlib, cero dependencias de terceros. Tablón compartido con registro de agentes, bloqueos de fichero con TTL y bloqueo por región, y dashboard web. El desarrollo está pausado desde mayo de 2026 ([README de CoordinationHub](https://github.com/IronAdamant/coordinationhub), estado del proyecto, mayo 2026).
+**[CoordinationHub](https://github.com/IronAdamant/coordinationhub)** — MCP server en Python stdlib, cero dependencias de terceros. Tablón compartido con registro de agentes, bloqueos de fichero con TTL y bloqueo por región, y dashboard web. El desarrollo está pausado desde mayo de 2026 ([README de CoordinationHub](https://github.com/IronAdamant/coordinationhub): "Project Status (May 2026): Development is now paused. This will be the final major update.").
 
 **[Wit](https://github.com/amaar-mc/wit)** — Bun, SQLite, protocolo JSON-RPC sobre Unix socket. Bloqueo semántico mediante tree-sitter y contratos de firma de función con git pre-commit hook. Solo máquina local.
 

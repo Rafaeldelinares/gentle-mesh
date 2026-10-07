@@ -89,7 +89,7 @@ La segunda tarea devuelve `"status":"queued"`. El territorio `org/repo` con supe
 
 ## Paso 3 — Consultar el radar a los 2 segundos
 
-Se consulta 2 segundos despues de despachar la tarea 1. La tarea 1 esta en ejecucion (`started_at: 1791360731`); la tarea 2 esta en cola (`started_at: 0`).
+Se consulta el radar 2 segundos despues de despachar la tarea 2. La tarea 1 esta en ejecucion desde su creacion (`started_at: 1791360731`); la tarea 2 esta en cola (`started_at: 0`).
 
 ```bash
 sleep 2 && curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/mesh/radar
@@ -161,13 +161,15 @@ Si Docker no esta disponible, compilar y ejecutar directamente en la maquina loc
 # Compilar el binario
 go build -o gentle-mesh ./cmd/gentle-mesh
 
-# Copiar el fake-pi y verificar que este en el PATH
+# Copiar el fake-pi y verificar que ./pi este disponible en el PATH
 cp docs/demo/fake-pi ./pi
 chmod +x ./pi
-command -v pi && echo "$(command -v pi): $(sha256sum $(command -v pi) | cut -d' ' -f1)"
+PATH="$(pwd):$PATH" command -v pi | grep -q '^./pi$' \
+  || { echo "ERROR: ./pi no disponible en PATH"; exit 1; }
+echo "pi disponible en: $(command -v pi)"
 
 # Ejecutar el coordinador
-PATH="$(pwd):$PATH" ./gentle-mesh server \
+./gentle-mesh server \
   -addr localhost:8080 \
   -workspace /tmp/gm-demo \
   -territory-mode queue \
@@ -178,7 +180,7 @@ COORD_PID=$!
 # que en la seccion de contenedor, pero sin la cabecera Authorization
 ```
 
-*(La verificacion `command -v pi` confirma que `./pi` esta disponible en el PATH antes de ejecutar el coordinador.)*
+*(La verificacion con `grep -q '^./pi$'` aborta si `command -v pi` no resuelve a `./pi`. El `PATH` se prefija solo en esa verificacion; el binario se ejecuta con `./gentle-mesh` directamente.)*
 
 Con este metodo no hace falta token ni cabecera de autorizacion (escucha en localhost).
 
