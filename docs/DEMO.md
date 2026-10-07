@@ -20,7 +20,7 @@ docker build -t gentle-mesh:demo .
 #    - sin montar HOME ni el repositorio
 docker run --rm \
   -p 127.0.0.1:8080:8080 \
-  -v /home/rafael/proyectos/gentle-mesh/docs/demo/fake-pi:/usr/local/bin/pi:ro \
+  -v "$(pwd)/docs/demo/fake-pi:/usr/local/bin/pi:ro" \
   --name gm-demo \
   gentle-mesh:demo server \
     -addr :8080 \
@@ -59,7 +59,7 @@ curl -s -H "Authorization: Bearer demo123" -X POST http://localhost:8080/v1/task
     "edit_surfaces": ["pkg/auth/jwt.go"],
     "prompt": "Refactorizar validacion JWT"
   }'
-{"task_id":"task-1791358080272840626-f66c49ad","status":"running","events_url":"/v1/tasks/task-1791358080272840626-f66c49ad/events","created_at":1791358080}
+{"task_id":"task-1791360731164526224-3de60020","status":"running","events_url":"/v1/tasks/task-1791360731164526224-3de60020/events","created_at":1791360731}
 ```
 
 *(El campo `edit_surfaces` es el que detecta solapamientos. Sin el, la superficie no se registra y no hay deteccion de conflicto. El campo `git_repo` es obligatorio para que el territorio se rastree.)*
@@ -80,23 +80,26 @@ curl -s -H "Authorization: Bearer demo123" -X POST http://localhost:8080/v1/task
     "edit_surfaces": ["pkg/auth/jwt.go", "cmd/server.go"],
     "prompt": "Anadir logs al modulo auth"
   }'
-{"task_id":"task-1791358083775349725-801c632d","status":"queued","events_url":"/v1/tasks/task-1791358083775349725-801c632d/events","created_at":1791358083}
+{"task_id":"task-1791360735578759070-172c11f1","status":"queued","events_url":"/v1/tasks/task-1791360735578759070-172c11f1/events","created_at":1791360735}
 ```
 
 La segunda tarea devuelve `"status":"queued"`. El territorio `org/repo` con superficie `pkg/auth/jwt.go` ya esta ocupado por la tarea 1.
 
 ---
 
-## Paso 3 — Consultar el radar
+## Paso 3 — Consultar el radar a los 2 segundos
+
+Se consulta 2 segundos despues de despachar la tarea 1. La tarea 1 esta en ejecucion (`started_at: 1791360731`); la tarea 2 esta en cola (`started_at: 0`).
 
 ```bash
-curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/mesh/radar
-{"cluster_name":"gentle-mesh","timestamp":1791358091,"active_agents":[
-  {"task_id":"task-1791358083775349725-801c632d","repo":"org/repo","branch":"","edit_surfaces":["pkg/auth/jwt.go","cmd/server.go"],"agent":"verify","task_summary":"Anadir logs al modulo auth","node_id":"","started_at":1791358088,"blast_radius":"isolated-branch","last_activity_at":1791358088}
+sleep 2 && curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/mesh/radar
+{"cluster_name":"gentle-mesh","timestamp":1791360737,"active_agents":[
+  {"task_id":"task-1791360735578759070-172c11f1","repo":"org/repo","branch":"","edit_surfaces":["pkg/auth/jwt.go","cmd/server.go"],"agent":"verify","task_summary":"Anadir logs al modulo auth","node_id":"","started_at":0,"blast_radius":"isolated-branch","last_activity_at":1791360735},
+  {"task_id":"task-1791360731164526224-3de60020","repo":"org/repo","branch":"","edit_surfaces":["pkg/auth/jwt.go"],"agent":"worker","task_summary":"Refactorizar validacion JWT","node_id":"","started_at":1791360731,"blast_radius":"isolated-branch","last_activity_at":1791360731}
 ]}
 ```
 
-La tarea 2 muestra `started_at: 1791358088` (en curso, auto-arranque tras liberar territorio). La tarea 1 no aparece porque ya termino.
+*(El radar muestra las dos tareas: la 1 en ejecucion, la 2 en cola.)*
 
 ---
 
@@ -106,22 +109,22 @@ Despues de ~8 segundos (fake-pi duerme 8 segundos):
 
 ```bash
 curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/mesh/radar
-{"cluster_name":"gentle-mesh","timestamp":1791358108,"active_agents":[]}
+{"cluster_name":"gentle-mesh","timestamp":1791360751,"active_agents":[]}
 ```
 
 Ambas tareas han terminado. Estado final:
 
 ```bash
-# Tarea 1: completada en 8 segundos
-curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/tasks/task-1791358080272840626-f66c49ad
-{"task_id":"task-1791358080272840626-f66c49ad",...,"status":"completed","created_at":1791358080,"started_at":1791358080,"finished_at":1791358088,"completion":{"result":"Task completed","text":"Task completed"}}
+# Tarea 1: completada a los 8 segundos
+curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/tasks/task-1791360731164526224-3de60020
+{"task_id":"task-1791360731164526224-3de60020","status":"completed","created_at":1791360731,"started_at":1791360731,"finished_at":1791360739,"completion":{"result":"Task completed","text":"Task completed"}}
 
 # Tarea 2: auto-arranque a los 8s, completada a los 16s
-curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/tasks/task-1791358083775349725-801c632d
-{"task_id":"task-1791358083775349725-801c632d",...,"status":"completed","created_at":1791358083,"started_at":1791358088,"finished_at":1791358096,"completion":{"result":"Task completed","text":"Task completed"}}
+curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/tasks/task-1791360735578759070-172c11f1
+{"task_id":"task-1791360735578759070-172c11f1","status":"completed","created_at":1791360735,"started_at":1791360739,"finished_at":1791360747,"completion":{"result":"Task completed","text":"Task completed"}}
 ```
 
-La tarea 2 comenzo automaticamente cuando la 1 libero el territorio (`started_at: 1791358088 = finished_at de la tarea 1`).
+La tarea 2 comenzo automaticamente cuando la 1 libero el territorio (`started_at: 1791360739 = finished_at de la tarea 1`).
 
 ---
 
@@ -135,22 +138,47 @@ El contenedor es efimero (`--rm`); al pararlo se eliminan todos los datos del co
 
 ---
 
+## Verificacion de integridad del fake-pi
+
+El fake-pi que ejecuta el runner simulado dentro del contenedor es identico al del repositorio. Se verifica con sha256sum:
+
+```
+$ docker cp gm-demo:/usr/local/bin/pi /tmp/fake-pi.extracted
+$ sha256sum docs/demo/fake-pi /tmp/fake-pi.extracted
+4513f28959e37d1e73f044cddb209812fc5bf09b0a70102ec6411d3cb1fca97d  docs/demo/fake-pi
+4513f28959e37d1e73f044cddb209812fc5bf09b0a70102ec6411d3cb1fca97d  /tmp/fake-pi.extracted
+```
+
+*(Los hashes coinciden: el contenedor ejecuta exactamente el fake-pi del repositorio.)*
+
+---
+
 ## Metodo alternativo: ejecucion local
 
 Si Docker no esta disponible, compilar y ejecutar directamente en la maquina local. Requiere Go 1.26.7+ y que el fake-pi este en el PATH del sistema.
 
 ```bash
+# Compilar el binario
 go build -o gentle-mesh ./cmd/gentle-mesh
-cp docs/demo/fake-pi fake-pi
-chmod +x fake-pi
+
+# Copiar el fake-pi y verificar que este en el PATH
+cp docs/demo/fake-pi ./pi
+chmod +x ./pi
+command -v pi && echo "$(command -v pi): $(sha256sum $(command -v pi) | cut -d' ' -f1)"
+
+# Ejecutar el coordinador
 PATH="$(pwd):$PATH" ./gentle-mesh server \
   -addr localhost:8080 \
   -workspace /tmp/gm-demo \
   -territory-mode queue \
   -runner pi &
 COORD_PID=$!
-sleep 8
+
+# Despachar tareas desde otro terminal con los mismos comandos curl
+# que en la seccion de contenedor, pero sin la cabecera Authorization
 ```
+
+*(La verificacion `command -v pi` confirma que `./pi` esta disponible en el PATH antes de ejecutar el coordinador.)*
 
 Con este metodo no hace falta token ni cabecera de autorizacion (escucha en localhost).
 
@@ -158,13 +186,8 @@ Con este metodo no hace falta token ni cabecera de autorizacion (escucha en loca
 
 ## Tiempos observados (contenedor Docker, 2026-10-07)
 
-| Paso | Comando | Tiempo real |
-|------|---------|-------------|
-| Docker compose up | 6 contenedores, imagenes en cache | ~3 s |
-| Imagen Docker build | primera vez | ~30 s |
-| health check | `curl /healthz` con Authorization | ~0,005 s |
-| dispatch tarea | `curl -X POST /v1/tasks` | ~0,007 s |
-| fake-pi sleep | duracion del runner simulado | 8,0 s |
-| auto-arranque cola | cuando se libera el territorio | ~0,5 s |
+| Evento | Tiempo real |
+|--------|-------------|
+| fake-pi sleep | 8,0 s (dormir 8 segundos) |
 
-*(No son benchmarks; varian segun la maquina y la carga del sistema.)*
+*(Los demas tiempos del flujo (health check, dispatch, auto-arranque) varian segun la maquina y la carga del sistema y no se midieron en este entorno.)*
