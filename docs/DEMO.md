@@ -8,7 +8,7 @@ Esta demo muestra como Gentle Mesh detecta dos tareas con superficies solapadas 
 
 ## Metodo principal: contenedor Docker
 
-Compila la imagen y ejecuta en un contenedor desechable. El coordinador escucha en `0.0.0.0` dentro del contenedor; Docker publica el puerto solo en el loopback del host (`127.0.0.1:8080`). Se usa un token de demo porque `-runner pi` necesita autenticacion fuera de loopback.
+Compila la imagen y ejecuta en un contenedor desechable. El coordinador escucha en `0.0.0.0` dentro del contenedor; Docker publica el puerto solo en el loopback del host (`localhost:8080`). Se usa un token de demo porque `-runner pi` necesita autenticacion fuera de loopback.
 
 ```bash
 # 1. Compilar la imagen Docker
@@ -39,8 +39,8 @@ Gentle Mesh coordinator starting on :8080 (HTTP, tasks dir: /tmp/gentle-mesh/tas
 Verificacion:
 
 ```bash
-curl -s -H "Authorization: Bearer demo123" http://127.0.0.1:8080/healthz
-{"status":"ok","tls":"disabled","uptime_seconds":8,"version":"v1"}
+curl -s -H "Authorization: Bearer demo123" http://localhost:8080/healthz
+{"status":"ok","tls":"disabled","uptime_seconds":7,"version":"v1"}
 ```
 
 **Nota sobre el token:** el flag `-token demo123` es un valor de demo; la cabecera `Authorization: Bearer demo123` debe acompanar cada peticion. Esto es equivalente a un token de sesion real de Gentle Mesh.
@@ -50,7 +50,7 @@ curl -s -H "Authorization: Bearer demo123" http://127.0.0.1:8080/healthz
 ## Paso 1 — Despachar la primera tarea
 
 ```bash
-curl -s -H "Authorization: Bearer demo123" -X POST http://127.0.0.1:8080/v1/tasks \
+curl -s -H "Authorization: Bearer demo123" -X POST http://localhost:8080/v1/tasks \
   -H 'Content-Type: application/json' \
   -d '{
     "agent": "worker",
@@ -59,7 +59,7 @@ curl -s -H "Authorization: Bearer demo123" -X POST http://127.0.0.1:8080/v1/task
     "edit_surfaces": ["pkg/auth/jwt.go"],
     "prompt": "Refactorizar validacion JWT"
   }'
-{"task_id":"task-1791343439212133090-c91cb051","status":"running","events_url":"/v1/tasks/task-1791343439212133090-c91cb051/events","created_at":1791343439}
+{"task_id":"task-1791358080272840626-f66c49ad","status":"running","events_url":"/v1/tasks/task-1791358080272840626-f66c49ad/events","created_at":1791358080}
 ```
 
 *(El campo `edit_surfaces` es el que detecta solapamientos. Sin el, la superficie no se registra y no hay deteccion de conflicto. El campo `git_repo` es obligatorio para que el territorio se rastree.)*
@@ -71,7 +71,7 @@ curl -s -H "Authorization: Bearer demo123" -X POST http://127.0.0.1:8080/v1/task
 Desde otro terminal, inmediatamente despues:
 
 ```bash
-curl -s -H "Authorization: Bearer demo123" -X POST http://127.0.0.1:8080/v1/tasks \
+curl -s -H "Authorization: Bearer demo123" -X POST http://localhost:8080/v1/tasks \
   -H 'Content-Type: application/json' \
   -d '{
     "agent": "verify",
@@ -80,7 +80,7 @@ curl -s -H "Authorization: Bearer demo123" -X POST http://127.0.0.1:8080/v1/task
     "edit_surfaces": ["pkg/auth/jwt.go", "cmd/server.go"],
     "prompt": "Anadir logs al modulo auth"
   }'
-{"task_id":"task-1791343446192801151-28aa7a15","status":"queued","events_url":"/v1/tasks/task-1791343446192801151-28aa7a15/events","created_at":1791343446}
+{"task_id":"task-1791358083775349725-801c632d","status":"queued","events_url":"/v1/tasks/task-1791358083775349725-801c632d/events","created_at":1791358083}
 ```
 
 La segunda tarea devuelve `"status":"queued"`. El territorio `org/repo` con superficie `pkg/auth/jwt.go` ya esta ocupado por la tarea 1.
@@ -90,13 +90,13 @@ La segunda tarea devuelve `"status":"queued"`. El territorio `org/repo` con supe
 ## Paso 3 — Consultar el radar
 
 ```bash
-curl -s -H "Authorization: Bearer demo123" http://127.0.0.1:8080/v1/mesh/radar
-{"cluster_name":"gentle-mesh","timestamp":1791343449,"active_agents":[
-  {"task_id":"task-1791343446192801151-28aa7a15","repo":"org/repo","branch":"","edit_surfaces":["pkg/auth/jwt.go","cmd/server.go"],"agent":"verify","task_summary":"Anadir logs al modulo auth","node_id":"","started_at":1791343447,"blast_radius":"isolated-branch","last_activity_at":1791343447}
+curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/mesh/radar
+{"cluster_name":"gentle-mesh","timestamp":1791358091,"active_agents":[
+  {"task_id":"task-1791358083775349725-801c632d","repo":"org/repo","branch":"","edit_surfaces":["pkg/auth/jwt.go","cmd/server.go"],"agent":"verify","task_summary":"Anadir logs al modulo auth","node_id":"","started_at":1791358088,"blast_radius":"isolated-branch","last_activity_at":1791358088}
 ]}
 ```
 
-La tarea 2 muestra `started_at: 1791343447` (en curso, auto-arranque tras liberar territorio). La tarea 1 no aparece porque ya termino.
+La tarea 2 muestra `started_at: 1791358088` (en curso, auto-arranque tras liberar territorio). La tarea 1 no aparece porque ya termino.
 
 ---
 
@@ -105,23 +105,23 @@ La tarea 2 muestra `started_at: 1791343447` (en curso, auto-arranque tras libera
 Despues de ~8 segundos (fake-pi duerme 8 segundos):
 
 ```bash
-curl -s -H "Authorization: Bearer demo123" http://127.0.0.1:8080/v1/mesh/radar
-{"cluster_name":"gentle-mesh","timestamp":1791343470,"active_agents":[]}
+curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/mesh/radar
+{"cluster_name":"gentle-mesh","timestamp":1791358108,"active_agents":[]}
 ```
 
 Ambas tareas han terminado. Estado final:
 
 ```bash
 # Tarea 1: completada en 8 segundos
-curl -s -H "Authorization: Bearer demo123" http://127.0.0.1:8080/v1/tasks/task-1791343439212133090-c91cb051
-{"task_id":"task-1791343439212133090-c91cb051",...,"status":"completed","created_at":1791343439,"started_at":1791343439,"finished_at":1791343447,"completion":{"result":"Task completed","text":"Task completed"}}
+curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/tasks/task-1791358080272840626-f66c49ad
+{"task_id":"task-1791358080272840626-f66c49ad",...,"status":"completed","created_at":1791358080,"started_at":1791358080,"finished_at":1791358088,"completion":{"result":"Task completed","text":"Task completed"}}
 
 # Tarea 2: auto-arranque a los 8s, completada a los 16s
-curl -s -H "Authorization: Bearer demo123" http://127.0.0.1:8080/v1/tasks/task-1791343446192801151-28aa7a15
-{"task_id":"task-1791343446192801151-28aa7a15",...,"status":"completed","created_at":1791343446,"started_at":1791343447,"finished_at":1791343455,"completion":{"result":"Task completed","text":"Task completed"}}
+curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/tasks/task-1791358083775349725-801c632d
+{"task_id":"task-1791358083775349725-801c632d",...,"status":"completed","created_at":1791358083,"started_at":1791358088,"finished_at":1791358096,"completion":{"result":"Task completed","text":"Task completed"}}
 ```
 
-La tarea 2 comenzo automaticamente cuando la 1 libero el territorio (`started_at: 1791343447 = finished_at de la tarea 1`).
+La tarea 2 comenzo automaticamente cuando la 1 libero el territorio (`started_at: 1791358088 = finished_at de la tarea 1`).
 
 ---
 
