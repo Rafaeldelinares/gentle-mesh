@@ -13,7 +13,7 @@ go build -o gentle-mesh ./cmd/gentle-mesh
 cp docs/demo/fake-pi fake-pi
 chmod +x fake-pi
 PATH="$(pwd):$PATH" ./gentle-mesh server \
-  -addr 127.0.0.1:8080 \
+  -addr localhost:8080 \
   -workspace /tmp/gm-demo \
   -territory-mode queue \
   -runner pi &
@@ -24,13 +24,13 @@ sleep 8
 Salida real (directorio limpio, 2026-10-07, binario compilado):
 
 ```
-Gentle Mesh coordinator starting on 127.0.0.1:8080 (HTTP, tasks dir: /tmp/gm-demo/tasks, territory mode: queue, runner: pi)
+Gentle Mesh coordinator starting on localhost:8080 (HTTP, tasks dir: /tmp/gm-demo/tasks, territory mode: queue, runner: pi)
 ```
 
 Verificacion:
 
 ```bash
-curl -s http://127.0.0.1:8080/healthz
+curl -s http://localhost:8080/healthz
 {"status":"ok","tls":"disabled","uptime_seconds":8,"version":"v1"}
 ```
 
@@ -41,7 +41,7 @@ curl -s http://127.0.0.1:8080/healthz
 ## Paso 2 — Despachar la primera tarea
 
 ```bash
-curl -s -X POST http://127.0.0.1:8080/v1/tasks \
+curl -s -X POST http://localhost:8080/v1/tasks \
   -H 'Content-Type: application/json' \
   -d '{
     "agent": "worker",
@@ -62,7 +62,7 @@ curl -s -X POST http://127.0.0.1:8080/v1/tasks \
 Desde otro terminal, inmediatamente despues:
 
 ```bash
-curl -s -X POST http://127.0.0.1:8080/v1/tasks \
+curl -s -X POST http://localhost:8080/v1/tasks \
   -H 'Content-Type: application/json' \
   -d '{
     "agent": "verify",
@@ -81,7 +81,7 @@ La segunda tarea devuelve `"status":"queued"`. El territorio `org/repo` con supe
 ## Paso 4 — Consultar el radar
 
 ```bash
-curl -s http://127.0.0.1:8080/v1/mesh/radar
+curl -s http://localhost:8080/v1/mesh/radar
 {"cluster_name":"gentle-mesh","timestamp":1791326518,"active_agents":[
   {"task_id":"task-1791326515015032188-575d2e08","repo":"org/repo","branch":"","edit_surfaces":["pkg/auth/jwt.go","cmd/server.go"],"agent":"verify","task_summary":"Anadir logs al modulo auth","node_id":"","started_at":0,"blast_radius":"isolated-branch","last_activity_at":1791326515},
   {"task_id":"task-1791326511373523502-af3488dc","repo":"org/repo","branch":"","edit_surfaces":["pkg/auth/jwt.go"],"agent":"worker","task_summary":"Refactorizar validacion JWT","node_id":"","started_at":1791326511,"blast_radius":"isolated-branch","last_activity_at":1791326511}
@@ -97,7 +97,7 @@ La tarea 1 muestra `started_at: 1791326511` (en curso). La tarea 2 muestra `star
 Despues de ~8 segundos (fake-pi duerme 8 segundos):
 
 ```bash
-curl -s http://127.0.0.1:8080/v1/mesh/radar
+curl -s http://localhost:8080/v1/mesh/radar
 {"cluster_name":"gentle-mesh","timestamp":1791326524,"active_agents":[
   {"task_id":"task-1791326515015032188-575d2e08","repo":"org/repo","branch":"","edit_surfaces":["pkg/auth/jwt.go","cmd/server.go"],"agent":"verify","task_summary":"Anadir logs al modulo auth","node_id":"","started_at":1791326519,"blast_radius":"isolated-branch","last_activity_at":1791326519}
 ]}
@@ -109,11 +109,11 @@ Estado final de ambas tareas:
 
 ```bash
 # Tarea 1
-curl -s http://127.0.0.1:8080/v1/tasks/task-1791326511373523502-af3488dc
+curl -s http://localhost:8080/v1/tasks/task-1791326511373523502-af3488dc
 {"task_id":"task-1791326511373523502-af3488dc",...,"status":"completed","created_at":1791326511,"started_at":1791326511,"finished_at":1791326519,"completion":{"result":"Task completed","text":"Task completed"}}
 
 # Tarea 2
-curl -s http://127.0.0.1:8080/v1/tasks/task-1791326515015032188-575d2e08
+curl -s http://localhost:8080/v1/tasks/task-1791326515015032188-575d2e08
 {"task_id":"task-1791326515015032188-575d2e08",...,"status":"completed","created_at":1791326515,"started_at":1791326519,"finished_at":1791326527,"completion":{"result":"Task completed","text":"Task completed"}}
 ```
 
