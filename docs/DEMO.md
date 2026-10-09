@@ -180,7 +180,7 @@ COORD_PID=$!
 # que en la seccion de contenedor, pero sin la cabecera Authorization
 ```
 
-*(La verificacion con `grep -q '^./pi$'` aborta si `command -v pi` no resuelve a `./pi`. El `PATH` se prefija solo en esa verificacion; el binario se ejecuta con `./gentle-mesh` directamente.)*
+*(La verificacion con `PI_PATH=$(command -v pi)` falla con `exit 1` si `pi` no esta disponible en el PATH con el directorio del repo prefijado; el binario se ejecuta con `./gentle-mesh` directamente.)*
 
 Con este metodo no hace falta token ni cabecera de autorizacion (escucha en localhost).
 
