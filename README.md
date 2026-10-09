@@ -62,6 +62,7 @@
 **Sobre RFC-002:** el protocolo de recibos firmados es experimental, no está integrado en el binario y ningún nodo cumple hoy el perfil mínimo conforme (solo 2 de los 12 requisitos están demostrados por tests automatizados). Ver el estado de conformidad en la rama `feat/rfc-002-settlement` y en el issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70).
 
 **Roadmap completo y lo que no haremos:** [ROADMAP.md](ROADMAP.md).
+
 **Proceso de revisión y excepción documentada:** [PROCESO-REVISION.md](docs/PROCESO-REVISION.md).
 
 ---
