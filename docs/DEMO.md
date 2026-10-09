@@ -2,7 +2,7 @@
 
 Esta demo muestra como Gentle Mesh detecta dos tareas con superficies solapadas y deja la segunda en cola hasta que la primera libera el territorio. No se ejecuta ningun agente de IA real.
 
-**Requisitos:** Docker, Go 1.26.7+ (solo para compilar si se usa el metodo local).
+**Requisitos:** Docker, Go 1.26.9+ (solo para compilar si se usa el metodo local).
 
 ---
 
@@ -155,18 +155,19 @@ $ sha256sum docs/demo/fake-pi /tmp/fake-pi.extracted
 
 ## Metodo alternativo: ejecucion local
 
-Si Docker no esta disponible, compilar y ejecutar directamente en la maquina local. Requiere Go 1.26.7+ y que el fake-pi este en el PATH del sistema.
+Si Docker no esta disponible, compilar y ejecutar directamente en la maquina local. Requiere Go 1.26.9+ y que el fake-pi este en el PATH del sistema.
 
 ```bash
 # Compilar el binario
 go build -o gentle-mesh ./cmd/gentle-mesh
 
-# Copiar el fake-pi y verificar que ./pi este disponible en el PATH
+# Copiar el fake-pi y verificar que ./pi sea exactamente el que resuelve
 cp docs/demo/fake-pi ./pi
 chmod +x ./pi
-PATH="$(pwd):$PATH" PI_PATH=$(command -v pi) \
-  && echo "pi disponible en: $PI_PATH" \
-  || { echo "ERROR: ./pi no disponible en PATH"; exit 1; }
+export PATH="$(pwd):$PATH"
+[ "$(command -v pi)" = "$(pwd)/pi" ] \
+  || { echo "ERROR: ./pi no resuelve a $(pwd)/pi (resolvió a $(command -v pi 2>/dev/null || echo ninguno))"; exit 1; }
+echo "pi disponible en: $(command -v pi)"
 
 # Ejecutar el coordinador
 ./gentle-mesh server \
@@ -180,7 +181,7 @@ COORD_PID=$!
 # que en la seccion de contenedor, pero sin la cabecera Authorization
 ```
 
-*(La verificacion con `PI_PATH=$(command -v pi)` falla con `exit 1` si `pi` no esta disponible en el PATH con el directorio del repo prefijado; el binario se ejecuta con `./gentle-mesh` directamente.)*
+*(La verificacion `[ "$(command -v pi)" = "$(pwd)/pi" ]` falla con `exit 1` si `command -v pi` no resuelve a `$(pwd)/pi` despues de prefijar el PATH; el binario se ejecuta con `./gentle-mesh` directamente.)*
 
 Con este metodo no hace falta token ni cabecera de autorizacion (escucha en localhost).
 
