@@ -17,7 +17,6 @@ Estado: planificado. Alcance previsto:
 - Tests de enrollment de extremo a extremo.
 - Tests de webhooks.
 
-Fuentes: README.md sección "Estado y hoja de ruta".
 
 ### RFC-002 v2 Fase 2 — Liquidación entre agentes
 
@@ -41,9 +40,8 @@ Estado: planificado. Alcance previsto:
 Esta lista es deliberada. Se publica para que la comunidad pueda expresar disconformidad antes de que se asuma lo contrario.
 
 - **No haremos de Gentle Mesh un orquestador de sesiones remotas de pi.** El proyecto resuelve territorios, reparto de tareas y seguridad de malla. Las sesiones remotas de pi (`@earendil-works/pi-protocol`, `@earendil-works/pi-client`, `@earendil-works/pi-server`, `@earendil-works/pi-coding-agent`) son una pieza distinta; la integración es posible pero no es una línea actual de trabajo.
-- **No cerraremos el ciclo de vida de tareas en el coordinador.** El corredor entrega tareas a un nodo y pierde el control del proceso. Los nodos deciden cuándo terminan. El coordinador no aborta tareas remotas.
 - **No añadiremos parseo de AST ni análisis estático del código del proyecto para detectar colisiones.** El coordinador solo conoce lo que cada tarea declara como superficie. Los bloqueos se basan en lo declarado, no en lo inferido.
-- **No prometeremos compatibilidad binaria entre releases** hasta que el alcance del proyecto sea estable. La política actual sigue el patrón del repositorio.
+- **No prometeremos compatibilidad binaria entre releases** hasta que el alcance del proyecto sea estable.
 - **No ofreceremos SLA, soporte pagado ni garantías de tiempo de respuesta** para issues. El canal es la comunidad.
 
 ---
