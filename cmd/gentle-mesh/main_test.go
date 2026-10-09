@@ -1590,3 +1590,65 @@ func TestCLI_CertRevoke_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestResolveDBPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		dbPath   string
+		tasksDir string
+		want     string
+	}{
+		{
+			name:     "empty value defaults to tasks-dir/gentle-mesh.db",
+			dbPath:   "",
+			tasksDir: filepath.Join("tmp", "mesh-tasks"),
+			want:     filepath.Join("tmp", "mesh-tasks", "gentle-mesh.db"),
+		},
+		{
+			name:     "explicit path wins",
+			dbPath:   filepath.Join("var", "lib", "mesh", "custom.db"),
+			tasksDir: filepath.Join("tmp", "mesh-tasks"),
+			want:     filepath.Join("var", "lib", "mesh", "custom.db"),
+		},
+		{
+			name:     "none disables persistence",
+			dbPath:   "none",
+			tasksDir: filepath.Join("tmp", "mesh-tasks"),
+			want:     "none",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveDBPath(tc.dbPath, tc.tasksDir); got != tc.want {
+				t.Fatalf("resolveDBPath(%q, %q) = %q, want %q", tc.dbPath, tc.tasksDir, got, tc.want)
+			}
+		})
+	}
+}
+
+// The enrollment token store and the webhooks need the SQLite database, so
+// -tls combined with -db-path none must fail loudly instead of starting a
+// coordinator whose token store points at a private temporary database.
+func TestServer_TLSRejectsNoPersistence(t *testing.T) {
+	tasksDir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	err := runCLI(context.Background(), []string{
+		"server",
+		"-addr", "127.0.0.1:0",
+		"-tasks-dir", tasksDir,
+		"-db-path", "none",
+		"-tls",
+		"-tls-dir", filepath.Join(tasksDir, "tls"),
+	}, &stdout, &stderr)
+
+	if err == nil {
+		t.Fatal("expected an error when -tls is combined with -db-path none")
+	}
+	if !strings.Contains(err.Error(), "-db-path") {
+		t.Fatalf("error must mention -db-path, got: %v", err)
+	}
+	if strings.Contains(stdout.String(), "coordinator starting") {
+		t.Fatalf("server must not start with -tls and -db-path none; stdout: %s", stdout.String())
+	}
+}
