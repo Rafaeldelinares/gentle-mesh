@@ -68,7 +68,7 @@ curl -s -H "Authorization: Bearer demo123" -X POST http://localhost:8080/v1/task
 
 ## Paso 2 — Despachar segunda tarea con superficie solapada
 
-*(Ejecutar los comandos `curl` de este paso y los siguientes desde un terminal del host, no desde dentro del contenedor.)* Desde otro terminal del host, inmediatamente despues:
+*(Los comandos `curl` de este paso y los siguientes se ejecutan desde otro terminal del host, no desde dentro del contenedor.)* Inmediatamente despues:
 
 ```bash
 curl -s -H "Authorization: Bearer demo123" -X POST http://localhost:8080/v1/tasks \
@@ -105,14 +105,14 @@ sleep 2 && curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/m
 
 ## Paso 4 — Esperar a que terminen las dos tareas
 
-La primera tarea tarda exactamente 8 segundos (fake-pi duerme 8 segundos). La segunda arranca cuando la primera libera el territorio y tarda otros 8 segundos. Al cabo de ~16 segundos desde la consulta del paso 3 ambas han terminado. Esperar y consultar el radar desde otro terminal:
+Espera unos 16 segundos y consulta el radar desde otro terminal:
 
 ```bash
 sleep 16 && curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/mesh/radar
 {"cluster_name":"gentle-mesh","timestamp":1791360751,"active_agents":[]}
 ```
 
-(El `sleep 16` parte de la consulta del paso 3: el radar pasa a vacío en `timestamp:1791360751`, 14 segundos despues del radar del paso 3 en `1791360737`.) Estado final:
+Estado final:
 
 ```bash
 # Tarea 1: completada a los 8 segundos
@@ -156,7 +156,7 @@ El contenedor es efimero (`--rm`); al pararlo se eliminan todos los datos del co
 
 ## Metodo alternativo: ejecucion local
 
-Si Docker no esta disponible, compilar y ejecutar directamente en un directorio temporal, sin tocar el repositorio. Requiere Go 1.26.9+. Ejecutar todos los comandos desde la raíz del repositorio.
+Si Docker no esta disponible, compilar y ejecutar directamente en un directorio temporal, sin tocar el repositorio. Requiere Go 1.26.9+. Ejecutar todos los comandos desde la raiz del repositorio.
 
 ```bash
 WORK=$(mktemp -d)
