@@ -103,16 +103,16 @@ sleep 2 && curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/m
 
 ---
 
-## Paso 4 — Esperar a que termine la primera tarea
+## Paso 4 — Esperar a que terminen las dos tareas
 
-La primera tarea tarda exactamente 8 segundos (fake-pi duerme 8 segundos). Esperar a que termine y consultar el radar desde otro terminal:
+La primera tarea tarda exactamente 8 segundos (fake-pi duerme 8 segundos). La segunda arranca cuando la primera libera el territorio y tarda otros 8 segundos. Al cabo de ~16 segundos desde la consulta del paso 3 ambas han terminado. Esperar y consultar el radar desde otro terminal:
 
 ```bash
-sleep 6 && curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/mesh/radar
+sleep 16 && curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/mesh/radar
 {"cluster_name":"gentle-mesh","timestamp":1791360751,"active_agents":[]}
 ```
 
-(La tarea 2 tarda otros 8 segundos; al cabo de ~16 segundos desde el primer dispatch ambas han terminado.) Estado final:
+(El `sleep 16` parte de la consulta del paso 3: el radar pasa a vacío en `timestamp:1791360751`, 14 segundos despues del radar del paso 3 en `1791360737`.) Estado final:
 
 ```bash
 # Tarea 1: completada a los 8 segundos
@@ -156,42 +156,33 @@ El contenedor es efimero (`--rm`); al pararlo se eliminan todos los datos del co
 
 ## Metodo alternativo: ejecucion local
 
-Si Docker no esta disponible, compilar y ejecutar directamente en un directorio temporal, sin tocar el repositorio. Requiere Go 1.26.9+.
+Si Docker no esta disponible, compilar y ejecutar directamente en un directorio temporal, sin tocar el repositorio. Requiere Go 1.26.9+. Ejecutar todos los comandos desde la raíz del repositorio.
 
 ```bash
-# Crear un directorio temporal y compilar el binario ahi
-TMPDIR=$(mktemp -d)
-go build -o "$TMPDIR/gentle-mesh" /ruta/al/repo/cmd/gentle-mesh
+WORK=$(mktemp -d)
+go build -o "$WORK/gentle-mesh" ./cmd/gentle-mesh
+cp docs/demo/fake-pi "$WORK/pi"
+chmod +x "$WORK/pi"
 
-# Copiar el fake-pi a ese directorio
-cp /ruta/al/repo/docs/demo/fake-pi "$TMPDIR/pi"
-chmod +x "$TMPDIR/pi"
+# Comprobacion: $WORK/pi debe ser exactamente el que resuelve con PATH prefijado.
+# El servidor solo arranca si la comprobacion pasa.
+RESOLVED=$(PATH="$WORK:$PATH" command -v pi)
+if [ "$RESOLVED" = "$WORK/pi" ]; then
+  PATH="$WORK:$PATH" "$WORK/gentle-mesh" server -addr localhost:8080 -workspace "$WORK/ws" -territory-mode queue -runner pi &
+  COORD_PID=$!
+  echo "coordinador PID: $COORD_PID"
+  echo "endpoint: http://localhost:8080"
+else
+  echo "ERROR: pi no resuelve a $WORK/pi (resolvio a $RESOLVED)"
+fi
 
-# Verificar que $TMPDIR/pi es exactamente el que resuelve; PATH modificado solo dentro del subshell
-(
-  export PATH="$TMPDIR:$PATH"
-  [ "$(command -v pi)" = "$TMPDIR/pi" ] \
-    || { echo "ERROR: pi no resuelve a $TMPDIR/pi (resolvio a $(command -v pi 2>/dev/null || echo ninguno))"; return 1 2>/dev/null || exit 1; }
-  echo "pi disponible en: $(command -v pi)"
-)
-
-# Ejecutar el coordinador
-"$TMPDIR/gentle-mesh" server \
-  -addr localhost:8080 \
-  -workspace "$TMPDIR/ws" \
-  -territory-mode queue \
-  -runner pi &
-COORD_PID=$!
-
-# Despachar tareas desde otro terminal del host con los mismos comandos curl
+# Despachar tareas desde otro terminal con los mismos comandos curl
 # que en la seccion de contenedor, pero sin la cabecera Authorization
 
-# Al terminar: rm -rf "$TMPDIR" && kill $COORD_PID
+# Al terminar: kill $COORD_PID; rm -rf "$WORK"
 ```
 
-*(La verificacion `[ "$(command -v pi)" = "$TMPDIR/pi" ]` falla si `command -v pi` no resuelve a `$TMPDIR/pi` despues de prefijar el PATH. La subshell con `return 1` evita cerrar la terminal del usuario en caso de error de `set -e`; `exit 1` se usa si el script se ejecuta con `bash -e`. El PATH no se modifica fuera del subshell.)*
-
-Con este metodo no hace falta token ni cabecera de autorizacion (escucha en localhost). El repositorio queda intacto: ni `./pi` ni `./gentle-mesh` se crean dentro del repo.
+Con este metodo no hace falta token ni cabecera de autorizacion (escucha en localhost). El repositorio queda intacto: ni `./pi` ni `./gentle-mesh` se crean dentro del repo. La variable PATH no se modifica fuera del comando que la establece (prefijo de cada linea).
 
 ---
 
