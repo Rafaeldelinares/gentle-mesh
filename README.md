@@ -63,7 +63,7 @@ Hoy en día, el uso de agentes de IA es aislado y solitario: un desarrollador co
 
 ## 2. Pila Tecnológica y Arquitectura
 
-* **Lenguaje:** Go 1.26.7+ estándar (`net/http`, `encoding/json`, `sync`, `context`, `database/sql`). Cero frameworks web externos ni librerías de C.
+* **Lenguaje:** Go 1.26.9+ estándar (`net/http`, `encoding/json`, `sync`, `context`, `database/sql`). Cero frameworks web externos ni librerías de C.
 * **Transporte:** HTTPS REST + Server-Sent Events (HTTPS/SSE) para streaming continuo y seguro de pensamientos (`thought`), llamadas a herramientas (`tool_call`) y resultados, con cifrado de transporte TLS; la autenticación mutua (mTLS) solo se exige con `-require-mtls`.
 * **Persistencia Dual y Resiliencia ante Caídas (Crash Recovery):**
   * **Streaming de Eventos:** Append-only logs en formato **JSONL** (`<tasks-dir>/{id}.jsonl`). Permite reconexión histórica instantánea vía el header estándar `Last-Event-ID` con consumo de RAM constante $O(1)$.
@@ -145,7 +145,7 @@ Gentle Mesh está diseñado para interoperar de forma nativa con interfaces grá
 ## 3. Demostración Rápida en Local (Entorno Seguro)
 
 ### Requisitos
-* Go 1.26.7+ (mínimo declarado en `go.mod`) o Docker / Docker Compose.
+* Go 1.26.9+ (mínimo declarado en `go.mod`) o Docker / Docker Compose.
 
 ### Ejecutar todas las pruebas con detector de carreras
 ```bash
