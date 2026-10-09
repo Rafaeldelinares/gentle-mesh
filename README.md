@@ -65,7 +65,7 @@
 
 ## Relación con las sesiones remotas de pi
 
-**pi** (`@earendil-works/pi-protocol` 1.0.4, `@earendil-works/pi-client` 1.0.4, `@earendil-works/pi-server` 1.0.4 y `@earendil-works/pi-coding-agent` 1.0.4) proporciona sesiones remotas de agentes. `pi-protocol` implementa un protocolo con codificación CBOR y byte-stream framing sobre el protocolo Pi experimental (versión 8: el protocolo no ofrece garantías de compatibilidad; ver README de `pi-protocol`); `pi-client` es un cliente que trabaja sobre cualquier transporte de bytes ordenado mediante la interfaz `ByteTransport` (`dist/transport.d.ts`: `export interface ByteTransport`; npm: "Transport-neutral client for the experimental Pi service protocol"); `pi-server` es experimental (npm: "experimental server package for pi") y se aloja en la aplicación que lo usa. El subcomando `rpc` de gentle-mesh puentea el modo RPC de pi por stdin/stdout. Gentle Mesh no implementa el protocolo de sesiones remotas de pi-protocol.
+**pi** (`@earendil-works/pi-protocol` 1.0.4, `@earendil-works/pi-client` 1.0.4, `@earendil-works/pi-server` 1.0.4 y `@earendil-works/pi-coding-agent` 1.0.4) proporciona sesiones remotas de agentes. `pi-protocol` implementa un protocolo con codificación CBOR y byte-stream framing sobre el protocolo Pi experimental (versión 8: "The protocol is experimental and has no compatibility guarantees" (README de `pi-protocol`)); `pi-client` es un cliente que trabaja sobre cualquier transporte de bytes ordenado mediante la interfaz `ByteTransport` (`dist/transport.d.ts`: `export interface ByteTransport`; npm: "Transport-neutral client for the experimental Pi service protocol"); `pi-server` es experimental (npm: "experimental server package for pi") y se aloja en la aplicación que lo usa. El subcomando `rpc` de gentle-mesh puentea el modo RPC de pi por stdin/stdout. Gentle Mesh no implementa el protocolo de sesiones remotas de pi-protocol.
 
 **Gentle Mesh** coordina varios agentes y nodos que trabajan sobre el mismo proyecto. Sus preocupaciones son:
 - **Territorios y colisiones:** evita que dos tareas toquen el mismo código a la vez y da visibilidad de quién hace qué.
@@ -98,9 +98,9 @@ Gentle Mesh no es la única herramienta que intenta coordinar agentes de IA sobr
 
 ### Lo que ya existe
 
-**Git worktrees.** La forma más directa de aislar agentes es crear un worktree de Git por tarea (por ejemplo, `git worktree add ../rama-ana ana/feature-login`). Cada worktree tiene su propio directorio de trabajo y su propio índice; así dos agentes pueden editar el mismo fichero simultáneamente sin que Git lo detecte. El conflicto aparece al integrar, no al trabajar. Varias herramientas de agentes usan esto por debajo (por ejemplo, la opción `--worktree` de Claude Code).
+**Git worktrees.** La forma más directa de aislar agentes es crear un worktree de Git por tarea (por ejemplo, `git worktree add ../rama-ana ana/feature-login`). Cada worktree tiene su propio directorio de trabajo y su propio índice; así dos agentes pueden editar el mismo fichero simultáneamente sin que Git lo detecte. El conflicto aparece al integrar, no al trabajar. Varias herramientas de agentes usan esto por debajo .
 
-**[CoordinationHub](https://github.com/IronAdamant/coordinationhub)** — MCP server en Python stdlib, cero dependencias de terceros. Tablón compartido con registro de agentes, bloqueos de fichero con TTL y bloqueo por región, y dashboard web. Último commit: `2026-06-11` ([commit más reciente de CoordinationHub](https://github.com/IronAdamant/coordinationhub/commits): `2026-06-11T07:21:12Z`).
+**[CoordinationHub](https://github.com/IronAdamant/coordinationhub)** — MCP server en Python stdlib, cero dependencias de terceros. Tablón compartido con registro de agentes, bloqueos de fichero con TTL y bloqueo por región, y dashboard web. Último commit: `2026-06-11` ([último commit de CoordinationHub](https://github.com/IronAdamant/coordinationhub/commits): `2026-06-11T07:21:12Z`).
 
 **[Wit](https://github.com/amaar-mc/wit)** — Bun, SQLite, protocolo JSON-RPC sobre Unix socket. Bloqueo semántico mediante tree-sitter y contratos de firma de función con git pre-commit hook. Solo máquina local.
 
@@ -115,7 +115,7 @@ Gentle Mesh no es la única herramienta que intenta coordinar agentes de IA sobr
 Gentle Mesh se distingue en tres puntos verificables en el código:
 
 - **El coordinador despacha las tareas** (`pkg/server/http/handlers.go`, `pkg/server/registry/`): el agente no necesita consultar una herramienta ni consultar un tablón por su cuenta; el coordinador recibe la tarea y la entrega al nodo más apropiado. La cola con auto-arranque (`queue` mode, `pkg/server/http/scheduler.go`) garantiza que una tarea que no puede ejecutarse ahora espera y arranca sola cuando se libera el territorio.
-- **Nodos remotos con mTLS.** Los nodos se unen a la malla con certificados emitidos por la CA del coordinador (`pkg/server/store/certstore.go`, `pkg/server/http/handlers.go`). Ninguna de las alternativas listadas ofrece autenticación mutua de certificados entre máquinas remotas de serie.
+- **Nodos remotos con mTLS.** Los nodos se unen a la malla con certificados emitidos por la CA del coordinador (`pkg/server/store/certstore.go`, `pkg/server/http/handlers.go`). Las alternativas listadas no declaran autenticación mutua de certificados entre nodos remotos de serie en sus documentaciones (ver los repos respectivos).
 - **Límites de lo que Gentle Mesh declara:** el coordinador solo conoce lo que cada tarea declara como superficie; no lee el código (`pkg/protocol/`, `pkg/server/http/scheduler.go`). Los bloqueos se basan en lo declarado, no en análisis estático ni en parseo de AST.
 
 Los worktrees aíslan los ficheros pero el conflicto aparece al integrar; Gentle Mesh intenta evitar que dos agentes trabajen la misma zona a la vez y dar visibilidad de quién hace qué. Son enfoques distintos y no se ha verificado que se combinen sin conflicto.
@@ -220,7 +220,6 @@ go test -v -race ./...
 ```bash
 go run ./cmd/gentle-mesh server -addr :8080 -workspace . -territory-mode queue
 ```
-*(Con `go run` tarda ~5-8 segundos la primera vez por la compilación; un binario compilado arranca en ~0,5 segundos. No es un benchmark.)*
 El flag `-territory-mode` acepta `queue` (por defecto), `warn`, `strict` o `disabled`; consulta el semáforo inteligente en la sección 2.2.
 
 Para el camino TLS/mTLS usa `server -addr :8443 -tls -tls-init -require-mtls`. Ten en cuenta que los clientes CLI (`nodes`, `radar`, `run`, `rpc`) todavía **no** presentan certificado de cliente, así que no alcanzan un coordinador con `-require-mtls` hasta la v1.0.4.
@@ -230,7 +229,6 @@ El repositorio incluye una topología lista para probar en una red bridge aislad
 ```bash
 docker compose -f docker-compose.test.yml up -d
 ```
-*(~3 segundos en una máquina de desarrollo si las imágenes ya están descargadas. No es un benchmark.)*
 
 ### Consultar los nodos registrados en la malla
 ```bash

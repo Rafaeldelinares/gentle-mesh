@@ -43,7 +43,7 @@ curl -s -H "Authorization: Bearer demo123" http://localhost:8080/healthz
 {"status":"ok","tls":"disabled","uptime_seconds":7,"version":"v1"}
 ```
 
-**Nota sobre el token:** el flag `-token demo123` es un valor de demo; la cabecera `Authorization: Bearer demo123` debe acompanar cada peticion. Esto es equivalente a un token de sesion real de Gentle Mesh.
+**Nota sobre el token:** el flag `-token demo123` es un valor de demo; la cabecera `Authorization: Bearer demo123` debe acompanar cada peticion.
 
 ---
 
@@ -68,7 +68,7 @@ curl -s -H "Authorization: Bearer demo123" -X POST http://localhost:8080/v1/task
 
 ## Paso 2 — Despachar segunda tarea con superficie solapada
 
-Desde otro terminal, inmediatamente despues:
+*(Ejecutar los comandos `curl` de este paso y los siguientes desde un terminal del host, no desde dentro del contenedor.)* Desde otro terminal del host, inmediatamente despues:
 
 ```bash
 curl -s -H "Authorization: Bearer demo123" -X POST http://localhost:8080/v1/tasks \
@@ -103,16 +103,16 @@ sleep 2 && curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/m
 
 ---
 
-## Paso 4 — Esperar y observar la cola
+## Paso 4 — Esperar a que termine la primera tarea
 
-Despues de ~8 segundos (fake-pi duerme 8 segundos):
+La primera tarea tarda exactamente 8 segundos (fake-pi duerme 8 segundos). Esperar a que termine y consultar el radar desde otro terminal:
 
 ```bash
-curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/mesh/radar
+sleep 6 && curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/mesh/radar
 {"cluster_name":"gentle-mesh","timestamp":1791360751,"active_agents":[]}
 ```
 
-Ambas tareas han terminado. Estado final:
+(La tarea 2 tarda otros 8 segundos; al cabo de ~16 segundos desde el primer dispatch ambas han terminado.) Estado final:
 
 ```bash
 # Tarea 1: completada a los 8 segundos
@@ -125,16 +125,6 @@ curl -s -H "Authorization: Bearer demo123" http://localhost:8080/v1/tasks/task-1
 ```
 
 La tarea 2 comenzo automaticamente cuando la 1 libero el territorio (`started_at: 1791360739 = finished_at de la tarea 1`).
-
----
-
-## Paso 5 — Limpieza
-
-```bash
-docker rm -f gm-demo 2>/dev/null
-```
-
-El contenedor es efimero (`--rm`); al pararlo se eliminan todos los datos del coordinador.
 
 ---
 
@@ -153,37 +143,55 @@ $ sha256sum docs/demo/fake-pi /tmp/fake-pi.extracted
 
 ---
 
-## Metodo alternativo: ejecucion local
 
-Si Docker no esta disponible, compilar y ejecutar directamente en la maquina local. Requiere Go 1.26.9+ y que el fake-pi este en el PATH del sistema.
+## Paso 5 — Limpieza
 
 ```bash
-# Compilar el binario
-go build -o gentle-mesh ./cmd/gentle-mesh
+docker rm -f gm-demo 2>/dev/null
+```
 
-# Copiar el fake-pi y verificar que ./pi sea exactamente el que resuelve
-cp docs/demo/fake-pi ./pi
-chmod +x ./pi
-export PATH="$(pwd):$PATH"
-[ "$(command -v pi)" = "$(pwd)/pi" ] \
-  || { echo "ERROR: ./pi no resuelve a $(pwd)/pi (resolvió a $(command -v pi 2>/dev/null || echo ninguno))"; exit 1; }
-echo "pi disponible en: $(command -v pi)"
+El contenedor es efimero (`--rm`); al pararlo se eliminan todos los datos del coordinador.
+
+---
+
+## Metodo alternativo: ejecucion local
+
+Si Docker no esta disponible, compilar y ejecutar directamente en un directorio temporal, sin tocar el repositorio. Requiere Go 1.26.9+.
+
+```bash
+# Crear un directorio temporal y compilar el binario ahi
+TMPDIR=$(mktemp -d)
+go build -o "$TMPDIR/gentle-mesh" /ruta/al/repo/cmd/gentle-mesh
+
+# Copiar el fake-pi a ese directorio
+cp /ruta/al/repo/docs/demo/fake-pi "$TMPDIR/pi"
+chmod +x "$TMPDIR/pi"
+
+# Verificar que $TMPDIR/pi es exactamente el que resuelve; PATH modificado solo dentro del subshell
+(
+  export PATH="$TMPDIR:$PATH"
+  [ "$(command -v pi)" = "$TMPDIR/pi" ] \
+    || { echo "ERROR: pi no resuelve a $TMPDIR/pi (resolvio a $(command -v pi 2>/dev/null || echo ninguno))"; return 1 2>/dev/null || exit 1; }
+  echo "pi disponible en: $(command -v pi)"
+)
 
 # Ejecutar el coordinador
-./gentle-mesh server \
+"$TMPDIR/gentle-mesh" server \
   -addr localhost:8080 \
-  -workspace /tmp/gm-demo \
+  -workspace "$TMPDIR/ws" \
   -territory-mode queue \
   -runner pi &
 COORD_PID=$!
 
-# Despachar tareas desde otro terminal con los mismos comandos curl
+# Despachar tareas desde otro terminal del host con los mismos comandos curl
 # que en la seccion de contenedor, pero sin la cabecera Authorization
+
+# Al terminar: rm -rf "$TMPDIR" && kill $COORD_PID
 ```
 
-*(La verificacion `[ "$(command -v pi)" = "$(pwd)/pi" ]` falla con `exit 1` si `command -v pi` no resuelve a `$(pwd)/pi` despues de prefijar el PATH; el binario se ejecuta con `./gentle-mesh` directamente.)*
+*(La verificacion `[ "$(command -v pi)" = "$TMPDIR/pi" ]` falla si `command -v pi` no resuelve a `$TMPDIR/pi` despues de prefijar el PATH. La subshell con `return 1` evita cerrar la terminal del usuario en caso de error de `set -e`; `exit 1` se usa si el script se ejecuta con `bash -e`. El PATH no se modifica fuera del subshell.)*
 
-Con este metodo no hace falta token ni cabecera de autorizacion (escucha en localhost).
+Con este metodo no hace falta token ni cabecera de autorizacion (escucha en localhost). El repositorio queda intacto: ni `./pi` ni `./gentle-mesh` se crean dentro del repo.
 
 ---
 
