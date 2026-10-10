@@ -1,8 +1,10 @@
 package pki
 
 import (
+	"bytes"
 	"crypto/x509"
 	"encoding/pem"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,7 +44,7 @@ func TestGenerateServerCert(t *testing.T) {
 	}
 
 	hostnames := []string{"localhost", "coordinator.local"}
-	cert, err := ca.GenerateServerCert(hostnames, 0)
+	cert, err := ca.GenerateServerCert(hostnames, nil, 0)
 	if err != nil {
 		t.Fatalf("GenerateServerCert failed: %v", err)
 	}
@@ -118,7 +120,7 @@ func TestSaveAndLoadServerCert(t *testing.T) {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
 
-	cert, err := ca.GenerateServerCert([]string{"localhost"}, 0)
+	cert, err := ca.GenerateServerCert([]string{"localhost"}, nil, 0)
 	if err != nil {
 		t.Fatalf("GenerateServerCert failed: %v", err)
 	}
@@ -174,7 +176,7 @@ func TestInitMeshTLS(t *testing.T) {
 	orgUnit := "integration"
 	hostnames := []string{"localhost", "mesh.local"}
 
-	err := InitMeshTLS(tmpDir, org, orgUnit, hostnames)
+	err := InitMeshTLS(tmpDir, org, orgUnit, hostnames, nil)
 	if err != nil {
 		t.Fatalf("InitMeshTLS failed: %v", err)
 	}
@@ -460,5 +462,141 @@ func TestNodeCertClientAuth(t *testing.T) {
 
 	if !hasClientAuth {
 		t.Error("Node cert should have client auth ext key usage")
+	}
+}
+
+// Every server certificate keeps the loopback SANs and adds the requested ones.
+func TestGenerateServerCertSANs(t *testing.T) {
+	ca, err := GenerateCA("Gentle Mesh Test", "testing", 0)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+
+	cert, err := ca.GenerateServerCert([]string{"coord.local"}, []string{"192.168.122.50"}, 0)
+	if err != nil {
+		t.Fatalf("GenerateServerCert failed: %v", err)
+	}
+
+	for _, name := range []string{"coord.local", "localhost", "127.0.0.1"} {
+		found := false
+		for _, got := range cert.Cert.DNSNames {
+			if got == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DNSNames must contain %q, got %v", name, cert.Cert.DNSNames)
+		}
+	}
+	for _, raw := range []string{"192.168.122.50", "127.0.0.1", "::1"} {
+		want := net.ParseIP(raw)
+		found := false
+		for _, got := range cert.Cert.IPAddresses {
+			if got.Equal(want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("IPAddresses must contain %s, got %v", raw, cert.Cert.IPAddresses)
+		}
+	}
+}
+
+// A value that is not an IP in the IP SAN list is an error, not a silently useless SAN.
+func TestGenerateServerCertRejectsInvalidIP(t *testing.T) {
+	ca, err := GenerateCA("Gentle Mesh Test", "testing", 0)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+
+	if _, err := ca.GenerateServerCert(nil, []string{"not-an-ip"}, 0); err == nil {
+		t.Error("expected an error for a non-IP value in the IP SAN list")
+	}
+	if _, err := ca.GenerateServerCert(nil, []string{""}, 0); err == nil {
+		t.Error("expected an error for an empty IP SAN")
+	}
+}
+
+// An existing certificate that does not cover the requested SANs is regenerated, and
+// only the server certificate changes: the CA stays byte for byte identical.
+func TestEnsureServerCertSANsRegeneratesServerCertOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	ca, err := GenerateCA("Gentle Mesh Test", "testing", 0)
+	if err != nil {
+		t.Fatalf("GenerateCA failed: %v", err)
+	}
+	if err := ca.SaveCAPemFiles(tmpDir, false); err != nil {
+		t.Fatalf("SaveCAPemFiles failed: %v", err)
+	}
+
+	old, err := ca.GenerateServerCert(nil, nil, 0)
+	if err != nil {
+		t.Fatalf("GenerateServerCert failed: %v", err)
+	}
+	if err := old.SaveServerCertFiles(tmpDir, false); err != nil {
+		t.Fatalf("SaveServerCertFiles failed: %v", err)
+	}
+
+	caPath := filepath.Join(tmpDir, CAPemFile)
+	caBefore, err := os.ReadFile(caPath)
+	if err != nil {
+		t.Fatalf("reading the CA failed: %v", err)
+	}
+
+	fresh, regenerated, err := EnsureServerCertSANs(tmpDir, ca, nil, []string{"192.168.122.50"})
+	if err != nil {
+		t.Fatalf("EnsureServerCertSANs failed: %v", err)
+	}
+	if !regenerated {
+		t.Error("a certificate without the requested IP must be regenerated")
+	}
+	want := net.ParseIP("192.168.122.50")
+	found := false
+	for _, got := range fresh.Cert.IPAddresses {
+		if got.Equal(want) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("the regenerated certificate must cover the requested IP, got %v", fresh.Cert.IPAddresses)
+	}
+	if fresh.Cert.SerialNumber.Cmp(old.Cert.SerialNumber) == 0 {
+		t.Error("the server certificate serial should have changed")
+	}
+
+	caAfter, err := os.ReadFile(caPath)
+	if err != nil {
+		t.Fatalf("re-reading the CA failed: %v", err)
+	}
+	if !bytes.Equal(caBefore, caAfter) {
+		t.Error("the CA must not change when only the server certificate is regenerated")
+	}
+
+	// A directory without any certificate performs a first generation, not a regeneration.
+	empty := t.TempDir()
+	first, regeneratedFirst, err := EnsureServerCertSANs(empty, ca, nil, nil)
+	if err != nil {
+		t.Fatalf("EnsureServerCertSANs on an empty dir failed: %v", err)
+	}
+	if regeneratedFirst {
+		t.Error("a first generation must not be reported as a regeneration")
+	}
+	if first == nil || first.Cert == nil {
+		t.Error("expected a generated certificate")
+	}
+
+	// Second round: it already covers the SANs, so it is left untouched.
+	kept, regeneratedAgain, err := EnsureServerCertSANs(tmpDir, ca, nil, []string{"192.168.122.50"})
+	if err != nil {
+		t.Fatalf("EnsureServerCertSANs failed: %v", err)
+	}
+	if regeneratedAgain {
+		t.Error("a certificate that already covers the SANs must not be regenerated")
+	}
+	if kept.Cert.SerialNumber.Cmp(fresh.Cert.SerialNumber) != 0 {
+		t.Error("the certificate should not have changed")
 	}
 }
