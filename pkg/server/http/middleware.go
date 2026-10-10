@@ -260,7 +260,9 @@ func HostMiddleware(allowed []string, next stdhttp.Handler) stdhttp.Handler {
 
 // AuthMiddleware validates incoming HTTP requests using a Bearer token.
 // If token is empty, the middleware is a no-op and returns next.
-// Requests to /healthz (and /healthz/) bypass authentication.
+// Requests to /healthz (and /healthz/) bypass authentication, and so does the
+// POST /v1/certs/enroll bootstrap route, whose only credential is the enrollment
+// token validated by its handler (MTLSMiddleware already exempts it).
 // CORS preflight OPTIONS requests bypass authentication so browsers can negotiate the request.
 // Missing or invalid tokens result in HTTP 401 Unauthorized with {"error":"unauthorized"}.
 func AuthMiddleware(token string, next stdhttp.Handler) stdhttp.Handler {
@@ -275,6 +277,15 @@ func AuthMiddleware(token string, next stdhttp.Handler) stdhttp.Handler {
 		}
 
 		if r.URL.Path == "/healthz" || r.URL.Path == "/healthz/" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Certificate enrollment is a bootstrap route: a node has no bearer
+		// token yet, so the enrollment token in the body is its only credential.
+		// Only this exact method and path are exempt; other methods and
+		// neighbouring routes keep requiring the bearer.
+		if r.Method == stdhttp.MethodPost && r.URL.Path == "/v1/certs/enroll" {
 			next.ServeHTTP(w, r)
 			return
 		}
