@@ -19,9 +19,11 @@ import (
 
 // ServerConfig defines configuration parameters for the gentle-mesh worker HTTP daemon.
 type ServerConfig struct {
-	Addr        string
-	Runner      runner.Runner
-	BearerToken string
+	Addr   string
+	Runner runner.Runner
+	// BearerTokens lists every accepted inbound credential: an empty list
+	// disables authentication, and empty entries are ignored.
+	BearerTokens []string
 }
 
 // Server executes delegated tasks locally on a mesh worker node and streams events via SSE.
@@ -52,16 +54,28 @@ func NewServer(cfg ServerConfig) *Server {
 	mux.HandleFunc("POST /v1/reply", s.handleReply)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
+	var expectedAuths []string
+	for _, tok := range cfg.BearerTokens {
+		if tok != "" {
+			expectedAuths = append(expectedAuths, "Bearer "+tok)
+		}
+	}
+
 	var handler http.Handler = mux
-	if cfg.BearerToken != "" {
-		expectedAuth := "Bearer " + cfg.BearerToken
+	if len(expectedAuths) > 0 {
 		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/healthz" || r.URL.Path == "/healthz/" {
 				mux.ServeHTTP(w, r)
 				return
 			}
 			auth := r.Header.Get("Authorization")
-			if subtle.ConstantTimeCompare([]byte(auth), []byte(expectedAuth)) != 1 {
+			// Compare against every accepted credential in constant time, without
+			// stopping at the first match.
+			matched := 0
+			for _, expectedAuth := range expectedAuths {
+				matched |= subtle.ConstantTimeCompare([]byte(auth), []byte(expectedAuth))
+			}
+			if matched != 1 {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})

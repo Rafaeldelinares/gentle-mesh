@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -622,6 +624,9 @@ func TestWorker_JoinFailure(t *testing.T) {
 		"worker",
 		"-coordinator", ts.URL,
 		"-node-id", "fail-worker",
+		// Without -addr the bind is :8081 (all interfaces) and this test passes no
+		// credential, so it needs an explicit loopback bind.
+		"-addr", "127.0.0.1:0",
 	}, &stdout, &stderr)
 
 	if err == nil {
@@ -672,6 +677,7 @@ func TestWorker_ReRegisterOn404Heartbeat(t *testing.T) {
 			"-coordinator", ts.URL,
 			"-node-id", "rejoin-worker",
 			"-heartbeat-interval", "20ms",
+			"-addr", "127.0.0.1:0",
 		}, &stdout, &stderr)
 	}()
 
@@ -1590,3 +1596,199 @@ func TestCLI_CertRevoke_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestIsLoopbackListen(t *testing.T) {
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:8080", true},
+		{"[::1]:8080", true},
+		{"localhost:8080", true},
+		{"LOCALHOST:8080", true},
+		{"", false},
+		{":8080", false},
+		{"0.0.0.0:8080", false},
+		{"[::]:8080", false},
+		{"192.168.122.50:8080", false},
+		{"8080", false},
+		{"example.com:8080", false},
+	}
+	for _, tc := range tests {
+		if got := isLoopbackListen(tc.addr); got != tc.want {
+			t.Errorf("isLoopbackListen(%q) = %v, want %v", tc.addr, got, tc.want)
+		}
+	}
+}
+
+// A worker must not expose /v1/execute on a non-loopback address without a token.
+func TestWorker_RefusesNonLoopbackWithoutToken(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	err := runCLI(context.Background(), []string{
+		"worker",
+		"-coordinator", "http://127.0.0.1:1",
+		"-node-id", "w6-refuse",
+		"-endpoint", "http://192.0.2.1:8080",
+		"-addr", "192.0.2.1:8080",
+	}, &stdout, &stderr)
+
+	if err == nil {
+		t.Fatal("expected a refusal for a non-loopback worker without a token")
+	}
+	want := `refusing to serve the worker API on non-loopback address "192.0.2.1:8080" without authentication: set -worker-token or -token, or pass -insecure-no-auth`
+	if err.Error() != want {
+		t.Fatalf("refusal message changed:\n got: %s\nwant: %s", err.Error(), want)
+	}
+	if strings.Contains(stdout.String(), "Worker HTTP server started") {
+		t.Fatalf("the worker must not bind before refusing; stdout: %s", stdout.String())
+	}
+}
+
+// With the explicit flag the worker starts on a non-loopback address and warns.
+func TestWorker_InsecureNoAuthAllowsNonLoopbackAndWarns(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	err := runCLI(context.Background(), []string{
+		"worker",
+		"-coordinator", "http://127.0.0.1:1", // closed port: the join fails fast
+		"-node-id", "w6-insecure",
+		"-endpoint", "http://0.0.0.0:0",
+		"-addr", "0.0.0.0:0",
+		"-insecure-no-auth",
+	}, &stdout, &stderr)
+
+	if err != nil && strings.Contains(err.Error(), "worker-token") {
+		t.Fatalf("the explicit flag must bypass the refusal, got: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "WARNING") || !strings.Contains(stdout.String(), "no authentication") {
+		t.Fatalf("expected an authentication warning; stdout: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Worker HTTP server started on") {
+		t.Fatalf("the worker should have bound and started; stdout: %s", stdout.String())
+	}
+}
+
+// Loopback without a token keeps working exactly as before.
+func TestWorker_LoopbackWithoutTokenStillStarts(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	err := runCLI(context.Background(), []string{
+		"worker",
+		"-coordinator", "http://127.0.0.1:1",
+		"-node-id", "w6-loopback",
+		"-endpoint", "http://127.0.0.1:0",
+		"-addr", "127.0.0.1:0",
+	}, &stdout, &stderr)
+
+	if err != nil && strings.Contains(err.Error(), "worker-token") {
+		t.Fatalf("loopback without a token must not be refused, got: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Worker HTTP server started on") {
+		t.Fatalf("the loopback worker should have started; stdout: %s", stdout.String())
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe to read while another goroutine writes.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// With only -token the worker still starts on a non-loopback address (the
+// coordinator dispatches with that same credential) and requires it.
+func TestWorker_TokenOnlyStartsNonLoopbackAndProtects(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"node_id":"token-only-worker","status":"online"}`))
+	}))
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stdout := &syncBuffer{}
+	var stderr bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- runCLI(ctx, []string{
+			"worker",
+			"-coordinator", ts.URL,
+			"-node-id", "token-only-worker",
+			"-endpoint", "http://0.0.0.0:0",
+			"-addr", "0.0.0.0:0",
+			"-heartbeat-interval", "20ms",
+			"-token", "coord-secret",
+		}, stdout, &stderr)
+	}()
+
+	// Wait for the worker to bind and learn its port.
+	var addr string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if m := regexp.MustCompile(`Worker HTTP server started on (\S+)`).FindStringSubmatch(stdout.String()); m != nil {
+			addr = m[1]
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if addr == "" {
+		t.Fatalf("worker did not report its address; stdout: %s stderr: %s", stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "refusing to serve") {
+		t.Fatalf("-token alone must not be refused on a non-loopback address; stdout: %s", stdout.String())
+	}
+
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("cannot split worker address %q: %v", addr, err)
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	url := "http://" + net.JoinHostPort(host, port) + "/v1/execute"
+
+	probe := func(auth string) int {
+		req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(`{"agent":"worker","task":"probe"}`))
+		if err != nil {
+			t.Fatalf("failed to build request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		_, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if got := probe(""); got != http.StatusUnauthorized {
+		t.Errorf("without a credential: got %d, want 401", got)
+	}
+	if got := probe("Bearer coord-secret"); got != http.StatusOK {
+		t.Errorf("with -token: got %d, want 200", got)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("worker did not shut down after cancel")
+	}
+}
