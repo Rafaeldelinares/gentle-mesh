@@ -567,3 +567,37 @@ func TestParseSSEEdgeCases(t *testing.T) {
 		}
 	})
 }
+
+// The local-execution marker is additive: a completion payload built the old way
+// keeps marshalling to the same bytes, and old JSON still decodes.
+func TestCompletionPayloadExecutedLocallyIsAdditive(t *testing.T) {
+	legacy, err := json.Marshal(protocol.CompletionPayload{Result: "x"})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if got, want := string(legacy), `{"result":"x","text":"x"}`; got != want {
+		t.Errorf("legacy payload changed:\n got: %s\nwant: %s", got, want)
+	}
+
+	marked, err := json.Marshal(protocol.CompletionPayload{Result: "x", ExecutedLocally: true})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(marked), `"executed_locally":true`) {
+		t.Errorf("the marker must be serialized when set, got %s", marked)
+	}
+	if !strings.Contains(string(marked), `"result":"x"`) {
+		t.Errorf("existing fields must survive, got %s", marked)
+	}
+
+	var decoded protocol.CompletionPayload
+	if err := json.Unmarshal([]byte(`{"result":"x","text":"x"}`), &decoded); err != nil {
+		t.Fatalf("old JSON must keep decoding: %v", err)
+	}
+	if decoded.ExecutedLocally {
+		t.Error("old JSON must not set the marker")
+	}
+	if decoded.Result != "x" {
+		t.Errorf("old JSON must keep its fields, got %q", decoded.Result)
+	}
+}

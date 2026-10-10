@@ -41,6 +41,26 @@ func NewMeshRunner(opts MeshRunnerOptions) *MeshRunner {
 	}
 }
 
+// localExecutionSink marks the completion of a run executed by the coordinator's own
+// fallback runner, so a client can tell it apart from a run performed on a mesh
+// worker. Every other event is forwarded untouched, and the remote path never uses
+// this wrapper.
+type localExecutionSink struct {
+	EventSink
+}
+
+// EmitEvent adds the local-execution marker to a completion payload. Runners emit
+// protocol.CompletionPayload by value, as the simulated and the pi runner do.
+func (s localExecutionSink) EmitEvent(eventType protocol.EventType, payload any) (protocol.Event, error) {
+	if eventType == protocol.EventCompletion {
+		if completion, ok := payload.(protocol.CompletionPayload); ok {
+			completion.ExecutedLocally = true
+			payload = completion
+		}
+	}
+	return s.EventSink.EmitEvent(eventType, payload)
+}
+
 // Run attempts to route the task to a selected mesh worker, or delegates to the fallback runner.
 func (m *MeshRunner) Run(ctx context.Context, req protocol.TaskRequest, sink EventSink) error {
 	var err error = errors.New("no node selector configured")
@@ -64,7 +84,7 @@ func (m *MeshRunner) Run(ctx context.Context, req protocol.TaskRequest, sink Eve
 
 	if m.fallbackRunner != nil {
 		log.Printf("[mesh-router] falling back to local runner for task (agent: %q, tags: %v): %v", req.Agent, req.Tags, err)
-		return m.fallbackRunner.Run(ctx, req, sink)
+		return m.fallbackRunner.Run(ctx, req, localExecutionSink{EventSink: sink})
 	}
 
 	return fmt.Errorf("no mesh worker available for task (agent: %q, tags: %v): %w", req.Agent, req.Tags, err)
