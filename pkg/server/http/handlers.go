@@ -146,6 +146,26 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 		return
 	}
 
+	// Everything that does not depend on the token is validated before
+	// consuming it: a request that is going to be rejected must not burn an
+	// enrollment use.
+	nodeID := req.NodeID
+	if nodeID == "" {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "node_id is required"})
+		return
+	}
+
+	// An unparseable CSR can never be signed, so reject it before UseToken as
+	// well. pki.ParseCSR returns the raw DER error while SignCSR wraps it with
+	// ErrInvalidCert, so reproduce that wording to keep the response identical.
+	if _, err := pki.ParseCSR(req.CSR); err != nil {
+		if !errors.Is(err, pki.ErrInvalidCert) {
+			err = fmt.Errorf("%v: failed to parse CSR: %v", pki.ErrInvalidCert, err)
+		}
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to sign certificate: %v", err)})
+		return
+	}
+
 	// Validate token
 	_, err := s.tokenStore.UseToken(r.Context(), req.Token)
 	if err != nil {
@@ -162,13 +182,6 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 			return
 		}
 		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("token validation failed: %v", err)})
-		return
-	}
-
-	// Use provided NodeID or extract from CSR
-	nodeID := req.NodeID
-	if nodeID == "" {
-		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "node_id is required"})
 		return
 	}
 
