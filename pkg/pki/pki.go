@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -130,11 +131,17 @@ func GenerateCA(org, orgUnit string, validFor time.Duration) (*MeshCA, error) {
 	return ca, nil
 }
 
-// GenerateServerCert creates a server certificate signed by the provided CA.
-// The certificate is valid for the specified hostnames/IPs.
-func (ca *MeshCA) GenerateServerCert(hostnames []string, validFor time.Duration) (*ServerCert, error) {
+// GenerateServerCert creates a server certificate for the given hostnames and IP
+// addresses. The loopback SANs (localhost, 127.0.0.1 and ::1) are always included:
+// the arguments only add to them.
+func (ca *MeshCA) GenerateServerCert(hostnames, ipAddresses []string, validFor time.Duration) (*ServerCert, error) {
 	if validFor == 0 {
 		validFor = DefaultValidDuration
+	}
+
+	ips, err := serverCertIPs(ipAddresses)
+	if err != nil {
+		return nil, err
 	}
 
 	// Generate server private key
@@ -158,8 +165,8 @@ func (ca *MeshCA) GenerateServerCert(hostnames []string, validFor time.Duration)
 		NotAfter:     time.Now().Add(validFor),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:    hostnames,
-		IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		DNSNames:    serverCertHostnames(hostnames),
+		IPAddresses: ips,
 	}
 
 	// Sign with CA
@@ -174,6 +181,50 @@ func (ca *MeshCA) GenerateServerCert(hostnames []string, validFor time.Duration)
 	}
 
 	return &ServerCert{Cert: cert, Key: key, CA: ca.Cert}, nil
+}
+
+// serverCertHostnames returns the DNS SANs of a server certificate: the requested
+// hostnames plus localhost and 127.0.0.1, without duplicates. Loopback always stays
+// in the certificate; callers only add to it.
+func serverCertHostnames(hostnames []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(hostnames)+2)
+	requested := append(append([]string{}, hostnames...), "localhost", "127.0.0.1")
+	for _, name := range requested {
+		value := strings.TrimSpace(name)
+		key := strings.ToLower(value)
+		if value == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, value)
+	}
+	return out
+}
+
+// serverCertIPs returns the IP SANs of a server certificate: the requested addresses
+// plus the loopback ones, without duplicates. A requested value that is not an IP is
+// an error, so a typo cannot silently produce a useless SAN list.
+func serverCertIPs(ipAddresses []string) ([]net.IP, error) {
+	ips := []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}
+	for _, raw := range ipAddresses {
+		value := strings.TrimSpace(raw)
+		ip := net.ParseIP(strings.Trim(value, "[]"))
+		if value == "" || ip == nil {
+			return nil, fmt.Errorf("%w: %q is not a valid IP address for the server certificate", ErrInvalidCert, raw)
+		}
+		duplicate := false
+		for _, have := range ips {
+			if have.Equal(ip) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			ips = append(ips, ip)
+		}
+	}
+	return ips, nil
 }
 
 // GenerateNodeCert creates a client/node certificate signed by the provided CA.
@@ -539,7 +590,7 @@ func LoadCACertOnly(path string) (*x509.Certificate, error) {
 
 // InitMeshTLS creates a new CA and server certificate in the specified directory.
 // It generates files: gentle-mesh-ca.pem, gentle-mesh-ca.key, cert.pem, cert.key
-func InitMeshTLS(dir, org, orgUnit string, hostnames []string) error {
+func InitMeshTLS(dir, org, orgUnit string, hostnames, ipAddresses []string) error {
 	// Generate CA
 	ca, err := GenerateCA(org, orgUnit, 0)
 	if err != nil {
@@ -552,7 +603,7 @@ func InitMeshTLS(dir, org, orgUnit string, hostnames []string) error {
 	}
 
 	// Generate server certificate
-	serverCert, err := ca.GenerateServerCert(hostnames, 0)
+	serverCert, err := ca.GenerateServerCert(hostnames, ipAddresses, 0)
 	if err != nil {
 		return fmt.Errorf("failed to generate server cert: %w", err)
 	}
@@ -567,6 +618,13 @@ func InitMeshTLS(dir, org, orgUnit string, hostnames []string) error {
 
 // EnsureMeshTLS initializes TLS files if they don't exist, or loads them if they do.
 func EnsureMeshTLS(dir, org, orgUnit string, hostnames []string, force bool) (*MeshCA, *ServerCert, error) {
+	return EnsureMeshTLSWithIPs(dir, org, orgUnit, hostnames, nil, force)
+}
+
+// EnsureMeshTLSWithIPs is EnsureMeshTLS with IP SANs: a certificate created here already
+// carries them, so a first generation does not have to be replaced right after. Both
+// entry points keep every loopback SAN.
+func EnsureMeshTLSWithIPs(dir, org, orgUnit string, hostnames, ipAddresses []string, force bool) (*MeshCA, *ServerCert, error) {
 	// Try to load existing files
 	ca, err := LoadCAPemFiles(dir)
 	if err == nil && !force {
@@ -585,7 +643,7 @@ func EnsureMeshTLS(dir, org, orgUnit string, hostnames []string, force bool) (*M
 		os.Remove(filepath.Join(dir, CertKeyFile))
 	}
 
-	if err := InitMeshTLS(dir, org, orgUnit, hostnames); err != nil {
+	if err := InitMeshTLS(dir, org, orgUnit, hostnames, ipAddresses); err != nil {
 		return nil, nil, err
 	}
 
@@ -601,6 +659,73 @@ func EnsureMeshTLS(dir, org, orgUnit string, hostnames []string, force bool) (*M
 	}
 
 	return ca, cert, nil
+}
+
+// EnsureServerCertSANs returns the server certificate stored in dir, making sure it
+// covers every requested hostname and IP address. A certificate that already covers
+// them is returned untouched; otherwise only the server certificate and its private
+// key are regenerated, signed by the existing CA, which is never modified or removed.
+// The boolean reports whether a regeneration happened.
+func EnsureServerCertSANs(dir string, ca *MeshCA, hostnames, ipAddresses []string) (*ServerCert, bool, error) {
+	if ca == nil {
+		return nil, false, errors.New("a mesh CA is required to ensure the server certificate SANs")
+	}
+
+	existing, loadErr := LoadServerCertFiles(dir)
+	if loadErr == nil && serverCertCoversSANs(existing.Cert, hostnames, ipAddresses) {
+		return existing, false, nil
+	}
+
+	fresh, err := ca.GenerateServerCert(hostnames, ipAddresses, 0)
+	if err != nil {
+		return nil, false, err
+	}
+	if loadErr != nil {
+		// Nothing on disk yet: a first generation, not a regeneration.
+		if err := fresh.SaveServerCertFiles(dir, false); err != nil {
+			return nil, false, err
+		}
+		return fresh, false, nil
+	}
+	// Overwrite only cert.pem and cert.key: the CA files are left untouched.
+	if err := fresh.SaveServerCertFiles(dir, true); err != nil {
+		return nil, false, err
+	}
+	return fresh, true, nil
+}
+
+// serverCertCoversSANs reports whether cert already carries every requested SAN plus
+// the loopback ones that every generated server certificate includes.
+func serverCertCoversSANs(cert *x509.Certificate, hostnames, ipAddresses []string) bool {
+	if cert == nil {
+		return false
+	}
+	have := map[string]bool{}
+	for _, name := range cert.DNSNames {
+		have[strings.ToLower(name)] = true
+	}
+	for _, name := range serverCertHostnames(hostnames) {
+		if !have[strings.ToLower(name)] {
+			return false
+		}
+	}
+	wanted, err := serverCertIPs(ipAddresses)
+	if err != nil {
+		return false
+	}
+	for _, want := range wanted {
+		found := false
+		for _, got := range cert.IPAddresses {
+			if got.Equal(want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // CSR-related types and functions
