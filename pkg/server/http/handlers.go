@@ -146,6 +146,23 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 		return
 	}
 
+	// Everything that does not depend on the token is validated before
+	// consuming it: a request that is going to be rejected must not burn an
+	// enrollment use.
+	nodeID := req.NodeID
+	if nodeID == "" {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "node_id is required"})
+		return
+	}
+
+	// A CSR that cannot be parsed or whose self-signature does not verify can
+	// never be signed, so reject it before UseToken. pki.ValidateCSR is the
+	// same function SignCSR uses, so the 500 keeps exactly the same wording.
+	if _, err := pki.ValidateCSR(req.CSR); err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to sign certificate: %v", err)})
+		return
+	}
+
 	// Validate token
 	_, err := s.tokenStore.UseToken(r.Context(), req.Token)
 	if err != nil {
@@ -162,13 +179,6 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 			return
 		}
 		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("token validation failed: %v", err)})
-		return
-	}
-
-	// Use provided NodeID or extract from CSR
-	nodeID := req.NodeID
-	if nodeID == "" {
-		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "node_id is required"})
 		return
 	}
 

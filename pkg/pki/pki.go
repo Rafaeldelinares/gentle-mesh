@@ -664,20 +664,10 @@ func (ca *MeshCA) SignCSR(csrPEM string, nodeID string, validFor time.Duration) 
 		validFor = DefaultValidDuration
 	}
 
-	// Decode CSR
-	block, _ := pem.Decode([]byte(csrPEM))
-	if block == nil {
-		return nil, fmt.Errorf("%w: no PEM block found", ErrInvalidCert)
-	}
-
-	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	// Decode and verify the CSR
+	csr, err := ValidateCSR(csrPEM)
 	if err != nil {
-		return nil, fmt.Errorf("%w: failed to parse CSR: %v", ErrInvalidCert, err)
-	}
-
-	// Verify CSR signature
-	if err := csr.CheckSignature(); err != nil {
-		return nil, fmt.Errorf("%w: CSR signature verification failed", ErrInvalidCert)
+		return nil, err
 	}
 
 	// Generate serial number
@@ -707,6 +697,27 @@ func (ca *MeshCA) SignCSR(csrPEM string, nodeID string, validFor time.Duration) 
 	}
 
 	return x509.ParseCertificate(certDER)
+}
+
+// ValidateCSR parses a PEM-encoded CSR and verifies its self-signature.
+// SignCSR and the enrollment handler share this path, so both reject a bad
+// CSR with exactly the same error wording.
+func ValidateCSR(csrPEM string) (*x509.CertificateRequest, error) {
+	block, _ := pem.Decode([]byte(csrPEM))
+	if block == nil {
+		return nil, fmt.Errorf("%w: no PEM block found", ErrInvalidCert)
+	}
+
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to parse CSR: %v", ErrInvalidCert, err)
+	}
+
+	if err := csr.CheckSignature(); err != nil {
+		return nil, fmt.Errorf("%w: CSR signature verification failed", ErrInvalidCert)
+	}
+
+	return csr, nil
 }
 
 // ParseCSR parses a PEM-encoded CSR.
