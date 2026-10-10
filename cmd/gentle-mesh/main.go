@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -119,6 +120,68 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  help      Show help for gentle-mesh")
 }
 
+// resolveDBPath returns the effective SQLite path for the coordinator.
+// An empty flag value means "<tasks-dir>/gentle-mesh.db"; "none" disables persistence.
+func resolveDBPath(dbPath, tasksDir string) string {
+	if dbPath != "" {
+		return dbPath
+	}
+	return filepath.Join(tasksDir, "gentle-mesh.db")
+}
+
+// requireTLSStorage rejects a configuration in which the enrollment tokens and the
+// webhooks cannot be persisted. Both TLS paths refuse it with the same message.
+func requireTLSStorage(dbPath string) error {
+	if dbPath == "none" {
+		return errors.New("-tls requires a SQLite database for enrollment tokens and webhooks; remove -db-path none")
+	}
+	return nil
+}
+
+// configureCoordinatorTLS loads (or generates) the coordinator TLS material and
+// wires the enrollment token store and the webhook store. The explicit -tls path
+// and the -addr :8443 auto-enable path both call it, so the stores cannot be
+// armed in one path and missing in the other. The caller must have validated the
+// path with requireTLSStorage first.
+func configureCoordinatorTLS(cfg *meshhttp.ServerConfig, tlsDirPath, dbPath string, extraHostnames, extraIPs []string) (*pki.MeshCA, *pki.ServerCert, bool, error) {
+	// Loopback and localhost always stay; -tls-san only adds.
+	hostnames := append(append([]string{}, extraHostnames...), "localhost", "127.0.0.1")
+	ca, serverCert, err := pki.EnsureMeshTLSWithIPs(tlsDirPath, "Gentle Mesh", "mesh-coordinator", hostnames, extraIPs, false)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("failed to load TLS certificates: %w", err)
+	}
+
+	// A certificate generated before -tls-san existed may not cover the requested
+	// SANs: cover them now, regenerating only the server certificate (never the CA).
+	serverCert, regenerated, err := pki.EnsureServerCertSANs(tlsDirPath, ca, hostnames, extraIPs)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("failed to ensure the server certificate SANs: %w", err)
+	}
+	cfg.TLSEnabled = true
+	cfg.TLSCertFile = filepath.Join(tlsDirPath, pki.CertPemFile)
+	cfg.TLSKeyFile = filepath.Join(tlsDirPath, pki.CertKeyFile)
+	cfg.MeshCA = ca
+	cfg.MeshCAPemFile = filepath.Join(tlsDirPath, pki.CAPemFile)
+
+	// Initialize token store for enrollment
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("failed to open database: %w", err)
+	}
+	if err := store.InitTokenSchema(db); err != nil {
+		return nil, nil, false, fmt.Errorf("failed to init token schema: %w", err)
+	}
+	cfg.TokenStore = store.NewSQLiteTokenStore(db)
+
+	// Initialize webhook store and dispatcher
+	if err := store.InitWebhookSchema(db); err != nil {
+		return nil, nil, false, fmt.Errorf("failed to init webhook schema: %w", err)
+	}
+	cfg.WebhookStore = store.NewSQLiteWebhookStore(db)
+
+	return ca, serverCert, regenerated, nil
+}
+
 // runServer starts the coordinator HTTPS/HTTP REST and SSE server.
 func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
@@ -126,7 +189,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 
 	addr := fs.String("addr", ":8080", "Coordinator listen address (e.g. :8443 for HTTPS, :8080 for HTTP)")
 	tasksDir := fs.String("tasks-dir", "/tmp/gentle-mesh/tasks", "Directory for task logs and state")
-	dbPath := fs.String("db-path", "", "Path to SQLite database for task persistence (defaults to <tasks-dir>/gentle-mesh.db, 'none' to disable)")
+	dbPath := fs.String("db-path", "", "Path to SQLite database for task persistence (defaults to <tasks-dir>/gentle-mesh.db, 'none' to disable; 'none' is not allowed with -tls)")
 	heartbeatTimeout := fs.Duration("heartbeat-timeout", 30*time.Second, "Heartbeat timeout for registered nodes")
 	token := fs.String("token", "", "Optional bearer authentication token")
 	taskTTL := fs.Duration("task-ttl", 24*time.Hour, "Task TTL before pruning")
@@ -136,6 +199,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	tlsEnable := fs.Bool("tls", false, "Enable TLS/HTTPS with generated certificates (generates CA if not exists)")
 	tlsDir := fs.String("tls-dir", "", "Directory for TLS certificates and CA (defaults to <tasks-dir>/tls)")
 	tlsInit := fs.Bool("tls-init", false, "Initialize TLS: generate new CA and server certificates (overwrites existing)")
+	tlsSANs := fs.String("tls-san", "", "Comma-separated extra SANs for the server certificate (IP addresses or hostnames); loopback and localhost are always included")
 	requireMTLS := fs.Bool("require-mtls", false, "Require mTLS client certificates for all connections (implies -tls)")
 	rateLimitRequests := fs.Int("rate-limit", 0, "Rate limit: requests per window (0 = disabled)")
 	rateLimitWindow := fs.Duration("rate-limit-window", 1*time.Minute, "Rate limit window duration")
@@ -154,10 +218,21 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		tlsDirPath = filepath.Join(*tasksDir, "tls")
 	}
 
+	// SQLite path defaults to <tasks-dir>/gentle-mesh.db. "none" disables persistence.
+	// Resolved once here so the task store, the enrollment token store and the webhook
+	// store all open the exact same database file.
+	dbPathResolved := resolveDBPath(*dbPath, *tasksDir)
+
+	// Extra SANs for the server certificate: loopback and localhost always stay.
+	tlsSANHostnames, tlsSANIPs, err := parseTLSSANs(*tlsSANs)
+	if err != nil {
+		return err
+	}
+
 	// Handle TLS initialization
 	if *tlsInit {
 		fmt.Fprintf(stdout, "Initializing TLS in %s...\n", tlsDirPath)
-		if err := pki.InitMeshTLS(tlsDirPath, "Gentle Mesh", "mesh-coordinator", []string{}); err != nil {
+		if err := pki.InitMeshTLS(tlsDirPath, "Gentle Mesh", "mesh-coordinator", tlsSANHostnames, tlsSANIPs); err != nil {
 			return fmt.Errorf("failed to initialize TLS: %w", err)
 		}
 		fmt.Fprintf(stdout, "TLS initialized in %s\n", tlsDirPath)
@@ -183,7 +258,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	serverConfig := meshhttp.ServerConfig{
 		Addr:              *addr,
 		TasksDir:          *tasksDir,
-		DBPath:            *dbPath,
+		DBPath:            dbPathResolved,
 		HeartbeatTimeout:  *heartbeatTimeout,
 		TaskTTL:           *taskTTL,
 		BearerToken:       *token,
@@ -200,38 +275,21 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 
 	// Configure TLS if enabled
 	if *tlsEnable {
-		fmt.Fprintf(stdout, "TLS enabled, loading certificates from %s...\n", tlsDirPath)
-		// Include localhost and 127.0.0.1 in server cert for local development
-		hostnames := []string{"localhost", "127.0.0.1"}
-		ca, serverCert, err := pki.EnsureMeshTLS(tlsDirPath, "Gentle Mesh", "mesh-coordinator", hostnames, false)
-		if err != nil {
-			return fmt.Errorf("failed to load TLS certificates: %w", err)
+		if err := requireTLSStorage(dbPathResolved); err != nil {
+			return err
 		}
-		serverConfig.TLSEnabled = true
-		serverConfig.TLSCertFile = filepath.Join(tlsDirPath, pki.CertPemFile)
-		serverConfig.TLSKeyFile = filepath.Join(tlsDirPath, pki.CertKeyFile)
-		serverConfig.MeshCA = ca
-		serverConfig.MeshCAPemFile = filepath.Join(tlsDirPath, pki.CAPemFile)
+		fmt.Fprintf(stdout, "TLS enabled, loading certificates from %s...\n", tlsDirPath)
+		ca, serverCert, regenerated, err := configureCoordinatorTLS(&serverConfig, tlsDirPath, dbPathResolved, tlsSANHostnames, tlsSANIPs)
+		if err != nil {
+			return err
+		}
+		if regenerated {
+			fmt.Fprintf(stdout, "Server certificate regenerated to cover the requested SANs\n")
+		}
 		fmt.Fprintf(stdout, "TLS ready: CA=%s\n", ca.Cert.Subject.CommonName)
 		fmt.Fprintf(stdout, "  CA fingerprint: %s\n", pki.CertFingerprint(ca.Cert))
 		fmt.Fprintf(stdout, "Server cert expires: %s\n", serverCert.Cert.NotAfter.Format("2006-01-02"))
-
-		// Initialize token store for enrollment
-		db, err := sql.Open("sqlite", *dbPath)
-		if err != nil {
-			return fmt.Errorf("failed to open database: %w", err)
-		}
-		if err := store.InitTokenSchema(db); err != nil {
-			return fmt.Errorf("failed to init token schema: %w", err)
-		}
-		serverConfig.TokenStore = store.NewSQLiteTokenStore(db)
 		fmt.Fprintf(stdout, "Enrollment tokens enabled\n")
-
-		// Initialize webhook store and dispatcher
-		if err := store.InitWebhookSchema(db); err != nil {
-			return fmt.Errorf("failed to init webhook schema: %w", err)
-		}
-		serverConfig.WebhookStore = store.NewSQLiteWebhookStore(db)
 		fmt.Fprintf(stdout, "Webhooks enabled\n")
 	}
 
@@ -242,19 +300,20 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		}
 		serverConfig.RequireMTLS = true
 	} else if *addr == ":8443" || strings.HasPrefix(*addr, ":8443") {
-		// Auto-enable TLS if using common HTTPS port without -tls flag
-		fmt.Fprintf(stdout, "Auto-enabling TLS on port 8443...\n")
-		hostnames := []string{"localhost", "127.0.0.1"}
-		ca, serverCert, err := pki.EnsureMeshTLS(tlsDirPath, "Gentle Mesh", "mesh-coordinator", hostnames, false)
-		if err != nil {
-			return fmt.Errorf("failed to load TLS certificates: %w", err)
+		// Auto-enable TLS if using common HTTPS port without -tls flag. The
+		// enrollment tokens and the webhooks need the database, so this path
+		// arms the same stores as -tls instead of starting without them.
+		if err := requireTLSStorage(dbPathResolved); err != nil {
+			return err
 		}
-		serverConfig.TLSEnabled = true
-		serverConfig.TLSCertFile = filepath.Join(tlsDirPath, pki.CertPemFile)
-		serverConfig.TLSKeyFile = filepath.Join(tlsDirPath, pki.CertKeyFile)
-		serverConfig.MeshCA = ca
-		serverConfig.MeshCAPemFile = filepath.Join(tlsDirPath, pki.CAPemFile)
-		_ = serverCert // used for info above
+		fmt.Fprintf(stdout, "Auto-enabling TLS on port 8443...\n")
+		_, _, regenerated, err := configureCoordinatorTLS(&serverConfig, tlsDirPath, dbPathResolved, tlsSANHostnames, tlsSANIPs)
+		if err != nil {
+			return err
+		}
+		if regenerated {
+			fmt.Fprintf(stdout, "Server certificate regenerated to cover the requested SANs\n")
+		}
 	}
 
 	srv, err := meshhttp.NewServer(serverConfig)
@@ -317,6 +376,60 @@ func buildRunner(name, workspace string) (runner.Runner, error) {
 	default:
 		return nil, fmt.Errorf("invalid -runner %q: must be one of mesh, simulated, pi", name)
 	}
+}
+
+// parseTLSSANs validates the comma-separated -tls-san value and splits it into
+// hostnames and IP addresses. An empty flag value means no extra SANs; empty entries,
+// wildcards, schemes and ports are rejected so a typo cannot silently produce a
+// useless SAN list.
+func parseTLSSANs(raw string) (hostnames, ipAddresses []string, err error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil, nil
+	}
+	for _, entry := range strings.Split(raw, ",") {
+		value := strings.TrimSpace(entry)
+		if value == "" {
+			return nil, nil, fmt.Errorf("invalid -tls-san %q: empty entry", raw)
+		}
+		if strings.Contains(value, "://") {
+			return nil, nil, fmt.Errorf("invalid -tls-san %q: use a bare IP address or hostname, without a scheme", value)
+		}
+		if strings.Contains(value, "*") {
+			return nil, nil, fmt.Errorf("invalid -tls-san %q: wildcards are not supported", value)
+		}
+		if _, _, splitErr := net.SplitHostPort(value); splitErr == nil {
+			return nil, nil, fmt.Errorf("invalid -tls-san %q: use a bare IP address or hostname, without a port", value)
+		}
+		if ip := net.ParseIP(strings.Trim(value, "[]")); ip != nil {
+			ipAddresses = append(ipAddresses, value)
+			continue
+		}
+		if !validTLSSANHostname(value) {
+			return nil, nil, fmt.Errorf("invalid -tls-san %q: not a valid IP address or hostname", value)
+		}
+		hostnames = append(hostnames, value)
+	}
+	return hostnames, ipAddresses, nil
+}
+
+// validTLSSANHostname accepts only plain DNS names: dotted labels of letters, digits,
+// hyphens and underscores, at most 253 characters, with no empty labels.
+func validTLSSANHostname(value string) bool {
+	if value == "" || len(value) > 253 || strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".") {
+		return false
+	}
+	for _, label := range strings.Split(value, ".") {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			valid := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_'
+			if !valid {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // getNodeConfigDir returns the node-specific configuration directory (~/.config/gentle-mesh/nodes/<id>)
@@ -916,11 +1029,11 @@ func runRPC(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	}
 
 	bridge := client.NewBridge(client.Config{
-		CoordinatorURL:         *coordinator,
-		Token:                  *token,
-		Agent:                  *agent,
-		CACertFile:             *caCert,
-		InsecureSkipTLSVerify:  *insecureSkipTLS,
+		CoordinatorURL:        *coordinator,
+		Token:                 *token,
+		Agent:                 *agent,
+		CACertFile:            *caCert,
+		InsecureSkipTLSVerify: *insecureSkipTLS,
 	})
 
 	return bridge.Serve(ctx, stdin, stdout)
@@ -1653,7 +1766,6 @@ func runTokenRevoke(ctx context.Context, args []string, stdout, stderr io.Writer
 
 	dbPath := fs.String("db-path", "", "Path to SQLite database (required)")
 	tokenValue := fs.String("token", "", "Token to revoke (required)")
-
 
 	if err := fs.Parse(args); err != nil {
 		return err

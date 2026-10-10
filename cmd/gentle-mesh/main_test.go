@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
@@ -1590,3 +1591,336 @@ func TestCLI_CertRevoke_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestResolveDBPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		dbPath   string
+		tasksDir string
+		want     string
+	}{
+		{
+			name:     "empty value defaults to tasks-dir/gentle-mesh.db",
+			dbPath:   "",
+			tasksDir: filepath.Join("tmp", "mesh-tasks"),
+			want:     filepath.Join("tmp", "mesh-tasks", "gentle-mesh.db"),
+		},
+		{
+			name:     "explicit path wins",
+			dbPath:   filepath.Join("var", "lib", "mesh", "custom.db"),
+			tasksDir: filepath.Join("tmp", "mesh-tasks"),
+			want:     filepath.Join("var", "lib", "mesh", "custom.db"),
+		},
+		{
+			name:     "none disables persistence",
+			dbPath:   "none",
+			tasksDir: filepath.Join("tmp", "mesh-tasks"),
+			want:     "none",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveDBPath(tc.dbPath, tc.tasksDir); got != tc.want {
+				t.Fatalf("resolveDBPath(%q, %q) = %q, want %q", tc.dbPath, tc.tasksDir, got, tc.want)
+			}
+		})
+	}
+}
+
+// The enrollment token store and the webhooks need the SQLite database, so
+// -tls combined with -db-path none must fail loudly instead of starting a
+// coordinator whose token store points at a private temporary database.
+func TestServer_TLSRejectsNoPersistence(t *testing.T) {
+	tasksDir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	err := runCLI(context.Background(), []string{
+		"server",
+		"-addr", "127.0.0.1:0",
+		"-tasks-dir", tasksDir,
+		"-db-path", "none",
+		"-tls",
+		"-tls-dir", filepath.Join(tasksDir, "tls"),
+	}, &stdout, &stderr)
+
+	if err == nil {
+		t.Fatal("expected an error when -tls is combined with -db-path none")
+	}
+	if !strings.Contains(err.Error(), "-db-path") {
+		t.Fatalf("error must mention -db-path, got: %v", err)
+	}
+	if strings.Contains(stdout.String(), "coordinator starting") {
+		t.Fatalf("server must not start with -tls and -db-path none; stdout: %s", stdout.String())
+	}
+}
+
+// The explicit -tls path and the -addr :8443 auto-enable path must arm the same
+// stores: both go through configureCoordinatorTLS (defect 1b).
+func TestConfigureCoordinatorTLSArmsEnrollmentStores(t *testing.T) {
+	tlsDir := t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "mesh.db")
+	var cfg meshhttp.ServerConfig
+
+	ca, serverCert, regenerated, err := configureCoordinatorTLS(&cfg, tlsDir, dbPath, nil, nil)
+	if err != nil {
+		t.Fatalf("configureCoordinatorTLS failed: %v", err)
+	}
+	if ca == nil || serverCert == nil {
+		t.Fatal("expected the TLS material to be returned")
+	}
+	if !cfg.TLSEnabled {
+		t.Error("TLSEnabled should be set")
+	}
+	if cfg.TLSCertFile != filepath.Join(tlsDir, pki.CertPemFile) {
+		t.Errorf("TLSCertFile = %q", cfg.TLSCertFile)
+	}
+	if cfg.TLSKeyFile != filepath.Join(tlsDir, pki.CertKeyFile) {
+		t.Errorf("TLSKeyFile = %q", cfg.TLSKeyFile)
+	}
+	if cfg.MeshCA != ca {
+		t.Error("MeshCA should be the loaded CA")
+	}
+	if cfg.MeshCAPemFile != filepath.Join(tlsDir, pki.CAPemFile) {
+		t.Errorf("MeshCAPemFile = %q", cfg.MeshCAPemFile)
+	}
+	if regenerated {
+		t.Error("a fresh tls directory should not need a regeneration")
+	}
+	if cfg.TokenStore == nil {
+		t.Error("TokenStore must be armed: without it the enrollment answers 503 (defect 1b)")
+	}
+	if cfg.WebhookStore == nil {
+		t.Error("WebhookStore must be armed")
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Errorf("expected the database at %s: %v", dbPath, err)
+	}
+}
+
+func TestRequireTLSStorage(t *testing.T) {
+	err := requireTLSStorage("none")
+	if err == nil {
+		t.Fatal("expected an error for -db-path none")
+	}
+	const want = "-tls requires a SQLite database for enrollment tokens and webhooks; remove -db-path none"
+	if err.Error() != want {
+		t.Fatalf("message changed: %q", err.Error())
+	}
+	if err := requireTLSStorage(filepath.Join("tmp", "mesh.db")); err != nil {
+		t.Fatalf("a real path must be accepted: %v", err)
+	}
+}
+
+// The auto-enabled :8443 path must refuse -db-path none before enabling TLS,
+// instead of starting without a token store.
+func TestServer_AutoTLSRejectsNoPersistence(t *testing.T) {
+	tasksDir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	err := runCLI(context.Background(), []string{
+		"server",
+		"-addr", ":8443",
+		"-tasks-dir", tasksDir,
+		"-db-path", "none",
+	}, &stdout, &stderr)
+
+	if err == nil {
+		t.Fatal("expected an error for -addr :8443 with -db-path none")
+	}
+	if !strings.Contains(err.Error(), "-db-path") {
+		t.Fatalf("error must mention -db-path, got: %v", err)
+	}
+	if strings.Contains(stdout.String(), "Auto-enabling TLS") {
+		t.Fatalf("must not auto-enable TLS without a token store; stdout: %s", stdout.String())
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestParseTLSSANs(t *testing.T) {
+	tests := []struct {
+		name          string
+		raw           string
+		wantHostnames []string
+		wantIPs       []string
+		wantErr       bool
+	}{
+		{name: "sin flag no anade nada", raw: ""},
+		{name: "IP sola", raw: "192.168.122.50", wantIPs: []string{"192.168.122.50"}},
+		{name: "hostname solo", raw: "coord.local", wantHostnames: []string{"coord.local"}},
+		{name: "lista mixta con espacios", raw: " 192.168.122.50 , coord.local ", wantHostnames: []string{"coord.local"}, wantIPs: []string{"192.168.122.50"}},
+		{name: "IPv6 entre corchetes", raw: "[::1]", wantIPs: []string{"[::1]"}},
+		{name: "IPv6 cruda", raw: "fd00::1", wantIPs: []string{"fd00::1"}},
+		{name: "entrada vacia en medio", raw: "a.local,,b.local", wantErr: true},
+		{name: "solo comas", raw: ",", wantErr: true},
+		{name: "comodin", raw: "*.local", wantErr: true},
+		{name: "con esquema", raw: "https://coord.local", wantErr: true},
+		{name: "hostname con puerto", raw: "coord.local:8443", wantErr: true},
+		{name: "IP con puerto", raw: "192.168.122.50:8443", wantErr: true},
+		{name: "hostname invalido", raw: "coord/local", wantErr: true},
+		{name: "guion al borde", raw: "-coord.local", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotHosts, gotIPs, err := parseTLSSANs(tc.raw)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parseTLSSANs(%q) must fail", tc.raw)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseTLSSANs(%q) failed: %v", tc.raw, err)
+			}
+			if !equalStrings(gotHosts, tc.wantHostnames) {
+				t.Errorf("hostnames = %v, want %v", gotHosts, tc.wantHostnames)
+			}
+			if !equalStrings(gotIPs, tc.wantIPs) {
+				t.Errorf("ips = %v, want %v", gotIPs, tc.wantIPs)
+			}
+		})
+	}
+}
+
+// -tls-san reaches the certificate: loopback always, the requested SANs on top.
+func TestConfigureCoordinatorTLSCoversRequestedSANs(t *testing.T) {
+	tlsDir := t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "mesh.db")
+	var cfg meshhttp.ServerConfig
+
+	_, serverCert, regenerated, err := configureCoordinatorTLS(&cfg, tlsDir, dbPath, []string{"coord.local"}, []string{"192.168.122.50"})
+	if err != nil {
+		t.Fatalf("configureCoordinatorTLS failed: %v", err)
+	}
+	if serverCert == nil || serverCert.Cert == nil {
+		t.Fatal("no server certificate returned")
+	}
+
+	for _, name := range []string{"coord.local", "localhost", "127.0.0.1"} {
+		found := false
+		for _, got := range serverCert.Cert.DNSNames {
+			if got == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DNSNames must contain %q, got %v", name, serverCert.Cert.DNSNames)
+		}
+	}
+	want := net.ParseIP("192.168.122.50")
+	found := false
+	for _, got := range serverCert.Cert.IPAddresses {
+		if got.Equal(want) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("IPAddresses must contain the requested IP, got %v", serverCert.Cert.IPAddresses)
+	}
+	if !cfg.TLSEnabled {
+		t.Error("TLS should be enabled")
+	}
+	if regenerated {
+		t.Error("a fresh tls directory must create the certificate with the SANs in one step, not replace it")
+	}
+}
+
+// tlsSANWriter is a bytes.Buffer that can be read while the coordinator writes to it.
+// It has its own name on purpose: other branches add their own buffer helper and
+// two identical definitions would not merge.
+type tlsSANWriter struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (w *tlsSANWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *tlsSANWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+// A fresh tls directory with -tls-san creates the certificate with the requested SANs
+// in ONE step and must not report a regeneration.
+func TestServer_TLSSANsFreshDirDoesNotReportRegeneration(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to allocate a free port: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	tasksDir := t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "mesh.db")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stdout := &tlsSANWriter{}
+	var stderr bytes.Buffer
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runCLI(ctx, []string{
+			"server",
+			"-addr", addr,
+			"-tasks-dir", tasksDir,
+			"-db-path", dbPath,
+			"-tls",
+			"-tls-san", "192.168.122.50",
+		}, stdout, &stderr)
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(stdout.String(), "coordinator starting") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(stdout.String(), "coordinator starting") {
+		t.Fatalf("the coordinator did not start; stdout: %s stderr: %s", stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "regenerated") {
+		t.Errorf("a fresh tls directory must not report a regeneration; stdout: %s", stdout.String())
+	}
+
+	cert, err := pki.LoadServerCertFiles(filepath.Join(tasksDir, "tls"))
+	if err != nil {
+		t.Fatalf("failed to load the generated server certificate: %v", err)
+	}
+	want := net.ParseIP("192.168.122.50")
+	found := false
+	for _, got := range cert.Cert.IPAddresses {
+		if got.Equal(want) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("the first generation must already carry -tls-san, got %v", cert.Cert.IPAddresses)
+	}
+
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the coordinator did not shut down")
+	}
+}
