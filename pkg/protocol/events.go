@@ -90,6 +90,11 @@ type CompletionPayload struct {
 	Branch       string   `json:"branch,omitempty"`
 	FilesChanged []string `json:"files_changed,omitempty"`
 	DurationMs   int64    `json:"duration_ms,omitempty"`
+
+	// ExecutedLocally marks a run performed by the coordinator's own local
+	// fallback runner instead of a mesh worker. It is additive: a runner that
+	// does not set it keeps producing exactly the same JSON as before.
+	ExecutedLocally bool `json:"executed_locally,omitempty"`
 }
 
 // completionPayloadAlias breaks the method set of CompletionPayload so the

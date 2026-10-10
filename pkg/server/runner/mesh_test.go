@@ -2,6 +2,7 @@ package runner_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -210,4 +211,117 @@ func TestMeshRunner_Triangulation(t *testing.T) {
 			t.Error("expected fallback runner to be called")
 		}
 	})
+}
+
+// completionRunner emits one completion event with the payload it was given,
+// mimicking what a local fallback runner does.
+type completionRunner struct {
+	payload protocol.CompletionPayload
+}
+
+func (r *completionRunner) Run(ctx context.Context, req protocol.TaskRequest, sink runner.EventSink) error {
+	_, err := sink.EmitEvent(protocol.EventCompletion, r.payload)
+	return err
+}
+
+// recordingSink keeps every event the runner emits.
+type recordingSink struct {
+	events []protocol.Event
+}
+
+func (s *recordingSink) EmitEvent(eventType protocol.EventType, payload any) (protocol.Event, error) {
+	evt, err := protocol.NewEvent(int64(len(s.events)+1), "task-local", eventType, payload)
+	if err != nil {
+		return protocol.Event{}, err
+	}
+	s.events = append(s.events, *evt)
+	return *evt, nil
+}
+
+func (s *recordingSink) Context() context.Context { return context.Background() }
+
+func (s *recordingSink) RegisterQuery(queryID string) <-chan string { return make(chan string) }
+
+// A run performed by the coordinator's local fallback must declare it.
+func TestMeshRunner_LocalFallbackMarksCompletion(t *testing.T) {
+	mesh := runner.NewMeshRunner(runner.MeshRunnerOptions{
+		Selector:       &mockSelector{err: errors.New("no registered node supports the requested agent")},
+		FallbackRunner: &completionRunner{payload: protocol.CompletionPayload{Result: "ran locally"}},
+	})
+	sink := &recordingSink{}
+
+	if err := mesh.Run(context.Background(), protocol.TaskRequest{Agent: "worker", Task: "local"}, sink); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if len(sink.events) != 1 || sink.events[0].Type != protocol.EventCompletion {
+		t.Fatalf("expected one completion event, got %+v", sink.events)
+	}
+
+	var cp protocol.CompletionPayload
+	if err := sink.events[0].UnmarshalPayload(&cp); err != nil {
+		t.Fatalf("failed to decode completion payload: %v", err)
+	}
+	if !cp.ExecutedLocally {
+		t.Error("a local fallback execution must set executed_locally")
+	}
+	if cp.Result != "ran locally" {
+		t.Errorf("existing fields must survive, got result %q", cp.Result)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(sink.events[0].Payload, &raw); err != nil {
+		t.Fatalf("failed to decode payload as JSON: %v", err)
+	}
+	if raw["executed_locally"] != true {
+		t.Errorf("the serialized payload must carry executed_locally=true, got %v", raw)
+	}
+}
+
+// A run performed on a mesh worker must keep the completion JSON exactly as it
+// was before the marker existed.
+func TestMeshRunner_RemoteExecutionKeepsCompletionJSONUnchanged(t *testing.T) {
+	const wantPayload = `{"result":"remote done","text":"remote done"}`
+
+	completionEvt, err := protocol.NewEvent(1, "task-remote", protocol.EventCompletion,
+		protocol.CompletionPayload{Result: "remote done"})
+	if err != nil {
+		t.Fatalf("failed to build the completion event: %v", err)
+	}
+	if got := string(completionEvt.Payload); got != wantPayload {
+		t.Fatalf("fixture payload changed: got %s, want %s", got, wantPayload)
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(completionEvt.FormatSSE())
+	}))
+	defer ts.Close()
+
+	mesh := runner.NewMeshRunner(runner.MeshRunnerOptions{
+		Selector:       &mockSelector{selectedNode: &protocol.NodeInfo{NodeID: "node-1", Endpoint: ts.URL}},
+		FallbackRunner: &completionRunner{payload: protocol.CompletionPayload{Result: "should not run locally"}},
+	})
+	sink := &recordingSink{}
+
+	if err := mesh.Run(context.Background(), protocol.TaskRequest{Agent: "worker", Task: "remote"}, sink); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if len(sink.events) != 1 || sink.events[0].Type != protocol.EventCompletion {
+		t.Fatalf("expected one completion event, got %+v", sink.events)
+	}
+	if got := string(sink.events[0].Payload); got != wantPayload {
+		t.Errorf("a remote execution must keep the payload byte-identical:\n got: %s\nwant: %s", got, wantPayload)
+	}
+	if strings.Contains(string(sink.events[0].Payload), "executed_locally") {
+		t.Error("a remote execution must not be marked as local")
+	}
+
+	var cp protocol.CompletionPayload
+	if err := sink.events[0].UnmarshalPayload(&cp); err != nil {
+		t.Fatalf("failed to decode completion payload: %v", err)
+	}
+	if cp.ExecutedLocally {
+		t.Error("ExecutedLocally must stay false for a remote execution")
+	}
 }
