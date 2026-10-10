@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"path/filepath"
 	"testing"
@@ -185,5 +186,92 @@ func TestHandleCertsEnrollConsumesOneUseOnSuccess(t *testing.T) {
 	}
 	if uses := enrollmentUses(t, tokenStore, token); uses != 1 {
 		t.Fatalf("uses=%d, want 1", uses)
+	}
+}
+
+// rewriteCSR decodes a PEM CSR, mutates its DER and re-encodes it.
+func rewriteCSR(t *testing.T, csrPEM string, mutate func([]byte) []byte) string {
+	t.Helper()
+
+	block, _ := pem.Decode([]byte(csrPEM))
+	if block == nil {
+		t.Fatal("no PEM block in the generated CSR")
+	}
+	return string(pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE REQUEST",
+		Bytes: mutate(append([]byte(nil), block.Bytes...)),
+	}))
+}
+
+func brokenCSR(t *testing.T, kind string) string {
+	t.Helper()
+
+	valid := enrollmentCSR(t)
+	switch kind {
+	case "unparseable pem":
+		return "not-a-valid-csr-pem"
+	case "unparseable der":
+		return rewriteCSR(t, valid, func(der []byte) []byte { return der[:len(der)/2] })
+	case "bad signature":
+		return rewriteCSR(t, valid, func(der []byte) []byte {
+			der[len(der)-1] ^= 0x01
+			return der
+		})
+	default:
+		t.Fatalf("unknown broken CSR kind %q", kind)
+		return ""
+	}
+}
+
+// A CSR that parses but whose self-signature does not verify must be rejected
+// before UseToken, with the 500 SignCSR used to answer for it.
+func TestHandleCertsEnrollRejectsBadCSRSignatureWithoutBurningToken(t *testing.T) {
+	const token = "enroll-order-bad-signature"
+
+	client, addr, tokenStore := enrollTestServer(t, map[string]int{token: 1})
+	csr := brokenCSR(t, "bad signature")
+
+	code, body := enrollPost(t, client, addr, map[string]string{
+		"token":   token,
+		"csr":     csr,
+		"node_id": "order-node",
+	})
+
+	if code != http.StatusInternalServerError {
+		t.Fatalf("got status %d, want 500 (body %v)", code, body)
+	}
+	if body["error"] != "failed to sign certificate: invalid certificate: CSR signature verification failed" {
+		t.Fatalf("unexpected error message: %q", body["error"])
+	}
+	if uses := enrollmentUses(t, tokenStore, token); uses != 0 {
+		t.Fatalf("a rejected request burned the token: uses=%d, want 0", uses)
+	}
+}
+
+// Every broken CSR must get from the handler exactly the message SignCSR
+// produces, so the two cannot drift apart.
+func TestHandleCertsEnrollErrorMessageMatchesSignCSR(t *testing.T) {
+	kinds := []string{"unparseable pem", "unparseable der", "bad signature"}
+
+	for _, kind := range kinds {
+		t.Run(kind, func(t *testing.T) {
+			const token = "enroll-order-message-match"
+
+			client, addr, tokenStore := enrollTestServer(t, map[string]int{token: 1})
+			csr := brokenCSR(t, kind)
+
+			code, body := enrollPost(t, client, addr, map[string]string{
+				"token":   token,
+				"csr":     csr,
+				"node_id": "order-node",
+			})
+
+			if code != http.StatusInternalServerError {
+				t.Fatalf("got status %d, want 500 (body %v)", code, body)
+			}
+			if uses := enrollmentUses(t, tokenStore, token); uses != 0 {
+				t.Fatalf("a rejected request burned the token: uses=%d, want 0", uses)
+			}
+		})
 	}
 }
