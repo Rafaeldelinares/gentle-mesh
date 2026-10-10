@@ -119,6 +119,15 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  help      Show help for gentle-mesh")
 }
 
+// resolveDBPath returns the effective SQLite path for the coordinator.
+// An empty flag value means "<tasks-dir>/gentle-mesh.db"; "none" disables persistence.
+func resolveDBPath(dbPath, tasksDir string) string {
+	if dbPath != "" {
+		return dbPath
+	}
+	return filepath.Join(tasksDir, "gentle-mesh.db")
+}
+
 // runServer starts the coordinator HTTPS/HTTP REST and SSE server.
 func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
@@ -126,7 +135,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 
 	addr := fs.String("addr", ":8080", "Coordinator listen address (e.g. :8443 for HTTPS, :8080 for HTTP)")
 	tasksDir := fs.String("tasks-dir", "/tmp/gentle-mesh/tasks", "Directory for task logs and state")
-	dbPath := fs.String("db-path", "", "Path to SQLite database for task persistence (defaults to <tasks-dir>/gentle-mesh.db, 'none' to disable)")
+	dbPath := fs.String("db-path", "", "Path to SQLite database for task persistence (defaults to <tasks-dir>/gentle-mesh.db, 'none' to disable; 'none' is not allowed with -tls)")
 	heartbeatTimeout := fs.Duration("heartbeat-timeout", 30*time.Second, "Heartbeat timeout for registered nodes")
 	token := fs.String("token", "", "Optional bearer authentication token")
 	taskTTL := fs.Duration("task-ttl", 24*time.Hour, "Task TTL before pruning")
@@ -153,6 +162,11 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if tlsDirPath == "" {
 		tlsDirPath = filepath.Join(*tasksDir, "tls")
 	}
+
+	// SQLite path defaults to <tasks-dir>/gentle-mesh.db. "none" disables persistence.
+	// Resolved once here so the task store, the enrollment token store and the webhook
+	// store all open the exact same database file.
+	dbPathResolved := resolveDBPath(*dbPath, *tasksDir)
 
 	// Handle TLS initialization
 	if *tlsInit {
@@ -183,7 +197,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	serverConfig := meshhttp.ServerConfig{
 		Addr:              *addr,
 		TasksDir:          *tasksDir,
-		DBPath:            *dbPath,
+		DBPath:            dbPathResolved,
 		HeartbeatTimeout:  *heartbeatTimeout,
 		TaskTTL:           *taskTTL,
 		BearerToken:       *token,
@@ -200,6 +214,9 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 
 	// Configure TLS if enabled
 	if *tlsEnable {
+		if dbPathResolved == "none" {
+			return errors.New("-tls requires a SQLite database for enrollment tokens and webhooks; remove -db-path none")
+		}
 		fmt.Fprintf(stdout, "TLS enabled, loading certificates from %s...\n", tlsDirPath)
 		// Include localhost and 127.0.0.1 in server cert for local development
 		hostnames := []string{"localhost", "127.0.0.1"}
@@ -217,7 +234,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		fmt.Fprintf(stdout, "Server cert expires: %s\n", serverCert.Cert.NotAfter.Format("2006-01-02"))
 
 		// Initialize token store for enrollment
-		db, err := sql.Open("sqlite", *dbPath)
+		db, err := sql.Open("sqlite", dbPathResolved)
 		if err != nil {
 			return fmt.Errorf("failed to open database: %w", err)
 		}
@@ -916,11 +933,11 @@ func runRPC(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	}
 
 	bridge := client.NewBridge(client.Config{
-		CoordinatorURL:         *coordinator,
-		Token:                  *token,
-		Agent:                  *agent,
-		CACertFile:             *caCert,
-		InsecureSkipTLSVerify:  *insecureSkipTLS,
+		CoordinatorURL:        *coordinator,
+		Token:                 *token,
+		Agent:                 *agent,
+		CACertFile:            *caCert,
+		InsecureSkipTLSVerify: *insecureSkipTLS,
 	})
 
 	return bridge.Serve(ctx, stdin, stdout)
@@ -1653,7 +1670,6 @@ func runTokenRevoke(ctx context.Context, args []string, stdout, stderr io.Writer
 
 	dbPath := fs.String("db-path", "", "Path to SQLite database (required)")
 	tokenValue := fs.String("token", "", "Token to revoke (required)")
-
 
 	if err := fs.Parse(args); err != nil {
 		return err
