@@ -128,6 +128,52 @@ func resolveDBPath(dbPath, tasksDir string) string {
 	return filepath.Join(tasksDir, "gentle-mesh.db")
 }
 
+// requireTLSStorage rejects a configuration in which the enrollment tokens and the
+// webhooks cannot be persisted. Both TLS paths refuse it with the same message.
+func requireTLSStorage(dbPath string) error {
+	if dbPath == "none" {
+		return errors.New("-tls requires a SQLite database for enrollment tokens and webhooks; remove -db-path none")
+	}
+	return nil
+}
+
+// configureCoordinatorTLS loads (or generates) the coordinator TLS material and
+// wires the enrollment token store and the webhook store. The explicit -tls path
+// and the -addr :8443 auto-enable path both call it, so the stores cannot be
+// armed in one path and missing in the other. The caller must have validated the
+// path with requireTLSStorage first.
+func configureCoordinatorTLS(cfg *meshhttp.ServerConfig, tlsDirPath, dbPath string) (*pki.MeshCA, *pki.ServerCert, error) {
+	// Include localhost and 127.0.0.1 in server cert for local development
+	hostnames := []string{"localhost", "127.0.0.1"}
+	ca, serverCert, err := pki.EnsureMeshTLS(tlsDirPath, "Gentle Mesh", "mesh-coordinator", hostnames, false)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load TLS certificates: %w", err)
+	}
+	cfg.TLSEnabled = true
+	cfg.TLSCertFile = filepath.Join(tlsDirPath, pki.CertPemFile)
+	cfg.TLSKeyFile = filepath.Join(tlsDirPath, pki.CertKeyFile)
+	cfg.MeshCA = ca
+	cfg.MeshCAPemFile = filepath.Join(tlsDirPath, pki.CAPemFile)
+
+	// Initialize token store for enrollment
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	if err := store.InitTokenSchema(db); err != nil {
+		return nil, nil, fmt.Errorf("failed to init token schema: %w", err)
+	}
+	cfg.TokenStore = store.NewSQLiteTokenStore(db)
+
+	// Initialize webhook store and dispatcher
+	if err := store.InitWebhookSchema(db); err != nil {
+		return nil, nil, fmt.Errorf("failed to init webhook schema: %w", err)
+	}
+	cfg.WebhookStore = store.NewSQLiteWebhookStore(db)
+
+	return ca, serverCert, nil
+}
+
 // runServer starts the coordinator HTTPS/HTTP REST and SSE server.
 func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
@@ -214,41 +260,18 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 
 	// Configure TLS if enabled
 	if *tlsEnable {
-		if dbPathResolved == "none" {
-			return errors.New("-tls requires a SQLite database for enrollment tokens and webhooks; remove -db-path none")
+		if err := requireTLSStorage(dbPathResolved); err != nil {
+			return err
 		}
 		fmt.Fprintf(stdout, "TLS enabled, loading certificates from %s...\n", tlsDirPath)
-		// Include localhost and 127.0.0.1 in server cert for local development
-		hostnames := []string{"localhost", "127.0.0.1"}
-		ca, serverCert, err := pki.EnsureMeshTLS(tlsDirPath, "Gentle Mesh", "mesh-coordinator", hostnames, false)
+		ca, serverCert, err := configureCoordinatorTLS(&serverConfig, tlsDirPath, dbPathResolved)
 		if err != nil {
-			return fmt.Errorf("failed to load TLS certificates: %w", err)
+			return err
 		}
-		serverConfig.TLSEnabled = true
-		serverConfig.TLSCertFile = filepath.Join(tlsDirPath, pki.CertPemFile)
-		serverConfig.TLSKeyFile = filepath.Join(tlsDirPath, pki.CertKeyFile)
-		serverConfig.MeshCA = ca
-		serverConfig.MeshCAPemFile = filepath.Join(tlsDirPath, pki.CAPemFile)
 		fmt.Fprintf(stdout, "TLS ready: CA=%s\n", ca.Cert.Subject.CommonName)
 		fmt.Fprintf(stdout, "  CA fingerprint: %s\n", pki.CertFingerprint(ca.Cert))
 		fmt.Fprintf(stdout, "Server cert expires: %s\n", serverCert.Cert.NotAfter.Format("2006-01-02"))
-
-		// Initialize token store for enrollment
-		db, err := sql.Open("sqlite", dbPathResolved)
-		if err != nil {
-			return fmt.Errorf("failed to open database: %w", err)
-		}
-		if err := store.InitTokenSchema(db); err != nil {
-			return fmt.Errorf("failed to init token schema: %w", err)
-		}
-		serverConfig.TokenStore = store.NewSQLiteTokenStore(db)
 		fmt.Fprintf(stdout, "Enrollment tokens enabled\n")
-
-		// Initialize webhook store and dispatcher
-		if err := store.InitWebhookSchema(db); err != nil {
-			return fmt.Errorf("failed to init webhook schema: %w", err)
-		}
-		serverConfig.WebhookStore = store.NewSQLiteWebhookStore(db)
 		fmt.Fprintf(stdout, "Webhooks enabled\n")
 	}
 
@@ -259,19 +282,16 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		}
 		serverConfig.RequireMTLS = true
 	} else if *addr == ":8443" || strings.HasPrefix(*addr, ":8443") {
-		// Auto-enable TLS if using common HTTPS port without -tls flag
-		fmt.Fprintf(stdout, "Auto-enabling TLS on port 8443...\n")
-		hostnames := []string{"localhost", "127.0.0.1"}
-		ca, serverCert, err := pki.EnsureMeshTLS(tlsDirPath, "Gentle Mesh", "mesh-coordinator", hostnames, false)
-		if err != nil {
-			return fmt.Errorf("failed to load TLS certificates: %w", err)
+		// Auto-enable TLS if using common HTTPS port without -tls flag. The
+		// enrollment tokens and the webhooks need the database, so this path
+		// arms the same stores as -tls instead of starting without them.
+		if err := requireTLSStorage(dbPathResolved); err != nil {
+			return err
 		}
-		serverConfig.TLSEnabled = true
-		serverConfig.TLSCertFile = filepath.Join(tlsDirPath, pki.CertPemFile)
-		serverConfig.TLSKeyFile = filepath.Join(tlsDirPath, pki.CertKeyFile)
-		serverConfig.MeshCA = ca
-		serverConfig.MeshCAPemFile = filepath.Join(tlsDirPath, pki.CAPemFile)
-		_ = serverCert // used for info above
+		fmt.Fprintf(stdout, "Auto-enabling TLS on port 8443...\n")
+		if _, _, err := configureCoordinatorTLS(&serverConfig, tlsDirPath, dbPathResolved); err != nil {
+			return err
+		}
 	}
 
 	srv, err := meshhttp.NewServer(serverConfig)

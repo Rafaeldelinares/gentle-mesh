@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
@@ -1650,5 +1651,83 @@ func TestServer_TLSRejectsNoPersistence(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "coordinator starting") {
 		t.Fatalf("server must not start with -tls and -db-path none; stdout: %s", stdout.String())
+	}
+}
+
+// The explicit -tls path and the -addr :8443 auto-enable path must arm the same
+// stores: both go through configureCoordinatorTLS (defect 1b).
+func TestConfigureCoordinatorTLSArmsEnrollmentStores(t *testing.T) {
+	tlsDir := t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "mesh.db")
+	var cfg meshhttp.ServerConfig
+
+	ca, serverCert, err := configureCoordinatorTLS(&cfg, tlsDir, dbPath)
+	if err != nil {
+		t.Fatalf("configureCoordinatorTLS failed: %v", err)
+	}
+	if ca == nil || serverCert == nil {
+		t.Fatal("expected the TLS material to be returned")
+	}
+	if !cfg.TLSEnabled {
+		t.Error("TLSEnabled should be set")
+	}
+	if cfg.TLSCertFile != filepath.Join(tlsDir, pki.CertPemFile) {
+		t.Errorf("TLSCertFile = %q", cfg.TLSCertFile)
+	}
+	if cfg.TLSKeyFile != filepath.Join(tlsDir, pki.CertKeyFile) {
+		t.Errorf("TLSKeyFile = %q", cfg.TLSKeyFile)
+	}
+	if cfg.MeshCA != ca {
+		t.Error("MeshCA should be the loaded CA")
+	}
+	if cfg.MeshCAPemFile != filepath.Join(tlsDir, pki.CAPemFile) {
+		t.Errorf("MeshCAPemFile = %q", cfg.MeshCAPemFile)
+	}
+	if cfg.TokenStore == nil {
+		t.Error("TokenStore must be armed: without it the enrollment answers 503 (defect 1b)")
+	}
+	if cfg.WebhookStore == nil {
+		t.Error("WebhookStore must be armed")
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Errorf("expected the database at %s: %v", dbPath, err)
+	}
+}
+
+func TestRequireTLSStorage(t *testing.T) {
+	err := requireTLSStorage("none")
+	if err == nil {
+		t.Fatal("expected an error for -db-path none")
+	}
+	const want = "-tls requires a SQLite database for enrollment tokens and webhooks; remove -db-path none"
+	if err.Error() != want {
+		t.Fatalf("message changed: %q", err.Error())
+	}
+	if err := requireTLSStorage(filepath.Join("tmp", "mesh.db")); err != nil {
+		t.Fatalf("a real path must be accepted: %v", err)
+	}
+}
+
+// The auto-enabled :8443 path must refuse -db-path none before enabling TLS,
+// instead of starting without a token store.
+func TestServer_AutoTLSRejectsNoPersistence(t *testing.T) {
+	tasksDir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+
+	err := runCLI(context.Background(), []string{
+		"server",
+		"-addr", ":8443",
+		"-tasks-dir", tasksDir,
+		"-db-path", "none",
+	}, &stdout, &stderr)
+
+	if err == nil {
+		t.Fatal("expected an error for -addr :8443 with -db-path none")
+	}
+	if !strings.Contains(err.Error(), "-db-path") {
+		t.Fatalf("error must mention -db-path, got: %v", err)
+	}
+	if strings.Contains(stdout.String(), "Auto-enabling TLS") {
+		t.Fatalf("must not auto-enable TLS without a token store; stdout: %s", stdout.String())
 	}
 }
