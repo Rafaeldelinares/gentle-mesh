@@ -170,7 +170,7 @@ Para funcionar como un demonio de infraestructura desatendido sin requerir servi
 4. **Modo WAL y Alta Concurrencia:**
    * Configurado con `PRAGMA journal_mode=WAL` y `PRAGMA busy_timeout=5000` para permitir lecturas masivas concurrentes sin bloquear las escrituras de los agentes.
 5. **Configuración Flexible vía CLI:**
-   * Parámetro `-db-path`: Define la ruta del archivo de base de datos (por defecto `<tasks-dir>/gentle-mesh.db`). Para entornos efímeros o pruebas puramente en memoria, basta con indicar `-db-path=none`.
+   * Parámetro `-db-path`: Define la ruta del archivo de base de datos (por defecto `<tasks-dir>/gentle-mesh.db`). Para entornos efímeros o pruebas puramente en memoria, basta con indicar `-db-path=none`. Con `-tls` el valor `none` **no** es válido: el almacén de tokens de enrollment y los webhooks necesitan SQLite, así que `server -tls -db-path none` falla con un error explícito.
 
 ### 2.2 Planificación Territorial Transparente y Semáforo Inteligente (TerritoryMode)
 
