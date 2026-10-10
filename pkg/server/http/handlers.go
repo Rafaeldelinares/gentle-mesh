@@ -155,13 +155,10 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 		return
 	}
 
-	// An unparseable CSR can never be signed, so reject it before UseToken as
-	// well. pki.ParseCSR returns the raw DER error while SignCSR wraps it with
-	// ErrInvalidCert, so reproduce that wording to keep the response identical.
-	if _, err := pki.ParseCSR(req.CSR); err != nil {
-		if !errors.Is(err, pki.ErrInvalidCert) {
-			err = fmt.Errorf("%v: failed to parse CSR: %v", pki.ErrInvalidCert, err)
-		}
+	// A CSR that cannot be parsed or whose self-signature does not verify can
+	// never be signed, so reject it before UseToken. pki.ValidateCSR is the
+	// same function SignCSR uses, so the 500 keeps exactly the same wording.
+	if _, err := pki.ValidateCSR(req.CSR); err != nil {
 		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to sign certificate: %v", err)})
 		return
 	}
