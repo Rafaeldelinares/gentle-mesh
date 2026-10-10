@@ -125,6 +125,12 @@ func (s *SQLiteTokenStore) GetToken(ctx context.Context, token string) (*TokenRe
 		return nil, errors.New("token store is closed")
 	}
 
+	return s.getTokenLocked(ctx, token)
+}
+
+// getTokenLocked loads one token row. The caller must already hold closeMu
+// for reading, which is why it is separate from GetToken.
+func (s *SQLiteTokenStore) getTokenLocked(ctx context.Context, token string) (*TokenRecord, error) {
 	query := `SELECT token, created_at, expires_at, used_at, used_by, max_uses, uses 
 		FROM enrollment_tokens WHERE token = ?`
 
@@ -163,7 +169,12 @@ func (s *SQLiteTokenStore) GetToken(ctx context.Context, token string) (*TokenRe
 	return &rec, nil
 }
 
-// UseToken marks a token as used.
+// UseToken consumes one use of a token.
+//
+// The UPDATE statement is the only gate: it performs the check and the
+// increment together, so two concurrent callers cannot both act on a stale
+// "uses < max_uses" read. When nothing was consumed the row is read again
+// only to choose the error message.
 func (s *SQLiteTokenStore) UseToken(ctx context.Context, token string) (*TokenRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -175,41 +186,52 @@ func (s *SQLiteTokenStore) UseToken(ctx context.Context, token string) (*TokenRe
 		return nil, errors.New("token store is closed")
 	}
 
-	// Get current token state
-	rec, err := s.GetToken(ctx, token)
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	now := time.Now().Unix()
+
+	// expires_at NULL means the token never expires, and it stays valid at
+	// exactly expires_at, matching the previous behaviour.
+	// max_uses = 0 keeps its previous effective behaviour: `uses < max_uses`
+	// is false from the start, so such a token can never be consumed.
+	// used_by is passed as NULL so COALESCE keeps whatever is stored: UseToken
+	// never sets it.
+	query := `UPDATE enrollment_tokens 
+		SET uses = uses + 1, used_at = ?, used_by = COALESCE(?, used_by) 
+		WHERE token = ? AND uses < max_uses AND (expires_at IS NULL OR expires_at >= ?)`
+
+	res, err := s.db.ExecContext(ctx, query, now, nil, token, now)
+	if err != nil {
+		return nil, fmt.Errorf("failed to use token: %w", err)
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("failed to use token: %w", err)
+	}
+
+	if affected == 0 {
+		rec, err := s.getTokenLocked(ctx, token)
+		if err != nil {
+			return nil, err
+		}
+		if rec == nil {
+			return nil, errors.New("token not found")
+		}
+		if rec.ExpiresAt != nil && time.Now().After(*rec.ExpiresAt) {
+			return nil, errors.New("token expired")
+		}
+		return nil, errors.New("token max uses exceeded")
+	}
+
+	rec, err := s.getTokenLocked(ctx, token)
 	if err != nil {
 		return nil, err
 	}
 	if rec == nil {
 		return nil, errors.New("token not found")
 	}
-
-	// Check if expired
-	if rec.ExpiresAt != nil && time.Now().After(*rec.ExpiresAt) {
-		return nil, errors.New("token expired")
-	}
-
-	// Check uses
-	if rec.Uses >= rec.MaxUses {
-		return nil, errors.New("token max uses exceeded")
-	}
-
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-
-	now := time.Now().Unix()
-	query := `UPDATE enrollment_tokens 
-		SET uses = uses + 1, used_at = ?, used_by = COALESCE(?, used_by) 
-		WHERE token = ? AND (max_uses = 0 OR uses < max_uses)`
-
-	_, err = s.db.ExecContext(ctx, query, now, rec.UsedBy, token)
-	if err != nil {
-		return nil, fmt.Errorf("failed to use token: %w", err)
-	}
-
-	rec.Uses++
-	rec.UsedAt = &time.Time{}
-	*rec.UsedAt = time.Unix(now, 0)
 
 	return rec, nil
 }
