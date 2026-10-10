@@ -1779,7 +1779,9 @@ func runTokenList(ctx context.Context, args []string, stdout, stderr io.Writer) 
 
 	for _, t := range tokens {
 		status := "active"
-		if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {
+		if t.RevokedAt != nil {
+			status = "revoked"
+		} else if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {
 			status = "expired"
 		} else if t.Uses >= t.MaxUses && t.MaxUses > 0 {
 			status = "used"
@@ -1793,6 +1795,12 @@ func runTokenList(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintf(stdout, "    Uses: %d/%d\n", t.Uses, t.MaxUses)
 		if t.UsedAt != nil {
 			fmt.Fprintf(stdout, "    Last used: %s\n", t.UsedAt.Format("2006-01-02 15:04"))
+		}
+		if t.UsedBy != nil {
+			fmt.Fprintf(stdout, "    Used by: %s\n", *t.UsedBy)
+		}
+		if t.RevokedAt != nil {
+			fmt.Fprintf(stdout, "    Revoked: %s\n", t.RevokedAt.Format("2006-01-02 15:04"))
 		}
 		fmt.Fprintln(stdout, "")
 	}
@@ -1828,8 +1836,18 @@ func runTokenRevoke(ctx context.Context, args []string, stdout, stderr io.Writer
 
 	tokenStore := store.NewSQLiteTokenStore(db)
 
-	// Mark as used (effectively revokes by setting uses = max)
-	t, err := tokenStore.UseToken(ctx, *tokenValue)
+	// Revoking marks the row instead of deleting it and instead of the old
+	// "consume a use" trick: the token stops working, no use is spent and the
+	// usage trail (used_by, used_at) stays for audit.
+	before, err := tokenStore.GetToken(ctx, *tokenValue)
+	if err != nil {
+		return fmt.Errorf("failed to read token: %w", err)
+	}
+	if before == nil {
+		return fmt.Errorf("token not found: %s", *tokenValue)
+	}
+
+	t, err := tokenStore.RevokeToken(ctx, *tokenValue)
 	if err != nil {
 		if err.Error() == "token not found" {
 			return fmt.Errorf("token not found: %s", *tokenValue)
@@ -1837,9 +1855,20 @@ func runTokenRevoke(ctx context.Context, args []string, stdout, stderr io.Writer
 		return fmt.Errorf("failed to revoke token: %w", err)
 	}
 
+	if before.RevokedAt != nil {
+		fmt.Fprintf(stdout, "ℹ️  Token was already revoked: %s\n", *tokenValue)
+		fmt.Fprintf(stdout, "  Revoked at: %s\n", before.RevokedAt.Format("2006-01-02 15:04"))
+		return nil
+	}
+
 	fmt.Fprintf(stdout, "✅ Token revoked: %s\n", *tokenValue)
-	fmt.Fprintf(stdout, "  Total uses: %d\n", t.Uses)
-	_ = t // suppress unused
+	if t.RevokedAt != nil {
+		fmt.Fprintf(stdout, "  Revoked at: %s\n", t.RevokedAt.Format("2006-01-02 15:04"))
+	}
+	fmt.Fprintf(stdout, "  Uses: %d/%d\n", t.Uses, t.MaxUses)
+	if t.UsedBy != nil {
+		fmt.Fprintf(stdout, "  Used by: %s\n", *t.UsedBy)
+	}
 
 	return nil
 }

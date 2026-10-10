@@ -73,7 +73,7 @@ func TestTokenStoreUse(t *testing.T) {
 		t.Fatalf("CreateToken failed: %v", err)
 	}
 
-	used, err := store.UseToken(ctx, "use-token-456")
+	used, err := store.UseToken(ctx, "use-token-456", "")
 	if err != nil {
 		t.Fatalf("UseToken failed: %v", err)
 	}
@@ -110,18 +110,18 @@ func TestTokenStoreMaxUses(t *testing.T) {
 	}
 
 	// Use twice
-	_, err = store.UseToken(ctx, "multi-use-token")
+	_, err = store.UseToken(ctx, "multi-use-token", "")
 	if err != nil {
 		t.Fatalf("First UseToken failed: %v", err)
 	}
 
-	_, err = store.UseToken(ctx, "multi-use-token")
+	_, err = store.UseToken(ctx, "multi-use-token", "")
 	if err != nil {
 		t.Fatalf("Second UseToken failed: %v", err)
 	}
 
 	// Third use should fail
-	_, err = store.UseToken(ctx, "multi-use-token")
+	_, err = store.UseToken(ctx, "multi-use-token", "")
 	if err == nil {
 		t.Error("Third use should have failed")
 	}
@@ -148,7 +148,7 @@ func TestTokenStoreExpired(t *testing.T) {
 		t.Fatalf("CreateToken failed: %v", err)
 	}
 
-	_, err = store.UseToken(ctx, "expired-token")
+	_, err = store.UseToken(ctx, "expired-token", "")
 	if err == nil {
 		t.Error("Should have failed for expired token")
 	}
@@ -275,7 +275,7 @@ func TestTokenStoreUseTokenConcurrentSingleUse(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, errs[i] = store.UseToken(ctx, "race-token")
+			_, errs[i] = store.UseToken(ctx, "race-token", "")
 		}(i)
 	}
 	close(start)
@@ -327,7 +327,7 @@ func TestTokenStoreUseTokenMaxUsesZeroIsRejected(t *testing.T) {
 	}
 
 	for attempt := 1; attempt <= 3; attempt++ {
-		_, err := store.UseToken(ctx, "zero-use-token")
+		_, err := store.UseToken(ctx, "zero-use-token", "")
 		if err == nil {
 			t.Fatalf("attempt %d: a max_uses=0 token must not be consumable", attempt)
 		}
@@ -377,7 +377,7 @@ func TestTokenStoreUseTokenExpiredConcurrent(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, errs[i] = store.UseToken(ctx, "expired-race-token")
+			_, errs[i] = store.UseToken(ctx, "expired-race-token", "")
 		}(i)
 	}
 	close(start)
@@ -419,13 +419,221 @@ func TestTokenStoreUseTokenWithoutExpiryIsUsable(t *testing.T) {
 	}
 
 	for attempt := 1; attempt <= 2; attempt++ {
-		if _, err := store.UseToken(ctx, "no-expiry-token"); err != nil {
+		if _, err := store.UseToken(ctx, "no-expiry-token", ""); err != nil {
 			t.Fatalf("attempt %d: a token without expiry must be usable: %v", attempt, err)
 		}
 	}
 
-	_, err := store.UseToken(ctx, "no-expiry-token")
+	_, err := store.UseToken(ctx, "no-expiry-token", "")
 	if err == nil || err.Error() != "token max uses exceeded" {
 		t.Fatalf("third use: expected 'token max uses exceeded', got %v", err)
+	}
+}
+
+// The consume statement records the node that used the token, so the audit
+// trail survives revoking it.
+func TestTokenStoreUseTokenRecordsUsedBy(t *testing.T) {
+	db := setupTestTokenDB(t)
+	defer db.Close()
+
+	st := NewSQLiteTokenStore(db)
+	ctx := context.Background()
+
+	if err := st.CreateToken(ctx, &TokenRecord{Token: "used-by-token", CreatedAt: time.Now(), MaxUses: 2}); err != nil {
+		t.Fatalf("CreateToken failed: %v", err)
+	}
+
+	used, err := st.UseToken(ctx, "used-by-token", "node-7")
+	if err != nil {
+		t.Fatalf("UseToken failed: %v", err)
+	}
+	if used.UsedBy == nil || *used.UsedBy != "node-7" {
+		t.Errorf("used_by should be node-7, got %v", used.UsedBy)
+	}
+
+	stored, err := st.GetToken(ctx, "used-by-token")
+	if err != nil {
+		t.Fatalf("GetToken failed: %v", err)
+	}
+	if stored.UsedBy == nil || *stored.UsedBy != "node-7" {
+		t.Errorf("stored used_by should be node-7, got %v", stored.UsedBy)
+	}
+
+	// A caller without a node keeps the recorded one instead of clearing it.
+	if _, err := st.UseToken(ctx, "used-by-token", ""); err != nil {
+		t.Fatalf("second UseToken failed: %v", err)
+	}
+	stored, err = st.GetToken(ctx, "used-by-token")
+	if err != nil {
+		t.Fatalf("GetToken failed: %v", err)
+	}
+	if stored.UsedBy == nil || *stored.UsedBy != "node-7" {
+		t.Errorf("an empty node must not clear used_by, got %v", stored.UsedBy)
+	}
+	if stored.Uses != 2 {
+		t.Errorf("uses should be 2, got %d", stored.Uses)
+	}
+}
+
+// Revoking marks the row instead of consuming it: the token becomes unusable
+// and the usage trail stays readable for audit.
+func TestTokenStoreRevokeToken(t *testing.T) {
+	db := setupTestTokenDB(t)
+	defer db.Close()
+
+	st := NewSQLiteTokenStore(db)
+	ctx := context.Background()
+
+	if err := st.CreateToken(ctx, &TokenRecord{Token: "revoke-me", CreatedAt: time.Now(), MaxUses: 5}); err != nil {
+		t.Fatalf("CreateToken failed: %v", err)
+	}
+	if _, err := st.UseToken(ctx, "revoke-me", "node-a"); err != nil {
+		t.Fatalf("UseToken failed: %v", err)
+	}
+
+	revoked, err := st.RevokeToken(ctx, "revoke-me")
+	if err != nil {
+		t.Fatalf("RevokeToken failed: %v", err)
+	}
+	if revoked.RevokedAt == nil {
+		t.Fatal("RevokeToken must set revoked_at")
+	}
+	if revoked.Uses != 1 {
+		t.Errorf("revoking must not consume a use, uses=%d (expected 1)", revoked.Uses)
+	}
+	if revoked.UsedBy == nil || *revoked.UsedBy != "node-a" {
+		t.Errorf("revoking must keep used_by, got %v", revoked.UsedBy)
+	}
+	firstRevocation := *revoked.RevokedAt
+
+	// A revoked token can never be consumed again, and the error says why.
+	if _, err := st.UseToken(ctx, "revoke-me", "node-b"); err == nil {
+		t.Fatal("a revoked token must not be usable")
+	} else if err.Error() != "token revoked" {
+		t.Errorf("expected the 'token revoked' error, got %v", err)
+	}
+
+	stored, err := st.GetToken(ctx, "revoke-me")
+	if err != nil {
+		t.Fatalf("GetToken failed: %v", err)
+	}
+	if stored.Uses != 1 {
+		t.Errorf("a rejected consume must not change uses, got %d", stored.Uses)
+	}
+	if stored.UsedBy == nil || *stored.UsedBy != "node-a" {
+		t.Errorf("a rejected consume must not change used_by, got %v", stored.UsedBy)
+	}
+
+	// Revoking twice keeps the first date; the sleep makes the comparison
+	// meaningful because revocation is stored with second resolution.
+	time.Sleep(1100 * time.Millisecond)
+	again, err := st.RevokeToken(ctx, "revoke-me")
+	if err != nil {
+		t.Fatalf("a second RevokeToken failed: %v", err)
+	}
+	if again.RevokedAt == nil || !again.RevokedAt.Equal(firstRevocation) {
+		t.Errorf("a second revocation must keep the first date: %v vs %v", again.RevokedAt, firstRevocation)
+	}
+
+	// Revoking a token that does not exist is reported, never silently ignored.
+	if _, err := st.RevokeToken(ctx, "ghost"); err == nil {
+		t.Fatal("revoking a missing token must fail")
+	} else if err.Error() != "token not found" {
+		t.Errorf("expected 'token not found', got %v", err)
+	}
+}
+
+// Revoking works on an already exhausted token, which the old "consume a use"
+// trick could not do (it failed with "token max uses exceeded").
+func TestTokenStoreRevokeExhaustedToken(t *testing.T) {
+	db := setupTestTokenDB(t)
+	defer db.Close()
+
+	st := NewSQLiteTokenStore(db)
+	ctx := context.Background()
+
+	if err := st.CreateToken(ctx, &TokenRecord{Token: "single-use", CreatedAt: time.Now(), MaxUses: 1}); err != nil {
+		t.Fatalf("CreateToken failed: %v", err)
+	}
+	if _, err := st.UseToken(ctx, "single-use", "node-x"); err != nil {
+		t.Fatalf("UseToken failed: %v", err)
+	}
+	if _, err := st.UseToken(ctx, "single-use", "node-y"); err == nil {
+		t.Fatal("an exhausted token must not be usable")
+	}
+
+	revoked, err := st.RevokeToken(ctx, "single-use")
+	if err != nil {
+		t.Fatalf("revoking an exhausted token must work: %v", err)
+	}
+	if revoked.RevokedAt == nil {
+		t.Error("an exhausted token must get revoked_at")
+	}
+	if revoked.UsedBy == nil || *revoked.UsedBy != "node-x" {
+		t.Errorf("revoking must keep the first (and only) user, got %v", revoked.UsedBy)
+	}
+	if _, err := st.UseToken(ctx, "single-use", "node-z"); err == nil || err.Error() != "token revoked" {
+		t.Errorf("an exhausted and revoked token must report 'token revoked', got %v", err)
+	}
+}
+
+// A database created before revocation existed gains the column instead of
+// failing every use: CREATE TABLE IF NOT EXISTS leaves old tables untouched.
+func TestTokenStoreInitSchemaAddsRevokedAtToExistingDatabase(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db"))
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	legacy := `CREATE TABLE enrollment_tokens (
+		token TEXT PRIMARY KEY,
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER,
+		used_at INTEGER,
+		used_by TEXT,
+		max_uses INTEGER NOT NULL DEFAULT 1,
+		uses INTEGER NOT NULL DEFAULT 0
+	);`
+	if _, err := db.Exec(legacy); err != nil {
+		t.Fatalf("failed to create the legacy table: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO enrollment_tokens (token, created_at, max_uses, uses, used_by) VALUES (?, ?, ?, ?, ?)`,
+		"legacy-token", time.Now().Unix(), 3, 1, "node-old"); err != nil {
+		t.Fatalf("failed to seed the legacy row: %v", err)
+	}
+
+	if err := InitTokenSchema(db); err != nil {
+		t.Fatalf("InitTokenSchema must migrate an existing database: %v", err)
+	}
+	// The migration must be idempotent.
+	if err := InitTokenSchema(db); err != nil {
+		t.Fatalf("a second InitTokenSchema failed: %v", err)
+	}
+
+	st := NewSQLiteTokenStore(db)
+	ctx := context.Background()
+
+	rec, err := st.GetToken(ctx, "legacy-token")
+	if err != nil {
+		t.Fatalf("GetToken failed: %v", err)
+	}
+	if rec == nil {
+		t.Fatal("the migration must not lose the existing rows")
+	}
+	if rec.RevokedAt != nil {
+		t.Error("an existing token must not come back revoked")
+	}
+	if rec.Uses != 1 || rec.UsedBy == nil || *rec.UsedBy != "node-old" {
+		t.Errorf("the migration must keep uses and used_by: uses=%d used_by=%v", rec.Uses, rec.UsedBy)
+	}
+
+	revoked, err := st.RevokeToken(ctx, "legacy-token")
+	if err != nil {
+		t.Fatalf("the migrated row must be revocable: %v", err)
+	}
+	if revoked.RevokedAt == nil {
+		t.Error("the migrated row must accept a revocation")
 	}
 }

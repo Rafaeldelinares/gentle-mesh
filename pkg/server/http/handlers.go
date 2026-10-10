@@ -163,9 +163,14 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 		return
 	}
 
-	// Validate token
-	_, err := s.tokenStore.UseToken(r.Context(), req.Token)
+	// Validate token. The node id validated above travels with the consume so
+	// the token records who used it.
+	_, err := s.tokenStore.UseToken(r.Context(), req.Token, nodeID)
 	if err != nil {
+		if err.Error() == "token revoked" {
+			writeJSON(w, stdhttp.StatusUnauthorized, map[string]string{"error": "token revoked"})
+			return
+		}
 		if err.Error() == "token not found" {
 			writeJSON(w, stdhttp.StatusUnauthorized, map[string]string{"error": "invalid token"})
 			return
