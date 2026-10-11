@@ -214,8 +214,19 @@ func TestSchedulerPanickingRunnerFinalizesTaskAndReleasesLock(t *testing.T) {
 	if snap.Error == nil || snap.Error.Code != "RUNNER_PANIC" {
 		t.Errorf("expected the panic cause, got %+v", snap.Error)
 	}
-	if _, _, locked := reg.Locks().GetLock("r-lock", "b-lock"); locked {
-		t.Error("the branch lock must be released after the panic")
+	// The lock is released by complete() after the task is finalized, so there is a real window
+	// between "failed" and "lock released": poll for it with a bounded wait instead of asserting
+	// immediately, and still fail if it never happens.
+	locked := true
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if _, _, stillLocked := reg.Locks().GetLock("r-lock", "b-lock"); !stillLocked {
+			locked = false
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if locked {
+		t.Error("the branch lock must be released after the panic (still locked after 2s)")
 	}
 	if err := mgr.FailTask(mt.TaskID, "OTHER", "other"); err == nil {
 		t.Error("FailTask on a terminal task must report an error")
