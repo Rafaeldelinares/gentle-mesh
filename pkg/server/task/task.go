@@ -353,7 +353,10 @@ func (t *ManagedTask) EmitEvent(eventType protocol.EventType, payload any) (prot
 		notify = true
 	case protocol.EventError:
 		var ep protocol.ErrorPayload
-		if err := evt.UnmarshalPayload(&ep); err == nil {
+		// The first cause wins: a cause that is already recorded (the lifecycle's TASK_TIMEOUT,
+		// COORDINATOR_RESTARTED or DISPATCH_FAILED, or an earlier failing event) is never
+		// overwritten by a later one.
+		if err := evt.UnmarshalPayload(&ep); err == nil && t.Error == nil {
 			t.Error = &ep
 		}
 		t.Status = protocol.TaskStatusFailed
@@ -522,6 +525,23 @@ func (t *ManagedTask) Territory() protocol.ActiveTerritory {
 	}
 }
 
+// AttributeNode records which mesh node accepted this task, so the state and the store can
+// answer who ran it. It is additive and first-writer-wins: a node already recorded is kept, and
+// a task that is never attributed keeps an empty worker id.
+func (t *ManagedTask) AttributeNode(nodeID string) {
+	if nodeID == "" {
+		return
+	}
+	t.mu.Lock()
+	if t.NodeID != "" {
+		t.mu.Unlock()
+		return
+	}
+	t.NodeID = nodeID
+	t.mu.Unlock()
+	t.notifyUpdate()
+}
+
 // Snapshot returns a point-in-time snapshot of the task state.
 func (t *ManagedTask) Snapshot() protocol.TaskState {
 	t.mu.RLock()
@@ -549,6 +569,7 @@ func (t *ManagedTask) Snapshot() protocol.TaskState {
 		FinishedAt: t.FinishedAt,
 		Completion: comp,
 		Error:      errPayload,
+		WorkerID:   t.NodeID,
 		Checkpoint: t.checkpoint,
 	}
 }
