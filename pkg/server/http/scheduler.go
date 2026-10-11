@@ -367,6 +367,10 @@ func failureCause(err error) (string, string) {
 		return "TASK_TIMEOUT", "task timeout"
 	case errors.Is(err, context.Canceled):
 		return "TASK_CANCELED", "task canceled"
+	case errors.Is(err, runner.ErrNodeLost):
+		// The node accepted the task and its stream ended without a result: the node is lost.
+		// The task is never retried (at-most-once), so the client decides whether to resend it.
+		return "NODE_LOST", "node lost: stream ended without a result"
 	default:
 		return "DISPATCH_FAILED", fmt.Sprintf("dispatch failed: %v", err)
 	}
