@@ -44,6 +44,10 @@ type ManagedTask struct {
 	LastActivityAt int64
 	EditSurfaces   []string
 	NodeID         string
+	// retryAttempts counts the scheduler retries done for this task. It lives in memory on
+	// purpose: nothing persists it, and after a coordinator restart the pending tasks are
+	// finalized anyway.
+	retryAttempts int
 	ctx            context.Context
 	cancel         context.CancelFunc
 	eventSeq       atomic.Int64
@@ -523,6 +527,21 @@ func (t *ManagedTask) Territory() protocol.ActiveTerritory {
 		CurrentAction:  t.CurrentAction,
 		LastActivityAt: lastActivity,
 	}
+}
+
+// RetryAttempts reports how many scheduler retries this task has already used.
+func (t *ManagedTask) RetryAttempts() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.retryAttempts
+}
+
+// IncRetryAttempts counts one more retry and returns the new count.
+func (t *ManagedTask) IncRetryAttempts() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.retryAttempts++
+	return t.retryAttempts
 }
 
 // AttributeNode records which mesh node accepted this task, so the state and the store can
