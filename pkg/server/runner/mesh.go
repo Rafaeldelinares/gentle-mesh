@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 )
@@ -104,6 +105,31 @@ func (m *MeshRunner) Run(ctx context.Context, req protocol.TaskRequest, sink Eve
 // It returns (nil, nil) when a worker ran it, (dispatchErr, nil) when the task reached a
 // worker and failed (or the retry budget ran out), and (nil, selectErr) when no node could
 // be selected, which is the only case the caller answers with the local fallback.
+// nodeAttributionSink carries the identity of the mesh node that accepted a task to the event
+// sink, so the task state and the store can record who executed it. The attribution happens on the
+// first event the node produces, which is only reached after the node accepted the task: a failed
+// dispatch attempt that never emitted anything does not claim the task. Every event is forwarded
+// untouched.
+type nodeAttributionSink struct {
+	EventSink
+	nodeID string
+	once   sync.Once
+}
+
+// EmitEvent attributes the wrapped sink with this node on the first forwarded event, when that
+// sink supports attribution, and then forwards the event untouched.
+func (s *nodeAttributionSink) EmitEvent(eventType protocol.EventType, payload any) (protocol.Event, error) {
+	s.once.Do(func() {
+		if s.nodeID == "" {
+			return
+		}
+		if attributor, ok := s.EventSink.(NodeAttributor); ok {
+			attributor.AttributeNode(s.nodeID)
+		}
+	})
+	return s.EventSink.EmitEvent(eventType, payload)
+}
+
 func (m *MeshRunner) dispatchToMesh(ctx context.Context, req protocol.TaskRequest, sink EventSink) (dispatchErr, selectErr error) {
 	var lastDispatchErr error
 
@@ -128,13 +154,19 @@ func (m *MeshRunner) dispatchToMesh(ctx context.Context, req protocol.TaskReques
 		}
 
 		log.Printf("[mesh-router] dispatching task (agent: %q, tags: %v) -> node %q (endpoint: %s)", req.Agent, req.Tags, node.NodeID, node.Endpoint)
+
+		// Record who accepted the task, so the state and the store can answer "which node ran
+		// this". Only the remote path attributes, and only once the node has produced its first
+		// event: an attempt that never got accepted never claims the task, which is what makes a
+		// retry on another node report the node that actually ran it.
+		attributed := &nodeAttributionSink{EventSink: sink, nodeID: node.NodeID}
 		remote := NewRemoteRunner(RemoteRunnerConfig{
 			Endpoint: node.Endpoint,
 			Client:   m.client,
 			Token:    m.token,
 		})
 
-		runErr := remote.Run(ctx, req, sink)
+		runErr := remote.Run(ctx, req, attributed)
 		if runErr == nil {
 			return nil, nil
 		}

@@ -17,6 +17,13 @@ type EventSink interface {
 	RegisterQuery(queryID string) <-chan string
 }
 
+// NodeAttributor is implemented by event sinks that can record which mesh node accepted a task.
+// It is optional and additive: a sink that does not implement it is left untouched, and the
+// runner never fails because of it.
+type NodeAttributor interface {
+	AttributeNode(nodeID string)
+}
+
 // Runner defines the execution interface for remote subagent task runners.
 type Runner interface {
 	Run(ctx context.Context, req protocol.TaskRequest, sink EventSink) error

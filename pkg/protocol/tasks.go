@@ -71,6 +71,10 @@ type TaskState struct {
 	FinishedAt int64              `json:"finished_at,omitempty"`
 	Completion *CompletionPayload `json:"completion,omitempty"`
 	Error      *ErrorPayload      `json:"error,omitempty"`
+	// WorkerID is the mesh node that accepted this task. Additive and optional: a task that was
+	// never attributed (for example a run answered by the coordinator's local fallback) keeps
+	// producing exactly the same JSON as before.
+	WorkerID string `json:"worker_id,omitempty"`
 	// Checkpoint for resume
 	Checkpoint *CheckpointPayload  `json:"checkpoint,omitempty"`
 }
