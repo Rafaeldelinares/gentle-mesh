@@ -16,6 +16,12 @@ import (
 
 var errStreamDone = errors.New("sse stream finished")
 
+// ErrNodeLost is returned when a remote node's event stream ends without a terminal event
+// (completion or error). The node accepted the task and then vanished, so the run must not be
+// reported as a success: the task is finalized with an explicit cause instead of staying running
+// forever.
+var ErrNodeLost = errors.New("node lost: stream ended without a result")
+
 // RemoteRunnerConfig holds connection and authentication parameters for a remote worker node.
 type RemoteRunnerConfig struct {
 	Endpoint string
@@ -88,11 +94,15 @@ func (r *RemoteRunner) Run(ctx context.Context, req protocol.TaskRequest, sink E
 		cleanLine := strings.TrimRight(line, "\r\n")
 		if cleanLine == "" {
 			if len(blockLines) > 0 {
-				if err := r.processBlock(ctx, blockLines, sink); err != nil {
+				terminal, err := r.processBlock(ctx, blockLines, sink)
+				if err != nil {
 					if errors.Is(err, errStreamDone) {
 						return nil
 					}
 					return err
+				}
+				if terminal {
+					return nil
 				}
 				blockLines = blockLines[:0]
 			}
@@ -102,18 +112,23 @@ func (r *RemoteRunner) Run(ctx context.Context, req protocol.TaskRequest, sink E
 
 		if readErr == io.EOF {
 			if len(blockLines) > 0 {
-				if err := r.processBlock(ctx, blockLines, sink); err != nil && !errors.Is(err, errStreamDone) {
+				terminal, err := r.processBlock(ctx, blockLines, sink)
+				if err != nil && !errors.Is(err, errStreamDone) {
 					return err
 				}
+				if terminal || errors.Is(err, errStreamDone) {
+					return nil
+				}
 			}
-			break
+			// The stream ended without completion or error: the node accepted the task and then
+			// disappeared, so this is a lost node, not a success.
+			return ErrNodeLost
 		}
 	}
-
-	return nil
 }
 
-func (r *RemoteRunner) processBlock(ctx context.Context, lines []string, sink EventSink) error {
+// processBlock forwards one SSE block and reports whether it was a terminal event.
+func (r *RemoteRunner) processBlock(ctx context.Context, lines []string, sink EventSink) (bool, error) {
 	hasContent := false
 	for _, l := range lines {
 		trimmed := strings.TrimSpace(l)
@@ -123,17 +138,17 @@ func (r *RemoteRunner) processBlock(ctx context.Context, lines []string, sink Ev
 		}
 	}
 	if !hasContent {
-		return nil
+		return false, nil
 	}
 
 	raw := []byte(strings.Join(lines, "\n"))
 	evt, err := protocol.ParseSSE(raw)
 	if err != nil {
-		return fmt.Errorf("failed to parse sse event: %w", err)
+		return false, fmt.Errorf("failed to parse sse event: %w", err)
 	}
 
 	if _, err := sink.EmitEvent(evt.Type, evt.Payload); err != nil {
-		return fmt.Errorf("failed to emit event: %w", err)
+		return false, fmt.Errorf("failed to emit event: %w", err)
 	}
 
 	if evt.Type == protocol.EventQuery {
@@ -167,8 +182,8 @@ func (r *RemoteRunner) processBlock(ctx context.Context, lines []string, sink Ev
 	}
 
 	if evt.Type == protocol.EventCompletion || evt.Type == protocol.EventError {
-		return errStreamDone
+		return true, errStreamDone
 	}
 
-	return nil
+	return false, nil
 }
