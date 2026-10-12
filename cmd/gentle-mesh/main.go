@@ -223,6 +223,9 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if localFallback != nil && !*localFallback && *runnerName != "mesh" {
+		fmt.Fprintf(os.Stderr, "-local-fallback has no effect with -runner %s (it only applies to the 'mesh' runner)\n", *runnerName)
+	}
 
 	// TLS directory defaults to tasks-dir/tls
 	tlsDirPath := *tlsDir

@@ -46,11 +46,7 @@ type ServerConfig struct {
 	CORSOrigins    []string
 	AllowedHosts   []string
 	InsecureNoAuth bool
-	// LocalFallback controls whether the coordinator wires a local simulated runner as the
-	// mesh fallback. Nil (the zero value) means true, preserving today's behaviour. When
-	// non-nil and *cfg.LocalFallback is false and -runner=mesh, a task with no eligible node
-	// fails with DISPATCH_FAILED instead of completing locally.
-	LocalFallback *bool
+
 	// TLS configuration
 	TLSEnabled    bool
 	TLSCertFile   string
@@ -67,6 +63,13 @@ type ServerConfig struct {
 	RateLimitRequests int           // Requests per window (0 = disabled)
 	RateLimitWindow   time.Duration // Time window
 	RateLimitBurst    int           // Max burst size
+
+	// Local fallback control (separate group to avoid realigning existing fields)
+	// LocalFallback controls whether the coordinator wires a local simulated runner as the
+	// mesh fallback. Nil (the zero value) means true, preserving today's behaviour. When
+	// non-nil and *cfg.LocalFallback is false and -runner=mesh, a task with no eligible node
+	// fails with DISPATCH_FAILED instead of completing locally.
+	LocalFallback *bool
 }
 
 // Server provides the HTTPS/HTTP REST and SSE coordinator daemon for gentle-mesh.
