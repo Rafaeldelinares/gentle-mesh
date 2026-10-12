@@ -123,6 +123,23 @@ func whoDBRow(t *testing.T, dbPath, taskID string) (string, string) {
 	return workerID, errMsg
 }
 
+// waitWhoError polls the task row until error_message matches want. The API can report the task
+// as failed before the store has flushed the error_message, so reading it immediately races the
+// synchronous store write that happens right after the status transition is published.
+func waitWhoError(t *testing.T, dbPath, taskID, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var errMsg string
+	for time.Now().Before(deadline) {
+		_, errMsg = whoDBRow(t, dbPath, taskID)
+		if errMsg == want {
+			return errMsg
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return errMsg
+}
+
 func whoTaskEvents(t *testing.T, ts *httptest.Server, taskID string) string {
 	t.Helper()
 	client := &http.Client{Timeout: 1500 * time.Millisecond}
@@ -189,7 +206,7 @@ func TestServerNodeFailureCauseReachesStateStreamAndStore(t *testing.T) {
 	if workerID, _ := whoDBRow(t, dbPath, tr.TaskID); workerID != "node-broken" {
 		t.Errorf("stored worker_id = %q, want node-broken", workerID)
 	}
-	if _, errMsg := whoDBRow(t, dbPath, tr.TaskID); errMsg != "the node refused to work" {
+	if errMsg := waitWhoError(t, dbPath, tr.TaskID, "the node refused to work"); errMsg != "the node refused to work" {
 		t.Errorf("stored error_message = %q, want the node message", errMsg)
 	}
 	stream := whoTaskEvents(t, ts, tr.TaskID)
