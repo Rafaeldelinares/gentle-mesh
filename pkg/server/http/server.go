@@ -43,33 +43,26 @@ type ServerConfig struct {
 	TerritoryMode        protocol.TerritoryMode
 	WorkspaceRoot        string
 	// Host & CORS configuration
-	CORSOrigins    []string
-	AllowedHosts   []string
-	InsecureNoAuth bool
-
+	CORSOrigins          []string
+	AllowedHosts         []string
+	InsecureNoAuth       bool
+	LocalFallback        *bool
 	// TLS configuration
-	TLSEnabled    bool
-	TLSCertFile   string
-	TLSKeyFile    string
-	MeshCA        *pki.MeshCA
-	MeshCAPemFile string
+	TLSEnabled     bool
+	TLSCertFile    string
+	TLSKeyFile     string
+	MeshCA         *pki.MeshCA
+	MeshCAPemFile  string
 	// mTLS configuration
-	RequireMTLS bool // Require client certificates for all connections
+	RequireMTLS    bool // Require client certificates for all connections
 	// Enrollment configuration
-	TokenStore store.TokenStore // For enrollment token validation
+	TokenStore  store.TokenStore // For enrollment token validation
 	// Webhook configuration
 	WebhookStore store.WebhookStore // For webhook notifications
 	// Rate limiting configuration
-	RateLimitRequests int           // Requests per window (0 = disabled)
+	RateLimitRequests  int           // Requests per window (0 = disabled)
 	RateLimitWindow   time.Duration // Time window
 	RateLimitBurst    int           // Max burst size
-
-	// Local fallback control (separate group to avoid realigning existing fields)
-	// LocalFallback controls whether the coordinator wires a local simulated runner as the
-	// mesh fallback. Nil (the zero value) means true, preserving today's behaviour. When
-	// non-nil and *cfg.LocalFallback is false and -runner=mesh, a task with no eligible node
-	// fails with DISPATCH_FAILED instead of completing locally.
-	LocalFallback *bool
 }
 
 // Server provides the HTTPS/HTTP REST and SSE coordinator daemon for gentle-mesh.
