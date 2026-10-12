@@ -206,7 +206,8 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	taskTTL := fs.Duration("task-ttl", 24*time.Hour, "Task TTL before pruning")
 	territoryMode := fs.String("territory-mode", string(protocol.TerritoryModeQueue), "Territory conflict scheduling mode (queue, warn, strict, disabled)")
 	workspace := fs.String("workspace", ".", "Base directory for remote workspace file exploration")
-	runnerName := fs.String("runner", "mesh", "Task execution runner: mesh (registry routing with local simulation), simulated (local only), or pi (spawn the local Pi CLI)")
+	runnerName := fs.String("runner", "mesh", "Task execution runner: mesh (registry routing with local simulation), simulated (local only), or pi (spawn the local Pi CLI); only the 'mesh' runner is affected by -local-fallback")
+	localFallback := fs.Bool("local-fallback", true, "When -runner=mesh and no node is eligible, run the task in a local SIMULATED runner (true, default) or fail it with DISPATCH_FAILED (false). With -runner=simulated or -runner=pi the flag has no effect.")
 	tlsEnable := fs.Bool("tls", false, "Enable TLS/HTTPS with generated certificates (generates CA if not exists)")
 	tlsDir := fs.String("tls-dir", "", "Directory for TLS certificates and CA (defaults to <tasks-dir>/tls)")
 	tlsInit := fs.Bool("tls-init", false, "Initialize TLS: generate new CA and server certificates (overwrites existing)")
@@ -221,6 +222,9 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if localFallback != nil && !*localFallback && *runnerName != "mesh" {
+		fmt.Fprintf(os.Stderr, "-local-fallback has no effect with -runner %s (it only applies to the 'mesh' runner)\n", *runnerName)
 	}
 
 	// TLS directory defaults to tasks-dir/tls
@@ -287,6 +291,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		CORSOrigins:       parseCommaSeparated(*corsOrigins),
 		AllowedHosts:      parseCommaSeparated(*allowedHosts),
 		InsecureNoAuth:    *insecureNoAuth,
+		LocalFallback:     localFallback,
 	}
 
 	// Configure TLS if enabled

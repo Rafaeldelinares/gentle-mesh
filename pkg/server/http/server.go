@@ -46,6 +46,7 @@ type ServerConfig struct {
 	CORSOrigins          []string
 	AllowedHosts         []string
 	InsecureNoAuth       bool
+	LocalFallback        *bool
 	// TLS configuration
 	TLSEnabled     bool
 	TLSCertFile    string
@@ -146,12 +147,26 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		})
 	}
 	if cfg.Runner == nil {
-		localRunner := runner.NewSimulatedRunner(runner.SimulatedOptions{})
-		cfg.Runner = runner.NewMeshRunner(runner.MeshRunnerOptions{
-			Selector:       cfg.Registry,
-			FallbackRunner: localRunner,
-			Token:          cfg.BearerToken,
-		})
+		useLocal := true
+		if cfg.LocalFallback != nil {
+			useLocal = *cfg.LocalFallback
+		}
+		if useLocal {
+			localRunner := runner.NewSimulatedRunner(runner.SimulatedOptions{})
+			cfg.Runner = runner.NewMeshRunner(runner.MeshRunnerOptions{
+				Selector:       cfg.Registry,
+				FallbackRunner: localRunner,
+				Token:          cfg.BearerToken,
+			})
+			log.Printf("tasks without an eligible node run in a local SIMULATED runner and are reported completed with executed_locally")
+		} else {
+			cfg.Runner = runner.NewMeshRunner(runner.MeshRunnerOptions{
+				Selector:       cfg.Registry,
+				FallbackRunner: nil,
+				Token:          cfg.BearerToken,
+			})
+			log.Printf("the local fallback is OFF: tasks without an eligible node will fail with DISPATCH_FAILED")
+		}
 	}
 
 	mode := cfg.TerritoryMode
