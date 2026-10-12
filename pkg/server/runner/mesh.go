@@ -130,11 +130,70 @@ func (s *nodeAttributionSink) EmitEvent(eventType protocol.EventType, payload an
 	return s.EventSink.EmitEvent(eventType, payload)
 }
 
+// NodeReserver is an optional selector capability. A selector that implements it lets the
+// MeshRunner reserve capacity on the node it is about to dispatch to, for exactly as long as
+// one dispatch attempt lasts, so two concurrent dispatches cannot both see the same node as
+// idle. Selectors that do not implement it keep the previous behaviour: selection only.
+type NodeReserver interface {
+	SelectAndReserve(agent string, requiredTags ...string) (*protocol.NodeInfo, error)
+	Release(nodeID string)
+}
+
+// selectNodeForAttempt selects a node for one dispatch attempt. When the selector supports
+// reservation the node comes back reserved and the returned function gives that slot back
+// exactly once; otherwise the returned function is a no-op.
+func (m *MeshRunner) selectNodeForAttempt(req protocol.TaskRequest) (*protocol.NodeInfo, func(), error) {
+	if reserver, ok := m.selector.(NodeReserver); ok {
+		node, err := reserver.SelectAndReserve(req.Agent, req.Tags...)
+		if err != nil {
+			return nil, nil, err
+		}
+		if node == nil || node.Endpoint == "" {
+			if node != nil {
+				reserver.Release(node.NodeID)
+			}
+			return nil, nil, errors.New("selected node is nil or missing endpoint")
+		}
+		return node, func() { reserver.Release(node.NodeID) }, nil
+	}
+
+	node, err := m.selector.SelectNodeForTask(req.Agent, req.Tags...)
+	if err != nil {
+		return nil, nil, err
+	}
+	if node == nil || node.Endpoint == "" {
+		return nil, nil, errors.New("selected node is nil or missing endpoint")
+	}
+	return node, func() {}, nil
+}
+
+// runOnNode dispatches to one node and always gives the reserved slot back when it returns,
+// including on a panic: the release runs before the error is reported and before the next
+// attempt reserves another node.
+func (m *MeshRunner) runOnNode(ctx context.Context, req protocol.TaskRequest, sink EventSink, node *protocol.NodeInfo, release func()) error {
+	defer release()
+
+	log.Printf("[mesh-router] dispatching task (agent: %q, tags: %v) -> node %q (endpoint: %s)", req.Agent, req.Tags, node.NodeID, node.Endpoint)
+
+	// Record who accepted the task, so the state and the store can answer "which node ran
+	// this". Only the remote path attributes, and only once the node has produced its first
+	// event: an attempt that never got accepted never claims the task, which is what makes a
+	// retry on another node report the node that actually ran it.
+	attributed := &nodeAttributionSink{EventSink: sink, nodeID: node.NodeID}
+	remote := NewRemoteRunner(RemoteRunnerConfig{
+		Endpoint: node.Endpoint,
+		Client:   m.client,
+		Token:    m.token,
+	})
+
+	return remote.Run(ctx, req, attributed)
+}
+
 func (m *MeshRunner) dispatchToMesh(ctx context.Context, req protocol.TaskRequest, sink EventSink) (dispatchErr, selectErr error) {
 	var lastDispatchErr error
 
 	for attempt := 1; attempt <= meshDispatchAttempts; attempt++ {
-		node, err := m.selector.SelectNodeForTask(req.Agent, req.Tags...)
+		node, release, err := m.selectNodeForAttempt(req)
 		if err != nil {
 			if lastDispatchErr != nil {
 				// A dispatch already failed: the task must not be silently executed by the
@@ -145,28 +204,8 @@ func (m *MeshRunner) dispatchToMesh(ctx context.Context, req protocol.TaskReques
 			// the only one the local fallback answers.
 			return nil, err
 		}
-		if node == nil || node.Endpoint == "" {
-			selErr := errors.New("selected node is nil or missing endpoint")
-			if lastDispatchErr != nil {
-				return lastDispatchErr, nil
-			}
-			return nil, selErr
-		}
 
-		log.Printf("[mesh-router] dispatching task (agent: %q, tags: %v) -> node %q (endpoint: %s)", req.Agent, req.Tags, node.NodeID, node.Endpoint)
-
-		// Record who accepted the task, so the state and the store can answer "which node ran
-		// this". Only the remote path attributes, and only once the node has produced its first
-		// event: an attempt that never got accepted never claims the task, which is what makes a
-		// retry on another node report the node that actually ran it.
-		attributed := &nodeAttributionSink{EventSink: sink, nodeID: node.NodeID}
-		remote := NewRemoteRunner(RemoteRunnerConfig{
-			Endpoint: node.Endpoint,
-			Client:   m.client,
-			Token:    m.token,
-		})
-
-		runErr := remote.Run(ctx, req, attributed)
+		runErr := m.runOnNode(ctx, req, sink, node, release)
 		if runErr == nil {
 			return nil, nil
 		}

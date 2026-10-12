@@ -2,6 +2,7 @@ package registry
 
 import (
 	"errors"
+	"log"
 	"sync"
 	"time"
 
@@ -27,6 +28,18 @@ type Registry struct {
 	mu               sync.RWMutex
 	nodes            map[string]*protocol.NodeInfo
 	heartbeatTimeout time.Duration
+	// inFlight counts the dispatches this coordinator already handed out and that have not
+	// finished yet. The heartbeat never writes it: it is the load the coordinator knows about
+	// but the node has not reported yet, which is what makes work spread during a burst.
+	inFlight map[string]int
+	// lastSelected orders nodes by how recently they were selected (a counter, not a clock),
+	// so equally loaded nodes rotate instead of always resolving to the lowest NodeID.
+	lastSelected map[string]uint64
+	selectionSeq uint64
+	// lastCapacityLog remembers when the soft-cap log line was last written, so a busy mesh
+	// with every node full does not flood the log with one line per task. It is only touched
+	// by selection, which holds the registry lock for writing.
+	lastCapacityLog time.Time
 	*BranchLockManager
 	*IdempotencyStore
 }
@@ -37,6 +50,8 @@ func NewRegistry(heartbeatTimeout time.Duration) *Registry {
 	return &Registry{
 		nodes:             make(map[string]*protocol.NodeInfo),
 		heartbeatTimeout:  heartbeatTimeout,
+		inFlight:          make(map[string]int),
+		lastSelected:      make(map[string]uint64),
 		BranchLockManager: NewBranchLockManager(),
 		IdempotencyStore:  NewIdempotencyStore(24 * time.Hour),
 	}
@@ -177,13 +192,74 @@ func (r *Registry) PruneStaleNodes() {
 //  1. Status and heartbeat freshness: a node whose heartbeats stopped is skipped even
 //     while its stored status still says Online, so work is never sent to a dead node.
 //  2. Agent and tag capabilities (must support requested agent and all required tags).
-//  3. Capacity availability (ActiveTasks < MaxConcurrency; MaxConcurrency <= 0 defaults to 1).
-//  4. Load balancing: selects node with lowest ActiveTasks / MaxConcurrency ratio,
-//     tie-breaking on lowest ActiveTasks, then deterministic NodeID.
+//  3. Capacity availability, judged on the effective load (see effectiveLoad): nodes with a
+//     free slot are preferred, and when every node is at capacity the least loaded one is
+//     still chosen (soft cap), so a full mesh never turns into a local fallback.
+//  4. Load balancing: lowest effective load / capacity ratio, tie-breaking on lowest effective
+//     load, then the least recently selected node, then the lowest NodeID.
+//
+// It reserves nothing: use SelectAndReserve when the caller is about to dispatch.
 func (r *Registry) SelectNodeForTask(agent string, requiredTags ...string) (*protocol.NodeInfo, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	// A write lock (not a read lock) because the selection may rate-limit its own saturation
+	// log line, which updates lastCapacityLog.
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
+	return r.selectLocked(agent, requiredTags)
+}
+
+// SelectAndReserve selects a node exactly like SelectNodeForTask and, under the same lock,
+// counts one dispatch in flight on it. The caller must Release the node once the dispatch
+// attempt ends (success, error, cancellation or panic), which is what keeps concurrent
+// dispatches from all choosing the same idle-looking node.
+func (r *Registry) SelectAndReserve(agent string, requiredTags ...string) (*protocol.NodeInfo, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	node, err := r.selectLocked(agent, requiredTags)
+	if err != nil {
+		return nil, err
+	}
+	r.inFlight[node.NodeID]++
+	r.selectionSeq++
+	r.lastSelected[node.NodeID] = r.selectionSeq
+	return node, nil
+}
+
+// Release gives back one dispatch slot taken by SelectAndReserve. Releasing a node with no
+// dispatch in flight is a no-op, so the counter can never go below zero.
+func (r *Registry) Release(nodeID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.inFlight[nodeID] > 0 {
+		r.inFlight[nodeID]--
+	}
+}
+
+// effectiveLoad is the load the coordinator believes a node carries: the maximum of what the
+// node reported in its last heartbeat and the dispatches still in flight here. max (not the
+// sum) avoids counting the same task twice, and it self-heals: a heartbeat reporting more wins,
+// and when the dispatches finish the counter drains back to the reported value.
+func (r *Registry) effectiveLoad(node *protocol.NodeInfo) int {
+	inFlight := r.inFlight[node.NodeID]
+	if node.ActiveTasks > inFlight {
+		return node.ActiveTasks
+	}
+	return inFlight
+}
+
+// effectiveCapacity is the node's declared concurrency, with non-positive values treated as a
+// single slot, the same default the selection has always applied.
+func effectiveCapacity(node *protocol.NodeInfo) int {
+	if node.MaxConcurrency <= 0 {
+		return 1
+	}
+	return node.MaxConcurrency
+}
+
+// selectLocked runs the selection algorithm. The caller must hold r.mu for writing.
+func (r *Registry) selectLocked(agent string, requiredTags []string) (*protocol.NodeInfo, error) {
 	var matchingOnline []*protocol.NodeInfo
 	for _, node := range r.nodes {
 		if node.Status == protocol.NodeStatusOnline && r.heartbeatIsFresh(node) && nodeSupportsAgent(node, agent, requiredTags) {
@@ -195,52 +271,56 @@ func (r *Registry) SelectNodeForTask(agent string, requiredTags ...string) (*pro
 		return nil, ErrAgentNotSupported
 	}
 
-	var available []*protocol.NodeInfo
+	candidates := make([]*protocol.NodeInfo, 0, len(matchingOnline))
 	for _, node := range matchingOnline {
-		effectiveMax := node.MaxConcurrency
-		if effectiveMax <= 0 {
-			effectiveMax = 1
-		}
-		if node.ActiveTasks < effectiveMax {
-			available = append(available, node)
+		if r.effectiveLoad(node) < effectiveCapacity(node) {
+			candidates = append(candidates, node)
 		}
 	}
 
-	if len(available) == 0 {
-		return nil, ErrNoNodeAvailable
+	if len(candidates) == 0 {
+		// Soft cap: every node is at capacity, and the least loaded one still gets the task.
+		// Refusing here would send the client to the local fallback, which reports success for
+		// work the mesh never ran. The line is limited to one per second: under a burst every
+		// single dispatch would otherwise print it.
+		if now := time.Now(); now.Sub(r.lastCapacityLog) >= time.Second {
+			log.Printf("[mesh-router] all nodes at capacity: picking least loaded")
+			r.lastCapacityLog = now
+		}
+		candidates = matchingOnline
 	}
 
 	var best *protocol.NodeInfo
 	var bestRatio float64
+	var bestLoad int
 
-	for _, node := range available {
-		effectiveMax := node.MaxConcurrency
-		if effectiveMax <= 0 {
-			effectiveMax = 1
-		}
-		ratio := float64(node.ActiveTasks) / float64(effectiveMax)
+	for _, node := range candidates {
+		load := r.effectiveLoad(node)
+		ratio := float64(load) / float64(effectiveCapacity(node))
 
-		if best == nil {
-			best = node
-			bestRatio = ratio
-			continue
-		}
-
-		if ratio < bestRatio {
-			best = node
-			bestRatio = ratio
-		} else if ratio == bestRatio {
-			if node.ActiveTasks < best.ActiveTasks {
-				best = node
-				bestRatio = ratio
-			} else if node.ActiveTasks == best.ActiveTasks && node.NodeID < best.NodeID {
-				best = node
-				bestRatio = ratio
-			}
+		if best == nil || r.preferOver(ratio, load, node, bestRatio, bestLoad, best) {
+			best, bestRatio, bestLoad = node, ratio, load
 		}
 	}
 
 	return cloneNodeInfo(best), nil
+}
+
+// preferOver reports whether candidate should replace best: lowest load ratio, then lowest
+// effective load, then least recently selected, then lowest NodeID as the last resort.
+func (r *Registry) preferOver(ratio float64, load int, candidate *protocol.NodeInfo, bestRatio float64, bestLoad int, best *protocol.NodeInfo) bool {
+	if ratio != bestRatio {
+		return ratio < bestRatio
+	}
+	if load != bestLoad {
+		return load < bestLoad
+	}
+	candidateRecent := r.lastSelected[candidate.NodeID]
+	bestRecent := r.lastSelected[best.NodeID]
+	if candidateRecent != bestRecent {
+		return candidateRecent < bestRecent
+	}
+	return candidate.NodeID < best.NodeID
 }
 
 // heartbeatIsFresh reports whether the node's last heartbeat is recent enough to keep
