@@ -43,23 +43,28 @@ type ServerConfig struct {
 	TerritoryMode        protocol.TerritoryMode
 	WorkspaceRoot        string
 	// Host & CORS configuration
-	CORSOrigins          []string
-	AllowedHosts         []string
-	InsecureNoAuth       bool
+	CORSOrigins    []string
+	AllowedHosts   []string
+	InsecureNoAuth bool
+	// LocalFallback controls whether the coordinator wires a local simulated runner as the
+	// mesh fallback. Nil (the zero value) means true, preserving today's behaviour. When
+	// non-nil and *cfg.LocalFallback is false and -runner=mesh, a task with no eligible node
+	// fails with DISPATCH_FAILED instead of completing locally.
+	LocalFallback *bool
 	// TLS configuration
-	TLSEnabled     bool
-	TLSCertFile    string
-	TLSKeyFile     string
-	MeshCA         *pki.MeshCA
-	MeshCAPemFile  string
+	TLSEnabled    bool
+	TLSCertFile   string
+	TLSKeyFile    string
+	MeshCA        *pki.MeshCA
+	MeshCAPemFile string
 	// mTLS configuration
-	RequireMTLS    bool // Require client certificates for all connections
+	RequireMTLS bool // Require client certificates for all connections
 	// Enrollment configuration
-	TokenStore  store.TokenStore // For enrollment token validation
+	TokenStore store.TokenStore // For enrollment token validation
 	// Webhook configuration
 	WebhookStore store.WebhookStore // For webhook notifications
 	// Rate limiting configuration
-	RateLimitRequests  int           // Requests per window (0 = disabled)
+	RateLimitRequests int           // Requests per window (0 = disabled)
 	RateLimitWindow   time.Duration // Time window
 	RateLimitBurst    int           // Max burst size
 }
@@ -146,12 +151,26 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		})
 	}
 	if cfg.Runner == nil {
-		localRunner := runner.NewSimulatedRunner(runner.SimulatedOptions{})
-		cfg.Runner = runner.NewMeshRunner(runner.MeshRunnerOptions{
-			Selector:       cfg.Registry,
-			FallbackRunner: localRunner,
-			Token:          cfg.BearerToken,
-		})
+		useLocal := true
+		if cfg.LocalFallback != nil {
+			useLocal = *cfg.LocalFallback
+		}
+		if useLocal {
+			localRunner := runner.NewSimulatedRunner(runner.SimulatedOptions{})
+			cfg.Runner = runner.NewMeshRunner(runner.MeshRunnerOptions{
+				Selector:       cfg.Registry,
+				FallbackRunner: localRunner,
+				Token:          cfg.BearerToken,
+			})
+			log.Printf("tasks without an eligible node run in a local SIMULATED runner and are reported completed with executed_locally")
+		} else {
+			cfg.Runner = runner.NewMeshRunner(runner.MeshRunnerOptions{
+				Selector:       cfg.Registry,
+				FallbackRunner: nil,
+				Token:          cfg.BearerToken,
+			})
+			log.Printf("the local fallback is OFF: tasks without an eligible node will fail with DISPATCH_FAILED")
+		}
 	}
 
 	mode := cfg.TerritoryMode
