@@ -570,3 +570,169 @@ func TestSilentNodeNoRetryWithMaxRetries(t *testing.T) {
 		t.Fatalf("task was resurrected by a retry, got %s", st2)
 	}
 }
+
+// (7) TestSilentNodeRealHeartbeatExpiryCadena:
+// Cadena real sin atajos de timestamp: latidos periódicos cada 50ms con timeout 200ms,
+// se detienen los latidos (sin enviar timestamps pasados artificiales), se sondea con
+// PruneStaleNodes() hasta que el paso natural del tiempo (>= 3 * 200ms = 600ms) marque
+// el nodo como offline, se invoca el barrido y se verifica que la tarea pasa a failed NODE_LOST
+// y la conexión HTTP del nodo se cierra.
+func TestSilentNodeRealHeartbeatExpiryCadena(t *testing.T) {
+	const heartbeatTimeout = 200 * time.Millisecond
+	const nodeID = "silent-cadena"
+
+	handlerReturned := make(chan struct{})
+	fallbackExit := make(chan struct{})
+	nodeTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(handlerReturned)
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			IdempotencyKey string `json:"idempotency_key"`
+		}
+		_ = json.Unmarshal(body, &req)
+		evt, _ := protocol.NewEvent(1, req.IdempotencyKey, protocol.EventStatus,
+			protocol.StatusPayload{Status: "running"})
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(evt.FormatSSE())
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-fallbackExit:
+		}
+	}))
+	t.Cleanup(func() { close(fallbackExit); nodeTS.Close() })
+
+	reg := registry.NewRegistry(heartbeatTimeout)
+	mgr, err := task.NewTaskManager(t.TempDir(), 0, task.WithStore(store.NewMemoryStore()))
+	if err != nil {
+		t.Fatalf("NewTaskManager: %v", err)
+	}
+	srvHelper, err := meshhttp.NewServer(meshhttp.ServerConfig{
+		TasksDir:         t.TempDir(),
+		HeartbeatTimeout: heartbeatTimeout,
+		TaskTTL:          time.Hour,
+		Registry:         reg,
+		TaskManager:      mgr,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ts := httptest.NewServer(srvHelper.Handler())
+	defer ts.Close()
+
+	if _, err := reg.RegisterNode(protocol.NodeJoinRequest{
+		NodeID:         nodeID,
+		Endpoint:       nodeTS.URL,
+		Agents:         []protocol.AgentProfile{{Name: "worker"}},
+		MaxConcurrency: 1,
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	stopHB := make(chan struct{})
+	var closeOnce sync.Once
+	stopHeartbeats := func() { closeOnce.Do(func() { close(stopHB) }) }
+	t.Cleanup(stopHeartbeats)
+	go func() {
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopHB:
+				return
+			case <-ticker.C:
+				_ = reg.Heartbeat(protocol.NodeHeartbeatRequest{
+					NodeID: nodeID, ActiveTasks: 0, Timestamp: time.Now().Add(time.Second).Unix(),
+				})
+			}
+		}
+	}()
+
+	_ = reg.Heartbeat(protocol.NodeHeartbeatRequest{
+		NodeID: nodeID, ActiveTasks: 0, Timestamp: time.Now().Add(time.Second).Unix(),
+	})
+
+	resp, err := http.Post(ts.URL+"/v1/tasks", "application/json",
+		strings.NewReader(`{"agent":"worker","task":"cadena","git_repo":"toy/repo","git_branch":"29c"}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	var tr struct {
+		TaskID string `json:"task_id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&tr)
+	if tr.TaskID == "" {
+		t.Fatal("POST returned no task_id")
+	}
+
+	startWait := time.Now()
+	reachedRunning := waitFor(2*time.Second, func() bool {
+		_ = reg.Heartbeat(protocol.NodeHeartbeatRequest{
+			NodeID: nodeID, ActiveTasks: 1, Timestamp: time.Now().Add(time.Second).Unix(),
+		})
+		s := getLFBTask(ts, tr.TaskID)
+		st, _ := s["status"].(string)
+		wid, _ := s["worker_id"].(string)
+		return st == "running" && wid == nodeID
+	})
+	if !reachedRunning {
+		t.Fatalf("task never reached running with worker_id=%s within 2s", nodeID)
+	}
+
+	// Detener los latidos por completo (sin enviar ningún heartbeat artificial)
+	stopHeartbeats()
+	silentAt := time.Now()
+
+	// Sondear hasta que PruneStaleNodes marque el nodo como offline por expiración real
+	offlineFound := waitFor(5*time.Second, func() bool {
+		reg.PruneStaleNodes()
+		for _, n := range reg.ListNodes() {
+			if n.NodeID == nodeID && n.Status == protocol.NodeStatusOffline {
+				return true
+			}
+		}
+		return false
+	})
+	offlineDuration := time.Since(silentAt)
+	if !offlineFound {
+		t.Fatalf("node %s never went offline within 5s", nodeID)
+	}
+	if offlineDuration < 600*time.Millisecond {
+		t.Fatalf("node went offline in %v, expected at least 600ms (3 * 200ms)", offlineDuration)
+	}
+
+	// Invocar el barrido de nodos offline
+	srvHelper.FailTasksOfOfflineNodes()
+
+	// Sondear hasta que la tarea pase a failed NODE_LOST
+	var lastStatus, lastCode string
+	failObserved := waitFor(2*time.Second, func() bool {
+		s := getLFBTask(ts, tr.TaskID)
+		lastStatus, _ = s["status"].(string)
+		if lastStatus == "failed" {
+			e, _ := s["error"].(map[string]any)
+			lastCode, _ = e["code"].(string)
+			return lastCode == "NODE_LOST"
+		}
+		return false
+	})
+	if !failObserved {
+		t.Fatalf("expected status=failed code=NODE_LOST, got status=%s code=%s (finding 29 not fixed)", lastStatus, lastCode)
+	}
+
+	// Sondear hasta que la petición del nodo se cierre (handler returned)
+	nodeRequestClosed := waitFor(2*time.Second, func() bool {
+		select {
+		case <-handlerReturned:
+			return true
+		default:
+			return false
+		}
+	})
+	if !nodeRequestClosed {
+		t.Fatal("node httptest did not see its /v1/execute request closed within 2s")
+	}
+	t.Logf("cadena real completada con exito: expiracion offline en %v (total %v)", offlineDuration, time.Since(startWait))
+}
