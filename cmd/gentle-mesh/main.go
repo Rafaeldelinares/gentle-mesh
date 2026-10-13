@@ -875,8 +875,8 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 				reJoinReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinURL, bytes.NewReader(joinBytes))
 				if err == nil {
 					reJoinReq.Header.Set("Content-Type", "application/json")
-					if *token != "" {
-						reJoinReq.Header.Set("Authorization", "Bearer "+*token)
+					if coordToken != "" {
+						reJoinReq.Header.Set("Authorization", "Bearer "+coordToken)
 					}
 					if rResp, err := httpClient.Do(reJoinReq); err == nil {
 						rResp.Body.Close()

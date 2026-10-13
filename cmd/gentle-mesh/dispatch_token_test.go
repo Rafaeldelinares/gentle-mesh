@@ -287,7 +287,7 @@ func TestCoordinator_StartupWarningsWithoutDispatchOrNodeToken(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	cancel()
-	_ = <-errCh
+	<-errCh
 
 	out := stdout.String()
 	if !strings.Contains(out, "WARNING") || !strings.Contains(out, "-dispatch-token") {
