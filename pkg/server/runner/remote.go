@@ -22,6 +22,30 @@ var errStreamDone = errors.New("sse stream finished")
 // forever.
 var ErrNodeLost = errors.New("node lost: stream ended without a result")
 
+// ErrNodeBusy is returned when a remote worker rejects a task with HTTP 429 Too Many Requests.
+// The node is healthy and online, but its active concurrency limit and queue capacity are full.
+type ErrNodeBusy struct {
+	Endpoint   string
+	StatusCode int
+	Body       string
+}
+
+func (e *ErrNodeBusy) Error() string {
+	return fmt.Sprintf("remote worker %s returned status %d: %s", e.Endpoint, e.StatusCode, e.Body)
+}
+
+// IsNodeBusyError reports whether err was caused by a worker returning HTTP 429 Too Many Requests.
+func IsNodeBusyError(err error) bool {
+	var busyErr *ErrNodeBusy
+	if errors.As(err, &busyErr) {
+		return true
+	}
+	if err != nil && strings.Contains(err.Error(), "returned status 429") {
+		return true
+	}
+	return false
+}
+
 // RemoteRunnerConfig holds connection and authentication parameters for a remote worker node.
 type RemoteRunnerConfig struct {
 	Endpoint string
@@ -76,6 +100,15 @@ func (r *RemoteRunner) Run(ctx context.Context, req protocol.TaskRequest, sink E
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusTooManyRequests {
+		body, _ := io.ReadAll(resp.Body)
+		return &ErrNodeBusy{
+			Endpoint:   r.endpoint,
+			StatusCode: resp.StatusCode,
+			Body:       string(body),
+		}
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
