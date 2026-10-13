@@ -258,6 +258,12 @@ func HostMiddleware(allowed []string, next stdhttp.Handler) stdhttp.Handler {
 	})
 }
 
+// AuthConfig holds credentials for the coordinator authentication middleware.
+type AuthConfig struct {
+	AdminToken string
+	NodeToken  string
+}
+
 // AuthMiddleware validates incoming HTTP requests using a Bearer token.
 // If token is empty, the middleware is a no-op and returns next.
 // Requests to /healthz (and /healthz/) bypass authentication, and so does the
@@ -266,10 +272,28 @@ func HostMiddleware(allowed []string, next stdhttp.Handler) stdhttp.Handler {
 // CORS preflight OPTIONS requests bypass authentication so browsers can negotiate the request.
 // Missing or invalid tokens result in HTTP 401 Unauthorized with {"error":"unauthorized"}.
 func AuthMiddleware(token string, next stdhttp.Handler) stdhttp.Handler {
-	if token == "" {
+	return AuthMiddlewareWithConfig(AuthConfig{AdminToken: token}, next)
+}
+
+// AuthMiddlewareWithConfig validates incoming requests against the admin token or node-scoped token.
+// The admin token is valid across all routes. The node-scoped token is strictly restricted to
+// node registration and heartbeat (POST /v1/mesh/join, POST /v1/mesh/heartbeat); any other route
+// with the node token returns HTTP 403 Forbidden with {"error":"forbidden"}.
+// Requests without a valid token return HTTP 401 Unauthorized with {"error":"unauthorized"}.
+func AuthMiddlewareWithConfig(cfg AuthConfig, next stdhttp.Handler) stdhttp.Handler {
+	if cfg.AdminToken == "" && cfg.NodeToken == "" {
 		return next
 	}
-	expectedAuth := "Bearer " + token
+
+	expectedAdminAuth := ""
+	if cfg.AdminToken != "" {
+		expectedAdminAuth = "Bearer " + cfg.AdminToken
+	}
+	expectedNodeAuth := ""
+	if cfg.NodeToken != "" {
+		expectedNodeAuth = "Bearer " + cfg.NodeToken
+	}
+
 	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		if r.Method == stdhttp.MethodOptions {
 			next.ServeHTTP(w, r)
@@ -291,14 +315,37 @@ func AuthMiddleware(token string, next stdhttp.Handler) stdhttp.Handler {
 		}
 
 		authHeader := r.Header.Get("Authorization")
-		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedAuth)) != 1 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(stdhttp.StatusUnauthorized)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+
+		// Constant-time check for admin token
+		adminMatched := 0
+		if expectedAdminAuth != "" {
+			adminMatched = subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedAdminAuth))
+		}
+		if adminMatched == 1 {
+			next.ServeHTTP(w, r)
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		// Constant-time check for node-scoped token
+		nodeMatched := 0
+		if expectedNodeAuth != "" {
+			nodeMatched = subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedNodeAuth))
+		}
+		if nodeMatched == 1 {
+			if r.Method == stdhttp.MethodPost && (r.URL.Path == "/v1/mesh/join" || r.URL.Path == "/v1/mesh/join/" ||
+				r.URL.Path == "/v1/mesh/heartbeat" || r.URL.Path == "/v1/mesh/heartbeat/") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(stdhttp.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(stdhttp.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
 	})
 }
 

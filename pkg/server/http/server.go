@@ -33,6 +33,8 @@ type ServerConfig struct {
 	HeartbeatTimeout     time.Duration
 	TaskTTL              time.Duration
 	BearerToken          string
+	DispatchToken        string
+	NodeToken            string
 	Runner               runner.Runner
 	Registry             *registry.Registry
 	TaskManager          *task.TaskManager
@@ -151,19 +153,23 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		if cfg.LocalFallback != nil {
 			useLocal = *cfg.LocalFallback
 		}
+		dispatchTok := cfg.DispatchToken
+		if dispatchTok == "" {
+			dispatchTok = cfg.BearerToken
+		}
 		if useLocal {
 			localRunner := runner.NewSimulatedRunner(runner.SimulatedOptions{})
 			cfg.Runner = runner.NewMeshRunner(runner.MeshRunnerOptions{
 				Selector:       cfg.Registry,
 				FallbackRunner: localRunner,
-				Token:          cfg.BearerToken,
+				Token:          dispatchTok,
 			})
 			log.Printf("tasks without an eligible node run in a local SIMULATED runner and are reported completed with executed_locally")
 		} else {
 			cfg.Runner = runner.NewMeshRunner(runner.MeshRunnerOptions{
 				Selector:       cfg.Registry,
 				FallbackRunner: nil,
-				Token:          cfg.BearerToken,
+				Token:          dispatchTok,
 			})
 			log.Printf("the local fallback is OFF: tasks without an eligible node will fail with DISPATCH_FAILED")
 		}
@@ -270,8 +276,11 @@ func (s *Server) Handler() stdhttp.Handler {
 		h = RateLimitMiddleware(rateLimiter)(h)
 	}
 
-	if s.config.BearerToken != "" {
-		h = AuthMiddleware(s.config.BearerToken, h)
+	if s.config.BearerToken != "" || s.config.NodeToken != "" {
+		h = AuthMiddlewareWithConfig(AuthConfig{
+			AdminToken: s.config.BearerToken,
+			NodeToken:  s.config.NodeToken,
+		}, h)
 	}
 	if s.config.RequireMTLS {
 		h = MTLSMiddleware(h)
@@ -378,6 +387,7 @@ func (s *Server) validateExposure() error {
 	if s.config.BearerToken != "" {
 		return nil
 	}
+
 	if s.config.RequireMTLS {
 		return nil
 	}

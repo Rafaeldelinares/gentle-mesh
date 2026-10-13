@@ -203,6 +203,8 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	dbPath := fs.String("db-path", "", "Path to SQLite database for task persistence (defaults to <tasks-dir>/gentle-mesh.db, 'none' to disable; 'none' is not allowed with -tls)")
 	heartbeatTimeout := fs.Duration("heartbeat-timeout", 30*time.Second, "Heartbeat timeout for registered nodes")
 	token := fs.String("token", "", "Optional bearer authentication token")
+	dispatchToken := fs.String("dispatch-token", "", "Optional bearer authentication token used when dispatching tasks to mesh workers (falls back to -token)")
+	nodeToken := fs.String("node-token", "", "Optional bearer authentication token scoped strictly to node join and heartbeat (POST /v1/mesh/join, POST /v1/mesh/heartbeat)")
 	taskTTL := fs.Duration("task-ttl", 24*time.Hour, "Task TTL before pruning")
 	territoryMode := fs.String("territory-mode", string(protocol.TerritoryModeQueue), "Territory conflict scheduling mode (queue, warn, strict, disabled)")
 	workspace := fs.String("workspace", ".", "Base directory for remote workspace file exploration")
@@ -281,6 +283,8 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		HeartbeatTimeout:  *heartbeatTimeout,
 		TaskTTL:           *taskTTL,
 		BearerToken:       *token,
+		DispatchToken:     *dispatchToken,
+		NodeToken:         *nodeToken,
 		TerritoryMode:     mode,
 		WorkspaceRoot:     *workspace,
 		Runner:            selectedRunner,
@@ -352,6 +356,12 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 	fmt.Fprintf(stdout, "Gentle Mesh coordinator starting on %s (%s, tasks dir: %s, territory mode: %s, runner: %s)\n",
 		*addr, tlsStatus, *tasksDir, mode, *runnerName)
+	if *dispatchToken == "" {
+		fmt.Fprintf(stdout, "WARNING: coordinator starting without -dispatch-token (worker dispatch will use -token)\n")
+	}
+	if *nodeToken == "" {
+		fmt.Fprintf(stdout, "WARNING: coordinator starting without -node-token (node registration will use -token)\n")
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -507,6 +517,8 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	heartbeatInterval := fs.Duration("heartbeat-interval", 10*time.Second, "Heartbeat ping interval")
 	token := fs.String("token", "", "Optional bearer authentication token for the coordinator API; it is also accepted as an inbound credential of the worker HTTP server")
 	workerToken := fs.String("worker-token", "", "Bearer token that protects the worker HTTP server, accepted in addition to -token (required on a non-loopback address unless -insecure-no-auth)")
+	nodeToken := fs.String("node-token", "", "Optional bearer authentication token for the coordinator API (join and heartbeat); falls back to -token")
+	acceptCoordinatorToken := fs.Bool("accept-coordinator-token", true, "Accept coordinator admin -token as an inbound credential on /v1/execute")
 	insecureNoAuth := fs.Bool("insecure-no-auth", false, "Allow the worker HTTP server on a non-loopback address without -worker-token")
 	addr := fs.String("addr", "", "Listen address for worker HTTP server (default: port from endpoint or :8081)")
 	caCert := fs.String("ca", "", "Path to mesh CA certificate for TLS verification")
@@ -728,14 +740,13 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		listenAddr = extractPortFromEndpoint(*endpoint)
 	}
 
-	// The worker API accepts both credentials: its own and the coordinator's.
-	// The coordinator dispatches tasks to this worker with its own -token, so
-	// dropping it here would break every dispatch.
+	// The worker API accepts both credentials: its own and the coordinator's
+	// (unless -accept-coordinator-token=false).
 	inboundTokens := make([]string, 0, 2)
 	if *workerToken != "" {
 		inboundTokens = append(inboundTokens, *workerToken)
 	}
-	if *token != "" {
+	if *token != "" && *acceptCoordinatorToken {
 		inboundTokens = append(inboundTokens, *token)
 	}
 
@@ -792,13 +803,18 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}()
 
 	// 1. Initial join request
+	coordToken := *token
+	if *nodeToken != "" {
+		coordToken = *nodeToken
+	}
+
 	hReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinURL, bytes.NewReader(joinBytes))
 	if err != nil {
 		return fmt.Errorf("failed to build join request: %w", err)
 	}
 	hReq.Header.Set("Content-Type", "application/json")
-	if *token != "" {
-		hReq.Header.Set("Authorization", "Bearer "+*token)
+	if coordToken != "" {
+		hReq.Header.Set("Authorization", "Bearer "+coordToken)
 	}
 
 	resp, err := httpClient.Do(hReq)
@@ -840,8 +856,8 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 				continue
 			}
 			hbHTTPReq.Header.Set("Content-Type", "application/json")
-			if *token != "" {
-				hbHTTPReq.Header.Set("Authorization", "Bearer "+*token)
+			if coordToken != "" {
+				hbHTTPReq.Header.Set("Authorization", "Bearer "+coordToken)
 			}
 
 			hbResp, err := httpClient.Do(hbHTTPReq)
@@ -859,8 +875,8 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 				reJoinReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinURL, bytes.NewReader(joinBytes))
 				if err == nil {
 					reJoinReq.Header.Set("Content-Type", "application/json")
-					if *token != "" {
-						reJoinReq.Header.Set("Authorization", "Bearer "+*token)
+					if coordToken != "" {
+						reJoinReq.Header.Set("Authorization", "Bearer "+coordToken)
 					}
 					if rResp, err := httpClient.Do(reJoinReq); err == nil {
 						rResp.Body.Close()
