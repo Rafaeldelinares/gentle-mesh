@@ -37,13 +37,7 @@ func (e *ErrNodeBusy) Error() string {
 // IsNodeBusyError reports whether err was caused by a worker returning HTTP 429 Too Many Requests.
 func IsNodeBusyError(err error) bool {
 	var busyErr *ErrNodeBusy
-	if errors.As(err, &busyErr) {
-		return true
-	}
-	if err != nil && strings.Contains(err.Error(), "returned status 429") {
-		return true
-	}
-	return false
+	return errors.As(err, &busyErr)
 }
 
 // RemoteRunnerConfig holds connection and authentication parameters for a remote worker node.

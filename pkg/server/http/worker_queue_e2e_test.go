@@ -205,10 +205,12 @@ func (r *timeoutRunner) Run(ctx context.Context, req protocol.TaskRequest, sink 
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-r.unblock:
+			_, _ = sink.EmitEvent(protocol.EventCompletion, protocol.CompletionPayload{Result: "blocker done"})
 			return nil
 		}
 	}
 	r.callsTask2.Add(1)
+	_, _ = sink.EmitEvent(protocol.EventCompletion, protocol.CompletionPayload{Result: "done"})
 	return nil
 }
 
@@ -272,7 +274,8 @@ func TestWorkerQueueE2E_QueueTimeoutNotRetriedWithMaxRetries(t *testing.T) {
 	// 1. Start Blocker Task
 	idBlocker := postTask(t, coordTS, `{"agent":"worker","task":"blocker","git_repo":"r","git_branch":"b1"}`)
 	waitRetryFor(t, 5*time.Second, "blocker running", func() bool {
-		return getTask(t, coordTS, idBlocker).Status == protocol.TaskStatusRunning
+		st := getTask(t, coordTS, idBlocker)
+		return st.Status == protocol.TaskStatusRunning && st.WorkerID == nodeID && callsTask1.Load() == 1
 	})
 
 	// 2. Start Task with max_retries=1 that will sit in queue and timeout

@@ -191,15 +191,13 @@ func (m *MeshRunner) runOnNode(ctx context.Context, req protocol.TaskRequest, si
 
 func (m *MeshRunner) dispatchToMesh(ctx context.Context, req protocol.TaskRequest, sink EventSink) (dispatchErr, selectErr error) {
 	var lastDispatchErr error
-	allBusy := true
 
 	for attempt := 1; attempt <= meshDispatchAttempts; attempt++ {
 		node, release, err := m.selectNodeForAttempt(req)
 		if err != nil {
 			if lastDispatchErr != nil {
-				if allBusy {
-					return nil, lastDispatchErr
-				}
+				// A dispatch already failed (or nodes were busy): the task must not be silently
+				// executed by the local fallback, so the dispatch error is what the caller gets.
 				return lastDispatchErr, nil
 			}
 			// Nothing was ever dispatched: this is the "no node available" case, which is
@@ -222,8 +220,6 @@ func (m *MeshRunner) dispatchToMesh(ctx context.Context, req protocol.TaskReques
 			continue
 		}
 
-		allBusy = false
-
 		if !isPreAcceptanceTransportError(runErr) {
 			// The worker answered, or the task already started: retrying on another node
 			// could run it twice, so the error is reported untouched.
@@ -237,9 +233,6 @@ func (m *MeshRunner) dispatchToMesh(ctx context.Context, req protocol.TaskReques
 		}
 	}
 
-	if allBusy && lastDispatchErr != nil {
-		return nil, lastDispatchErr
-	}
 	return lastDispatchErr, nil
 }
 

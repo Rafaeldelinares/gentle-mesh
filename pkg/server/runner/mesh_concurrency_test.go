@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -103,15 +102,15 @@ func TestMeshRunner_All429_DispatchFailedAndFallback(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error when all nodes return 429 and fallback is disabled")
 		}
-		if !strings.Contains(err.Error(), "no mesh worker available") && !strings.Contains(err.Error(), "status 429") {
-			t.Errorf("expected dispatch failure error, got: %v", err)
+		if !runner.IsNodeBusyError(err) {
+			t.Errorf("expected dispatch failure error wrapping ErrNodeBusy, got: %v", err)
 		}
 		if len(selector.markedIDs) != 0 {
 			t.Errorf("expected no nodes to be marked unreachable on 429, marked: %v", selector.markedIDs)
 		}
 	})
 
-	t.Run("with local fallback (-local-fallback=true)", func(t *testing.T) {
+	t.Run("with local fallback configured but all nodes busy", func(t *testing.T) {
 		selector := &mockSelector{
 			nodes: []*protocol.NodeInfo{
 				{NodeID: "node-1", Endpoint: node1.URL},
@@ -129,11 +128,14 @@ func TestMeshRunner_All429_DispatchFailedAndFallback(t *testing.T) {
 		req := protocol.TaskRequest{Agent: "worker", Task: "work"}
 
 		err := mesh.Run(context.Background(), req, sink)
-		if err != nil {
-			t.Fatalf("unexpected error with fallback runner: %v", err)
+		if err == nil {
+			t.Fatal("expected error when all nodes return 429, even with fallback runner configured")
 		}
-		if !fallback.called {
-			t.Error("expected fallback runner to be called when all nodes are busy (429)")
+		if !runner.IsNodeBusyError(err) {
+			t.Errorf("expected 429 busy error wrapping ErrNodeBusy, got: %v", err)
+		}
+		if fallback.called {
+			t.Error("expected fallback runner NOT to be called when nodes are busy (429)")
 		}
 	})
 }
