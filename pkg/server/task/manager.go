@@ -384,14 +384,18 @@ func (m *TaskManager) FailTask(taskID, code, message string) error {
 		return ErrTaskAlreadyFinished
 	}
 	alreadyReported := task.Error != nil
-	task.Error = &payload
 	hasLogger := task.logger != nil
+	if !hasLogger && !alreadyReported {
+		task.Error = &payload
+	}
 	task.mu.Unlock()
 
 	if !alreadyReported && hasLogger {
 		// Emitting an EventError also records the payload and moves the task to failed.
 		if _, err := task.EmitEvent(protocol.EventError, payload); err != nil {
-			return err
+			if !errors.Is(err, ErrTaskAlreadyFinished) {
+				return err
+			}
 		}
 	}
 	if task.CurrentStatus() == protocol.TaskStatusFailed {

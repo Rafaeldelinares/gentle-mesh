@@ -31,6 +31,7 @@ type MeshRunnerOptions struct {
 	FallbackRunner Runner
 	Client         *http.Client
 	Token          string
+	DispatchToken  string
 }
 
 // MeshRunner routes task execution to remote federated nodes when available, falling back as configured.
@@ -43,11 +44,15 @@ type MeshRunner struct {
 
 // NewMeshRunner instantiates a new MeshRunner.
 func NewMeshRunner(opts MeshRunnerOptions) *MeshRunner {
+	token := opts.DispatchToken
+	if token == "" {
+		token = opts.Token
+	}
 	return &MeshRunner{
 		selector:       opts.Selector,
 		fallbackRunner: opts.FallbackRunner,
 		client:         opts.Client,
-		token:          opts.Token,
+		token:          token,
 	}
 }
 
