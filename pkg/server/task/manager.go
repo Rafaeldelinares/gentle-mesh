@@ -468,6 +468,38 @@ func (m *TaskManager) CleanupExpired() {
 	}
 }
 
+// FailTasksOfNode finalizes as failed NODE_LOST every running task attributed to
+// nodeID, cancelling its context so the runner releases the connection. It respects
+// the first cause (tasks already terminal are skipped). Returns the number of tasks
+// finalized.
+func (m *TaskManager) FailTasksOfNode(nodeID, code, message string) int {
+	if nodeID == "" {
+		return 0
+	}
+	m.mu.RLock()
+	tasks := make([]*ManagedTask, 0, len(m.tasks))
+	for _, t := range m.tasks {
+		if t == nil {
+			continue
+		}
+		t.mu.RLock()
+		match := t.NodeID == nodeID && t.Status == protocol.TaskStatusRunning
+		t.mu.RUnlock()
+		if match {
+			tasks = append(tasks, t)
+		}
+	}
+	m.mu.RUnlock()
+
+	finalized := 0
+	for _, t := range tasks {
+		if err := m.FailTask(t.TaskID, code, message); err == nil {
+			finalized++
+		}
+	}
+	return finalized
+}
+
 // TrackRunner increments the active runner WaitGroup and returns a release func to be deferred by the runner goroutine.
 func (m *TaskManager) TrackRunner() func() {
 	m.runnerWg.Add(1)

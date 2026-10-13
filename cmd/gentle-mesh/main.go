@@ -373,6 +373,9 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 				return
 			case <-pruneTicker.C:
 				nodeRegistry.PruneStaleNodes()
+				if n := srv.FailTasksOfOfflineNodes(); n > 0 {
+					fmt.Fprintf(stdout, "Failed %d running task(s) of offline nodes with NODE_LOST\n", n)
+				}
 			}
 		}
 	}()

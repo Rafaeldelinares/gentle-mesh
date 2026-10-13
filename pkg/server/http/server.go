@@ -483,3 +483,22 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	return tmErr
 }
+
+// FailTasksOfOfflineNodes finalizes as failed NODE_LOST every running task
+// attributed to a node whose status is offline. The coordinator calls this
+// after PruneStaleNodes so tasks of a node that silently went offline do not
+// stay running forever (finding 29). Safe to call repeatedly: already-terminal
+// tasks are skipped by FailTask.
+func (s *Server) FailTasksOfOfflineNodes() int {
+	if s.config.Registry == nil || s.taskManager == nil {
+		return 0
+	}
+	finalized := 0
+	for _, n := range s.config.Registry.ListNodes() {
+		if n.Status == protocol.NodeStatusOffline && n.NodeID != "" {
+			finalized += s.taskManager.FailTasksOfNode(n.NodeID, "NODE_LOST",
+				"node went offline: no heartbeat within the timeout")
+		}
+	}
+	return finalized
+}
