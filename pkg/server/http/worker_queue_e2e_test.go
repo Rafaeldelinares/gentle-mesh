@@ -53,12 +53,6 @@ func (r *controlledRunner) Run(ctx context.Context, req protocol.TaskRequest, si
 	return nil
 }
 
-func (r *controlledRunner) getCalls(taskKey string) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.calls[taskKey]
-}
-
 func postTask(t *testing.T, ts *httptest.Server, body string) string {
 	t.Helper()
 	resp, err := ts.Client().Post(ts.URL+"/v1/tasks", "application/json", strings.NewReader(body))
