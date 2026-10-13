@@ -68,6 +68,7 @@ type NodeHeartbeatRequest struct {
 	NodeID      string `json:"node_id"`
 	ActiveTasks int    `json:"active_tasks"`
 	Timestamp   int64  `json:"timestamp"`
+	QueuedTasks int    `json:"queued_tasks,omitempty"`
 }
 
 // NodeInfo represents catalog metadata and current health state for a federated node.

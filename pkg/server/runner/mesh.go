@@ -168,8 +168,8 @@ func (m *MeshRunner) selectNodeForAttempt(req protocol.TaskRequest) (*protocol.N
 }
 
 // runOnNode dispatches to one node and always gives the reserved slot back when it returns,
-// including on a panic: the release runs before the error is reported and before the next
-// attempt reserves another node.
+// including on an error (like 429) or panic: the release runs before the error is reported
+// and before the next attempt reserves another node.
 func (m *MeshRunner) runOnNode(ctx context.Context, req protocol.TaskRequest, sink EventSink, node *protocol.NodeInfo, release func()) error {
 	defer release()
 
@@ -196,8 +196,8 @@ func (m *MeshRunner) dispatchToMesh(ctx context.Context, req protocol.TaskReques
 		node, release, err := m.selectNodeForAttempt(req)
 		if err != nil {
 			if lastDispatchErr != nil {
-				// A dispatch already failed: the task must not be silently executed by the
-				// local fallback, so the dispatch error is what the caller gets.
+				// A dispatch already failed (or nodes were busy): the task must not be silently
+				// executed by the local fallback, so the dispatch error is what the caller gets.
 				return lastDispatchErr, nil
 			}
 			// Nothing was ever dispatched: this is the "no node available" case, which is
@@ -210,6 +210,15 @@ func (m *MeshRunner) dispatchToMesh(ctx context.Context, req protocol.TaskReques
 			return nil, nil
 		}
 		lastDispatchErr = runErr
+
+		if IsNodeBusyError(runErr) {
+			// Worker returned 429: it is alive, but busy. Mark busy for this attempt without
+			// marking unreachable, and try another node within the attempts budget.
+			// The inFlight slot was already released by runOnNode before returning.
+			log.Printf("[mesh-router] node %q is busy (429); trying another node without marking unreachable (attempt %d/%d)",
+				node.NodeID, attempt, meshDispatchAttempts)
+			continue
+		}
 
 		if !isPreAcceptanceTransportError(runErr) {
 			// The worker answered, or the task already started: retrying on another node

@@ -501,6 +501,9 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	agentsFlag := fs.String("agents", "worker", "Comma-separated agent capabilities (e.g. worker,explore)")
 	tagsFlag := fs.String("tags", "", "Comma-separated tags (e.g. go,fast)")
 	concurrency := fs.Int("concurrency", 2, "Maximum task concurrency")
+	queueSize := fs.Int("queue-size", 0, "Maximum queued tasks waiting for execution (default: same as -concurrency)")
+	queueTimeout := fs.Duration("queue-timeout", 30*time.Second, "Maximum wait time in queue before timeout")
+	taskDelay := fs.Duration("task-delay", 0, "Artificial delay for simulated task execution (for load testing)")
 	heartbeatInterval := fs.Duration("heartbeat-interval", 10*time.Second, "Heartbeat ping interval")
 	token := fs.String("token", "", "Optional bearer authentication token for the coordinator API; it is also accepted as an inbound credential of the worker HTTP server")
 	workerToken := fs.String("worker-token", "", "Bearer token that protects the worker HTTP server, accepted in addition to -token (required on a non-loopback address unless -insecure-no-auth)")
@@ -747,9 +750,27 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		}
 	}
 
+	qSize := *queueSize
+	if qSize <= 0 {
+		qSize = *concurrency
+	}
+
+	var workerRunner runner.Runner
+	if *taskDelay > 0 {
+		workerRunner = runner.NewSimulatedRunner(runner.SimulatedOptions{
+			ToolCalls: []runner.SimulatedToolCall{
+				{Delay: *taskDelay},
+			},
+		})
+	}
+
 	workerSrv := worker.NewServer(worker.ServerConfig{
 		Addr:         listenAddr,
 		BearerTokens: inboundTokens,
+		Concurrency:  *concurrency,
+		QueueSize:    qSize,
+		QueueTimeout: *queueTimeout,
+		Runner:       workerRunner,
 	})
 
 	if err := workerSrv.Listen(); err != nil {
@@ -809,6 +830,7 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 				NodeID:      id,
 				ActiveTasks: workerSrv.ActiveTasks(),
 				Timestamp:   time.Now().Unix(),
+				QueuedTasks: workerSrv.QueuedTasks(),
 			}
 			hbBytes, _ := json.Marshal(hbReq)
 

@@ -1298,3 +1298,85 @@ func TestTaskManager_RunningTerritories(t *testing.T) {
 		t.Fatalf("expected only preparing task after canceling queued task, got %+v", got)
 	}
 }
+
+func TestManagedTask_QueuedEventWhileRunningPreservesStatusAndDeliversToSubscribers(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := NewTaskManager(tmpDir, 0)
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+	defer mgr.Close()
+
+	mt, err := mgr.CreateTask(protocol.TaskRequest{Agent: "worker", Task: "test"})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	if err := mt.TransitionTo(protocol.TaskStatusRunning); err != nil {
+		t.Fatalf("transition to running failed: %v", err)
+	}
+
+	subCh, unsub, err := mt.Subscribe(0)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer unsub()
+
+	initialSeq := mt.eventSeq.Load()
+
+	// Emit EventStatus: queued
+	evt, err := mt.EmitEvent(protocol.EventStatus, protocol.StatusPayload{
+		Status:  protocol.TaskStatusQueued,
+		Message: "waiting in queue",
+	})
+	if err != nil {
+		t.Fatalf("expected nil error on queued event while running, got: %v", err)
+	}
+
+	if mt.CurrentStatus() != protocol.TaskStatusRunning {
+		t.Fatalf("expected task status to remain running, got %s", mt.CurrentStatus())
+	}
+	if mt.eventSeq.Load() != initialSeq+1 {
+		t.Fatalf("expected eventSeq to increment to %d, got %d", initialSeq+1, mt.eventSeq.Load())
+	}
+	if evt.ID != mt.eventSeq.Load() {
+		t.Fatalf("expected event ID %d, got %d", mt.eventSeq.Load(), evt.ID)
+	}
+
+	// Verify subscriber received the queued event
+	select {
+	case received := <-subCh:
+		if received.Type != protocol.EventStatus {
+			t.Fatalf("expected EventStatus, got %s", received.Type)
+		}
+		var sp protocol.StatusPayload
+		if err := received.UnmarshalPayload(&sp); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		if sp.Status != protocol.TaskStatusQueued {
+			t.Fatalf("expected payload status queued, got %s", sp.Status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for subscriber to receive queued event")
+	}
+
+	// Verify logger persisted the event
+	history, err := mt.logger.ReadEvents(0)
+	if err != nil {
+		t.Fatalf("read events from logger: %v", err)
+	}
+	var foundQueued bool
+	for _, h := range history {
+		if h.Type == protocol.EventStatus {
+			var sp protocol.StatusPayload
+			if err := h.UnmarshalPayload(&sp); err == nil && sp.Status == protocol.TaskStatusQueued {
+				foundQueued = true
+				break
+			}
+		}
+	}
+	if !foundQueued {
+		t.Fatal("expected logger to contain queued status event")
+	}
+}
+

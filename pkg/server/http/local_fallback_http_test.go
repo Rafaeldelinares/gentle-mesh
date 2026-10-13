@@ -242,3 +242,123 @@ func TestLocalFallbackFalseIgnoredWhenRunnerProvided(t *testing.T) {
 		t.Errorf("expected no local marker, got %v", c)
 	}
 }
+
+func lfb429NodeServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "node queue full"})
+	}))
+}
+
+// (f) When 2 nodes return 429 and -local-fallback is active (default, nil),
+// the task must fail with DISPATCH_FAILED and must NOT complete via simulated local fallback.
+func TestLocalFallback_AllNodes429FailsWithoutLocalFallback(t *testing.T) {
+	ts, reg := newLFBServer(t, nil) // LocalFallback nil = default active
+	node1 := lfb429NodeServer(t)
+	defer node1.Close()
+	node2 := lfb429NodeServer(t)
+	defer node2.Close()
+
+	_, err := reg.RegisterNode(protocol.NodeJoinRequest{
+		NodeID:         "n1",
+		Endpoint:       node1.URL,
+		Agents:         []protocol.AgentProfile{{Name: "worker"}},
+		MaxConcurrency: 1,
+	})
+	if err != nil {
+		t.Fatalf("register n1: %v", err)
+	}
+	_, err = reg.RegisterNode(protocol.NodeJoinRequest{
+		NodeID:         "n2",
+		Endpoint:       node2.URL,
+		Agents:         []protocol.AgentProfile{{Name: "worker"}},
+		MaxConcurrency: 1,
+	})
+	if err != nil {
+		t.Fatalf("register n2: %v", err)
+	}
+
+	id := lfbPost(ts, `{"agent":"worker","task":"all-busy-test","git_repo":"toy/repo","git_branch":"b1"}`)
+	if id == "" {
+		t.Fatal("POST failed")
+	}
+
+	d := lfbWait(ts, id, "failed", 5*time.Second)
+	status, _ := d["status"].(string)
+	if status != "failed" {
+		c, _ := d["completion"].(map[string]any)
+		loc, _ := c["executed_locally"].(bool)
+		t.Fatalf("expected task to fail with DISPATCH_FAILED without local fallback, got status=%s, executed_locally=%v", status, loc)
+	}
+
+	errObj, _ := d["error"].(map[string]any)
+	code, _ := errObj["code"].(string)
+	if code != "DISPATCH_FAILED" {
+		t.Fatalf("expected error code DISPATCH_FAILED, got %v", code)
+	}
+	c, _ := d["completion"].(map[string]any)
+	if loc, _ := c["executed_locally"].(bool); loc {
+		t.Fatalf("expected executed_locally=false, got %v", loc)
+	}
+}
+
+// (g) With max_retries=1, when candidate node returns 429 during initial dispatch attempts
+// but frees up before the coordinator retry, the task completes on that node exactly once.
+func TestLocalFallback_429WithMaxRetriesSucceedsWhenNodeFreed(t *testing.T) {
+	ts, reg := newLFBServer(t, nil) // LocalFallback nil = default active
+	var attempts atomic.Int32
+	var completions atomic.Int32
+
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		att := attempts.Add(1)
+		if att <= 3 { // Mesh runner exhausts its 3 attempts on the first dispatch
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "node busy"})
+			return
+		}
+		// On retry attempt after delay, node is freed and executes task
+		completions.Add(1)
+		var req struct {
+			TaskID string `json:"task_id"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		completion, _ := protocol.NewEvent(1, req.TaskID, protocol.EventCompletion, protocol.CompletionPayload{Result: "success on node"})
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(completion.FormatSSE())
+	}))
+	defer node.Close()
+
+	_, err := reg.RegisterNode(protocol.NodeJoinRequest{
+		NodeID:         "n1",
+		Endpoint:       node.URL,
+		Agents:         []protocol.AgentProfile{{Name: "worker"}},
+		MaxConcurrency: 1,
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	id := lfbPost(ts, `{"agent":"worker","task":"retry-task","git_repo":"toy/repo","git_branch":"b2","max_retries":1,"retry_delay_seconds":1}`)
+	if id == "" {
+		t.Fatal("POST failed")
+	}
+
+	d := lfbWait(ts, id, "completed", 10*time.Second)
+	status, _ := d["status"].(string)
+	if status != "completed" {
+		t.Fatalf("expected status completed after retry, got %s: %+v", status, d)
+	}
+	if comp := completions.Load(); comp != 1 {
+		t.Fatalf("expected exactly 1 execution on node, got %d", comp)
+	}
+	c, _ := d["completion"].(map[string]any)
+	if loc, _ := c["executed_locally"].(bool); loc {
+		t.Fatalf("expected executed_locally=false, got %v", loc)
+	}
+}
+

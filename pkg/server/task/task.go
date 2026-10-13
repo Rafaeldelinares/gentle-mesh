@@ -289,6 +289,10 @@ func (t *ManagedTask) EmitEvent(eventType protocol.EventType, payload any) (prot
 		var sp protocol.StatusPayload
 		if err := evt.UnmarshalPayload(&sp); err == nil && sp.Status != "" {
 			if sp.Status != t.Status {
+				if t.Status == protocol.TaskStatusRunning && sp.Status == protocol.TaskStatusQueued {
+					// Do not regress task status from running back to queued, but keep event for logging/subscribers.
+					break
+				}
 				if !isValidTransition(t.Status, sp.Status) {
 					return protocol.Event{}, ErrInvalidStateTransition
 				}
