@@ -167,16 +167,11 @@ func (m *MeshRunner) selectNodeForAttempt(req protocol.TaskRequest) (*protocol.N
 	return node, func() {}, nil
 }
 
-// runOnNode dispatches to one node and gives the reserved slot back when it returns,
-// or retains it via holdRelease if the node answered with 429 (busy) so subsequent attempts
-// in this dispatch see the node as occupied.
-func (m *MeshRunner) runOnNode(ctx context.Context, req protocol.TaskRequest, sink EventSink, node *protocol.NodeInfo, release func(), holdRelease func()) error {
-	var released bool
-	defer func() {
-		if !released {
-			release()
-		}
-	}()
+// runOnNode dispatches to one node and always gives the reserved slot back when it returns,
+// including on an error (like 429) or panic: the release runs before the error is reported
+// and before the next attempt reserves another node.
+func (m *MeshRunner) runOnNode(ctx context.Context, req protocol.TaskRequest, sink EventSink, node *protocol.NodeInfo, release func()) error {
+	defer release()
 
 	log.Printf("[mesh-router] dispatching task (agent: %q, tags: %v) -> node %q (endpoint: %s)", req.Agent, req.Tags, node.NodeID, node.Endpoint)
 
@@ -191,23 +186,12 @@ func (m *MeshRunner) runOnNode(ctx context.Context, req protocol.TaskRequest, si
 		Token:    m.token,
 	})
 
-	err := remote.Run(ctx, req, attributed)
-	if IsNodeBusyError(err) {
-		released = true
-		holdRelease()
-	}
-	return err
+	return remote.Run(ctx, req, attributed)
 }
 
 func (m *MeshRunner) dispatchToMesh(ctx context.Context, req protocol.TaskRequest, sink EventSink) (dispatchErr, selectErr error) {
 	var lastDispatchErr error
 	allBusy := true
-	var heldReleases []func()
-	defer func() {
-		for _, rel := range heldReleases {
-			rel()
-		}
-	}()
 
 	for attempt := 1; attempt <= meshDispatchAttempts; attempt++ {
 		node, release, err := m.selectNodeForAttempt(req)
@@ -223,9 +207,7 @@ func (m *MeshRunner) dispatchToMesh(ctx context.Context, req protocol.TaskReques
 			return nil, err
 		}
 
-		runErr := m.runOnNode(ctx, req, sink, node, release, func() {
-			heldReleases = append(heldReleases, release)
-		})
+		runErr := m.runOnNode(ctx, req, sink, node, release)
 		if runErr == nil {
 			return nil, nil
 		}
@@ -234,6 +216,7 @@ func (m *MeshRunner) dispatchToMesh(ctx context.Context, req protocol.TaskReques
 		if IsNodeBusyError(runErr) {
 			// Worker returned 429: it is alive, but busy. Mark busy for this attempt without
 			// marking unreachable, and try another node within the attempts budget.
+			// The inFlight slot was already released by runOnNode before returning.
 			log.Printf("[mesh-router] node %q is busy (429); trying another node without marking unreachable (attempt %d/%d)",
 				node.NodeID, attempt, meshDispatchAttempts)
 			continue
