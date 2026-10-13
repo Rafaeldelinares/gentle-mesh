@@ -237,12 +237,18 @@ func TestTaskStateMachine_QueuedEventWhileRunningReturnsInvalidTransition(t *tes
 		t.Fatalf("transition to running: %v", err)
 	}
 
-	// Emitting queued status event while already running
-	_, err = mt.EmitEvent(protocol.EventStatus, protocol.StatusPayload{
+	// Emitting queued status event while already running does not error or regress state
+	evt, err := mt.EmitEvent(protocol.EventStatus, protocol.StatusPayload{
 		Status:  protocol.TaskStatusQueued,
 		Message: "task queued waiting for execution slot",
 	})
-	if !errors.Is(err, task.ErrInvalidStateTransition) {
-		t.Fatalf("expected ErrInvalidStateTransition, got: %v", err)
+	if err != nil {
+		t.Fatalf("expected nil error on queued event while running, got: %v", err)
+	}
+	if evt.Type != protocol.EventStatus {
+		t.Fatalf("expected event type EventStatus, got %s", evt.Type)
+	}
+	if mt.CurrentStatus() != protocol.TaskStatusRunning {
+		t.Fatalf("expected task status to remain running, got %s", mt.CurrentStatus())
 	}
 }

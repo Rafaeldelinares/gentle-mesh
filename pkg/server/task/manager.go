@@ -170,6 +170,7 @@ func (m *TaskManager) CreateTask(req protocol.TaskRequest) (*ManagedTask, error)
 		return nil, fmt.Errorf("failed to initialize task logger: %w", err)
 	}
 
+	req.TaskID = taskID
 	task := NewManagedTask(taskID, req, ctx, cancel, logger)
 
 	if m.store != nil {

@@ -232,7 +232,10 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	taskID := req.IdempotencyKey
+	taskID := req.TaskID
+	if taskID == "" {
+		taskID = req.IdempotencyKey
+	}
 	if taskID == "" {
 		taskID = fmt.Sprintf("worker-task-%d", time.Now().UnixNano())
 	}
