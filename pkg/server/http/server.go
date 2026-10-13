@@ -497,7 +497,7 @@ func (s *Server) FailTasksOfOfflineNodes() int {
 	for _, n := range s.config.Registry.ListNodes() {
 		if n.Status == protocol.NodeStatusOffline && n.NodeID != "" {
 			finalized += s.taskManager.FailTasksOfNode(n.NodeID, "NODE_LOST",
-				"node went offline: stream ended without a result")
+				"node went offline: no heartbeat within the timeout")
 		}
 	}
 	return finalized

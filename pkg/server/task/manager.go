@@ -468,7 +468,6 @@ func (m *TaskManager) CleanupExpired() {
 	}
 }
 
-// TrackRunner increments the active runner WaitGroup and returns a release func to be deferred by the runner goroutine.
 // FailTasksOfNode finalizes as failed NODE_LOST every running task attributed to
 // nodeID, cancelling its context so the runner releases the connection. It respects
 // the first cause (tasks already terminal are skipped). Returns the number of tasks
@@ -501,6 +500,7 @@ func (m *TaskManager) FailTasksOfNode(nodeID, code, message string) int {
 	return finalized
 }
 
+// TrackRunner increments the active runner WaitGroup and returns a release func to be deferred by the runner goroutine.
 func (m *TaskManager) TrackRunner() func() {
 	m.runnerWg.Add(1)
 	return func() {
