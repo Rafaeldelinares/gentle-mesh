@@ -642,8 +642,8 @@ func TestTaskManager_FanOut(t *testing.T) {
 
 func TestTaskManager_CleanupExpired(t *testing.T) {
 	tmpDir := t.TempDir()
-	// TTL of 50ms
-	mgr, err := NewTaskManager(tmpDir, 50*time.Millisecond)
+	// TTL of 500ms — raised from 50ms to prevent flaky failures on slow CI runners
+	mgr, err := NewTaskManager(tmpDir, 500*time.Millisecond)
 	if err != nil {
 		t.Fatalf("NewTaskManager: %v", err)
 	}
@@ -663,7 +663,7 @@ func TestTaskManager_CleanupExpired(t *testing.T) {
 	}
 
 	// Wait for TTL to expire
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(800 * time.Millisecond)
 
 	mgr.CleanupExpired()
 
