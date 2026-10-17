@@ -240,6 +240,17 @@ func TestGentleShellRunner_HappyPathTranslatesEvents(t *testing.T) {
 	// line. Verify every system token of the documented whitelist is
 	// present. Go toolchain binds are intentionally skipped because
 	// they are conditional on the host path existing.
+	//
+	// The HOME-derived paths (--tmpfs <home>, .local, .gentle-shell) are
+	// computed from os.UserHomeDir() rather than hard-coded so the test
+	// follows the worker's real HOME. The runner derives the same paths
+	// from os.UserHomeDir(), so any host (CI runner user, dev machine,
+	// root) produces matching argv tokens without this test pinning a
+	// particular user layout.
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		t.Fatalf("os.UserHomeDir returned %q, err=%v; cannot build portable wantBwrapContains", homeDir, err)
+	}
 	wantBwrapContains := []string{
 		"--ro-bind", "/usr", "/usr",
 		"--symlink", "usr/bin", "/bin",
@@ -250,9 +261,9 @@ func TestGentleShellRunner_HappyPathTranslatesEvents(t *testing.T) {
 		"--dev", "/dev",
 		"--proc", "/proc",
 		"--tmpfs", "/tmp",
-		"--tmpfs", "/home/rafael",
-		"--ro-bind", "/home/rafael/.local", "/home/rafael/.local",
-		"--bind", "/home/rafael/.gentle-shell", "/home/rafael/.gentle-shell",
+		"--tmpfs", homeDir,
+		"--ro-bind", filepath.Join(homeDir, ".local"), filepath.Join(homeDir, ".local"),
+		"--bind", filepath.Join(homeDir, ".gentle-shell"), filepath.Join(homeDir, ".gentle-shell"),
 		"--chdir",
 		"--unshare-pid",
 	}
