@@ -208,7 +208,16 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	taskTTL := fs.Duration("task-ttl", 24*time.Hour, "Task TTL before pruning")
 	territoryMode := fs.String("territory-mode", string(protocol.TerritoryModeQueue), "Territory conflict scheduling mode (queue, warn, strict, disabled)")
 	workspace := fs.String("workspace", ".", "Base directory for remote workspace file exploration")
-	runnerName := fs.String("runner", "mesh", "Task execution runner: mesh (registry routing with local simulation), simulated (local only), or pi (spawn the local Pi CLI); only the 'mesh' runner is affected by -local-fallback")
+	runnerName := fs.String("runner", "mesh", "Task execution runner: mesh (registry routing with local simulation), simulated (local only), pi (spawn the local Pi CLI), or gentle-shell (bwrap-isolated worktree runner); only the 'mesh' runner is affected by -local-fallback")
+	gentleShellBin := fs.String("gentle-shell-bin", "gentle-shell", "Path to the gentle-shell executable (only used when -runner=gentle-shell)")
+	bwrapBin := fs.String("bwrap-bin", "bwrap", "Path to the bwrap executable (only used when -runner=gentle-shell)")
+	gentleShellRepoCache := fs.String("gentle-shell-repo-cache", "", "Path to a local bare git repository without remotes that serves as the worktree base (required when -runner=gentle-shell)")
+	gentleShellWorktrees := fs.String("gentle-shell-worktrees", "", "Parent directory for ephemeral worktrees (required when -runner=gentle-shell)")
+	gentleShellBaseRef := fs.String("gentle-shell-base-ref", "main", "Base ref used to create the proposal branch (only when -runner=gentle-shell)")
+	gentleShellTotalTimeout := fs.Duration("gentle-shell-total-timeout", 15*time.Minute, "Total wall-clock budget per gentle-shell task (only when -runner=gentle-shell)")
+	gentleShellIdleTimeout := fs.Duration("gentle-shell-idle-timeout", 5*time.Minute, "Idle timeout: terminate a gentle-shell task that produces no output for this duration")
+	gentleShellMaxToolCalls := fs.Int("gentle-shell-max-tool-calls", 15, "Maximum number of tool_call events a gentle-shell task may emit before being terminated")
+	gentleShellThinking := fs.String("gentle-shell-thinking", "minimal", "Pi --thinking level forwarded to gentle-shell (off|minimal|low|medium|high|xhigh|max)")
 	localFallback := fs.Bool("local-fallback", true, "When -runner=mesh and no node is eligible, run the task in a local SIMULATED runner (true, default) or fail it with DISPATCH_FAILED (false). With -runner=simulated or -runner=pi the flag has no effect.")
 	tlsEnable := fs.Bool("tls", false, "Enable TLS/HTTPS with generated certificates (generates CA if not exists)")
 	tlsDir := fs.String("tls-dir", "", "Directory for TLS certificates and CA (defaults to <tasks-dir>/tls)")
@@ -267,7 +276,19 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return fmt.Errorf("invalid -territory-mode %q: must be one of queue, warn, strict, disabled", *territoryMode)
 	}
 
-	selectedRunner, err := buildRunner(*runnerName, *workspace)
+	selectedRunner, err := buildRunner(runnerBuildOptions{
+		Name:          *runnerName,
+		Workspace:     *workspace,
+		GentleShell:   *gentleShellBin,
+		Bwrap:         *bwrapBin,
+		RepoCache:     *gentleShellRepoCache,
+		WorktreesRoot: *gentleShellWorktrees,
+		BaseRef:       *gentleShellBaseRef,
+		TotalTimeout:  *gentleShellTotalTimeout,
+		IdleTimeout:   *gentleShellIdleTimeout,
+		MaxToolCalls:  *gentleShellMaxToolCalls,
+		ThinkingLevel: *gentleShellThinking,
+	})
 	if err != nil {
 		return err
 	}
@@ -408,23 +429,58 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 }
 
+// runnerBuildOptions carries the resolved CLI flags that buildRunner needs
+// to materialize a concrete runner.Runner.
+type runnerBuildOptions struct {
+	Name          string
+	Workspace     string
+	GentleShell   string
+	Bwrap         string
+	RepoCache     string
+	WorktreesRoot string
+	BaseRef       string
+	TotalTimeout  time.Duration
+	IdleTimeout   time.Duration
+	MaxToolCalls  int
+	ThinkingLevel string
+}
+
 // buildRunner resolves the -runner flag into a task execution runner. A nil
 // runner leaves selection to the server default, which routes to mesh nodes and
 // falls back to local simulation.
-func buildRunner(name, workspace string) (runner.Runner, error) {
-	switch name {
+func buildRunner(opts runnerBuildOptions) (runner.Runner, error) {
+	switch opts.Name {
 	case "mesh":
 		return nil, nil
 	case "simulated":
 		return runner.NewSimulatedRunner(runner.SimulatedOptions{}), nil
 	case "pi":
-		workspaceRoot, err := filepath.Abs(workspace)
+		workspaceRoot, err := filepath.Abs(opts.Workspace)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve workspace root for the pi runner: %w", err)
 		}
 		return runner.NewPiRunner(runner.PiRunnerOptions{WorkspaceRoot: workspaceRoot}), nil
+	case "gentle-shell":
+		if opts.RepoCache == "" {
+			return nil, errors.New("-gentle-shell-repo-cache is required when -runner=gentle-shell")
+		}
+		if opts.WorktreesRoot == "" {
+			return nil, errors.New("-gentle-shell-worktrees is required when -runner=gentle-shell")
+		}
+		return runner.NewGentleShellRunner(runner.GentleShellRunnerOptions{
+			Bwrap:         opts.Bwrap,
+			GentleShell:   opts.GentleShell,
+			RepoCache:     opts.RepoCache,
+			WorktreesRoot: opts.WorktreesRoot,
+			BaseRef:       opts.BaseRef,
+			TotalTimeout:  opts.TotalTimeout,
+			IdleTimeout:   opts.IdleTimeout,
+			MaxToolCalls:  opts.MaxToolCalls,
+			ThinkingLevel: opts.ThinkingLevel,
+			TasksDir:      "", // coordinator-level tasks dir; workers will set their own
+		}), nil
 	default:
-		return nil, fmt.Errorf("invalid -runner %q: must be one of mesh, simulated, pi", name)
+		return nil, fmt.Errorf("invalid -runner %q: must be one of mesh, simulated, pi, gentle-shell", opts.Name)
 	}
 }
 
@@ -527,6 +583,19 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	clientCert := fs.String("cert", "", "Path to client certificate for mTLS authentication (requires -key)")
 	clientKey := fs.String("key", "", "Path to client private key for mTLS authentication (requires -cert)")
 	joinToken := fs.String("join-token", "", "Enrollment token for automatic certificate issuance (uses CSR-based enrollment)")
+	workerRunnerName := fs.String("runner", "simulated", "Task execution runner used by this worker: simulated (default), or gentle-shell (bwrap-isolated worktree runner)")
+	bwrapBin := fs.String("bwrap-bin", "bwrap", "Path to the bwrap executable (only when -runner=gentle-shell)")
+	gentleShellBin := fs.String("gentle-shell-bin", "gentle-shell", "Path to the gentle-shell executable (only when -runner=gentle-shell)")
+	gentleShellRepoCache := fs.String("gentle-shell-repo-cache", "", "Path to a local bare git repository without remotes (required when -runner=gentle-shell)")
+	gentleShellWorktrees := fs.String("gentle-shell-worktrees", "", "Parent directory for ephemeral worktrees (required when -runner=gentle-shell)")
+	gentleShellBaseRef := fs.String("gentle-shell-base-ref", "main", "Base ref used to create the proposal branch")
+	gentleShellTotalTimeout := fs.Duration("gentle-shell-total-timeout", 15*time.Minute, "Total wall-clock budget per gentle-shell task")
+	gentleShellIdleTimeout := fs.Duration("gentle-shell-idle-timeout", 5*time.Minute, "Idle timeout for gentle-shell: terminate a task that produces no output for this duration")
+	gentleShellMaxToolCalls := fs.Int("gentle-shell-max-tool-calls", 15, "Maximum number of tool_call events a gentle-shell task may emit")
+	gentleShellThinking := fs.String("gentle-shell-thinking", "minimal", "Pi --thinking level forwarded to gentle-shell (off|minimal|low|medium|high|xhigh|max)")
+	gentleShellTasksDir := fs.String("gentle-shell-tasks-dir", "", "Directory for oversized diffs and patch bundles (defaults to -tasks-dir)")
+	gentleShellProvider := fs.String("gentle-shell-provider", "", "Pi --provider forwarded to gentle-shell (e.g. minimax, opencode-go, openai). When empty, gentle-shell uses its built-in default.")
+	gentleShellModel := fs.String("gentle-shell-model", "", "Pi --model forwarded to gentle-shell (e.g. MiniMax-M3, claude-sonnet-4-6). When empty, gentle-shell uses its built-in default.")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -767,12 +836,38 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 
 	var workerRunner runner.Runner
-	if *taskDelay > 0 {
-		workerRunner = runner.NewSimulatedRunner(runner.SimulatedOptions{
-			ToolCalls: []runner.SimulatedToolCall{
-				{Delay: *taskDelay},
-			},
+	switch *workerRunnerName {
+	case "simulated":
+		if *taskDelay > 0 {
+			workerRunner = runner.NewSimulatedRunner(runner.SimulatedOptions{
+				ToolCalls: []runner.SimulatedToolCall{
+					{Delay: *taskDelay},
+				},
+			})
+		}
+	case "gentle-shell":
+		if *gentleShellRepoCache == "" {
+			return errors.New("-gentle-shell-repo-cache is required when -runner=gentle-shell")
+		}
+		if *gentleShellWorktrees == "" {
+			return errors.New("-gentle-shell-worktrees is required when -runner=gentle-shell")
+		}
+		workerRunner = runner.NewGentleShellRunner(runner.GentleShellRunnerOptions{
+			Bwrap:         *bwrapBin,
+			GentleShell:   *gentleShellBin,
+			RepoCache:     *gentleShellRepoCache,
+			WorktreesRoot: *gentleShellWorktrees,
+			BaseRef:       *gentleShellBaseRef,
+			TotalTimeout:  *gentleShellTotalTimeout,
+			IdleTimeout:   *gentleShellIdleTimeout,
+			MaxToolCalls:  *gentleShellMaxToolCalls,
+			ThinkingLevel: *gentleShellThinking,
+			TasksDir:      *gentleShellTasksDir,
+			Provider:      *gentleShellProvider,
+			Model:         *gentleShellModel,
 		})
+	default:
+		return fmt.Errorf("invalid -runner %q: must be one of simulated, gentle-shell", *workerRunnerName)
 	}
 
 	workerSrv := worker.NewServer(worker.ServerConfig{
