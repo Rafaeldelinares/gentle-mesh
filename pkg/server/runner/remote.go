@@ -111,17 +111,47 @@ func (r *RemoteRunner) Run(ctx context.Context, req protocol.TaskRequest, sink E
 
 	reader := bufio.NewReader(resp.Body)
 	var blockLines []string
+	// sawEvent records whether the worker forwarded at least one real event to the sink
+	// before the stream went away. It is the only signal the loop has to distinguish a
+	// pre-acceptance transport error (the worker died before/while we read anything) from
+	// a post-acceptance loss (the worker accepted the task — it emitted at least status:running
+	// — and then its connection was reset, half-closed or torn down without a terminal event).
+	// The first case is a normal pre-acceptance failure that the MeshRunner must retry on
+	// another node; the second is a lost node and must be classified as NODE_LOST, not retried.
+	sawEvent := false
 
 	for {
 		line, readErr := reader.ReadString('\n')
 		if readErr != nil && readErr != io.EOF {
+			// RST (kill -9), io.ErrUnexpectedEOF, or a *net.OpError all look like this: the
+			// node's socket was torn down while we were reading the body. First, try to flush
+			// any in-flight block — a worker killed mid-block may have left a complete event
+			// sitting in blockLines without the closing empty line. Then, if we had any real
+			// event from the node, it had accepted the task: treat the loss like io.EOF does,
+			// so the scheduler classifies it as NODE_LOST. Otherwise this is a pre-acceptance
+			// transport error and the MeshRunner may retry on another node.
+			if len(blockLines) > 0 {
+				terminal, emitted, err := r.processBlock(ctx, blockLines, sink)
+				if err != nil && !errors.Is(err, errStreamDone) {
+					return err
+				}
+				if terminal || errors.Is(err, errStreamDone) {
+					return nil
+				}
+				if emitted {
+					sawEvent = true
+				}
+			}
+			if sawEvent {
+				return ErrNodeLost
+			}
 			return readErr
 		}
 
 		cleanLine := strings.TrimRight(line, "\r\n")
 		if cleanLine == "" {
 			if len(blockLines) > 0 {
-				terminal, err := r.processBlock(ctx, blockLines, sink)
+				terminal, emitted, err := r.processBlock(ctx, blockLines, sink)
 				if err != nil {
 					if errors.Is(err, errStreamDone) {
 						return nil
@@ -131,6 +161,9 @@ func (r *RemoteRunner) Run(ctx context.Context, req protocol.TaskRequest, sink E
 				if terminal {
 					return nil
 				}
+				if emitted {
+					sawEvent = true
+				}
 				blockLines = blockLines[:0]
 			}
 		} else {
@@ -139,12 +172,15 @@ func (r *RemoteRunner) Run(ctx context.Context, req protocol.TaskRequest, sink E
 
 		if readErr == io.EOF {
 			if len(blockLines) > 0 {
-				terminal, err := r.processBlock(ctx, blockLines, sink)
+				terminal, emitted, err := r.processBlock(ctx, blockLines, sink)
 				if err != nil && !errors.Is(err, errStreamDone) {
 					return err
 				}
 				if terminal || errors.Is(err, errStreamDone) {
 					return nil
+				}
+				if emitted {
+					sawEvent = true
 				}
 			}
 			// The stream ended without completion or error: the node accepted the task and then
@@ -154,8 +190,12 @@ func (r *RemoteRunner) Run(ctx context.Context, req protocol.TaskRequest, sink E
 	}
 }
 
-// processBlock forwards one SSE block and reports whether it was a terminal event.
-func (r *RemoteRunner) processBlock(ctx context.Context, lines []string, sink EventSink) (bool, error) {
+// processBlock forwards one SSE block and reports whether it was a terminal event
+// and whether it actually emitted anything to the sink. emitted distinguishes a block
+// with real content (the worker spoke) from one that only carried SSE comments (the
+// worker sent `:keep-alive`-style heartbeats, which ParseSSE skips). The caller uses
+// emitted to know whether the worker had made progress before the stream went away.
+func (r *RemoteRunner) processBlock(ctx context.Context, lines []string, sink EventSink) (terminal, emitted bool, err error) {
 	hasContent := false
 	for _, l := range lines {
 		trimmed := strings.TrimSpace(l)
@@ -165,17 +205,17 @@ func (r *RemoteRunner) processBlock(ctx context.Context, lines []string, sink Ev
 		}
 	}
 	if !hasContent {
-		return false, nil
+		return false, false, nil
 	}
 
 	raw := []byte(strings.Join(lines, "\n"))
 	evt, err := protocol.ParseSSE(raw)
 	if err != nil {
-		return false, fmt.Errorf("failed to parse sse event: %w", err)
+		return false, false, fmt.Errorf("failed to parse sse event: %w", err)
 	}
 
 	if _, err := sink.EmitEvent(evt.Type, evt.Payload); err != nil {
-		return false, fmt.Errorf("failed to emit event: %w", err)
+		return false, false, fmt.Errorf("failed to emit event: %w", err)
 	}
 
 	if evt.Type == protocol.EventQuery {
@@ -209,8 +249,8 @@ func (r *RemoteRunner) processBlock(ctx context.Context, lines []string, sink Ev
 	}
 
 	if evt.Type == protocol.EventCompletion || evt.Type == protocol.EventError {
-		return true, errStreamDone
+		return true, true, errStreamDone
 	}
 
-	return false, nil
+	return false, true, nil
 }
