@@ -86,6 +86,9 @@ type Server struct {
 
 // NewServer initializes a new Server with defaults for omitted configuration fields.
 func NewServer(cfg ServerConfig) (*Server, error) {
+	if cfg.Addr == "" {
+		cfg.Addr = "127.0.0.1:8080"
+	}
 	if cfg.HeartbeatTimeout <= 0 {
 		cfg.HeartbeatTimeout = 30 * time.Second
 	}
@@ -375,10 +378,13 @@ func isLoopbackAddr(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// validateExposure ensures that running dangerous runners (such as PiRunner) without authentication
-// is rejected on non-loopback addresses unless explicitly allowed via InsecureNoAuth.
+// validateExposure ensures that running the coordinator on a non-loopback address
+// without authentication is rejected unless explicitly allowed via InsecureNoAuth.
 func (s *Server) validateExposure() error {
 	if s.config.InsecureNoAuth {
+		if !isLoopbackAddr(s.config.Addr) && s.config.BearerToken == "" && !s.config.RequireMTLS {
+			log.Printf("[gentle-mesh] WARNING: server running on non-loopback address %s without authentication (-insecure-no-auth enabled)", s.config.Addr)
+		}
 		return nil
 	}
 	if isLoopbackAddr(s.config.Addr) {
@@ -387,19 +393,11 @@ func (s *Server) validateExposure() error {
 	if s.config.BearerToken != "" {
 		return nil
 	}
-
 	if s.config.RequireMTLS {
 		return nil
 	}
 
-	_, isPiRunner := s.runner.(*runner.PiRunner)
-	_, isPiConfig := s.config.Runner.(*runner.PiRunner)
-	if isPiRunner || isPiConfig {
-		return errors.New("cannot run PiRunner on non-loopback address without authentication (set BearerToken, RequireMTLS, or InsecureNoAuth)")
-	}
-
-	log.Printf("[gentle-mesh] WARNING: server running on non-loopback address %s without authentication", s.config.Addr)
-	return nil
+	return fmt.Errorf("cannot bind coordinator to non-loopback address %s without authentication: configure -token, -require-mtls, or pass -insecure-no-auth for local development", s.config.Addr)
 }
 
 // buildTLSConfig constructs the tls.Config for HTTPS and mTLS serving.

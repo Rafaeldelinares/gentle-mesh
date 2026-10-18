@@ -224,9 +224,9 @@ go test -v -race ./...
 
 ### Levantar el coordinador en local (sin TLS, desarrollo)
 ```bash
-go run ./cmd/gentle-mesh server -addr :8080 -workspace . -territory-mode queue
+go run ./cmd/gentle-mesh server -workspace . -territory-mode queue
 ```
-*(La primera compilación con `go run` puede tardar más que la ejecución de un binario ya compilado. No es un benchmark.)*
+*(Por defecto escucha de forma segura en `127.0.0.1:8080`. La primera compilación con `go run` puede tardar más que la ejecución de un binario ya compilado. No es un benchmark.)*
 El flag `-territory-mode` acepta `queue` (por defecto), `warn`, `strict` o `disabled`; consulta el semáforo inteligente en la sección 2.2.
 
 Para el camino TLS/mTLS usa `server -addr :8443 -tls -tls-init -require-mtls`. Ten en cuenta que los clientes CLI (`nodes`, `radar`, `run`, `rpc`) todavía **no** presentan certificado de cliente, así que no alcanzan un coordinador con `-require-mtls` hasta la v1.0.4.

@@ -202,7 +202,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	addr := fs.String("addr", ":8080", "Coordinator listen address (e.g. :8443 for HTTPS, :8080 for HTTP)")
+	addr := fs.String("addr", "127.0.0.1:8080", "Coordinator listen address (e.g. 127.0.0.1:8443 for HTTPS, 127.0.0.1:8080 for HTTP)")
 	tasksDir := fs.String("tasks-dir", "/tmp/gentle-mesh/tasks", "Directory for task logs and state")
 	dbPath := fs.String("db-path", "", "Path to SQLite database for task persistence (defaults to <tasks-dir>/gentle-mesh.db, 'none' to disable; 'none' is not allowed with -tls)")
 	heartbeatTimeout := fs.Duration("heartbeat-timeout", 30*time.Second, "Heartbeat timeout for registered nodes")
@@ -233,7 +233,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	rateLimitBurst := fs.Int("rate-limit-burst", 10, "Rate limit max burst size")
 	corsOrigins := fs.String("cors-origins", "", "Comma-separated list of additional allowed CORS origins")
 	allowedHosts := fs.String("allowed-hosts", "", "Comma-separated list of additional allowed host names")
-	insecureNoAuth := fs.Bool("insecure-no-auth", false, "Required to run -runner pi on a non-loopback address without token or mTLS")
+	insecureNoAuth := fs.Bool("insecure-no-auth", false, "Allow binding coordinator to a non-loopback address without authentication (-token or -require-mtls)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -349,7 +349,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			return errors.New("-require-mtls requires -tls to be enabled")
 		}
 		serverConfig.RequireMTLS = true
-	} else if *addr == ":8443" || strings.HasPrefix(*addr, ":8443") {
+	} else if *addr == ":8443" || strings.HasPrefix(*addr, ":8443") || strings.HasSuffix(*addr, ":8443") {
 		// Auto-enable TLS if using common HTTPS port without -tls flag. The
 		// enrollment tokens and the webhooks need the database, so this path
 		// arms the same stores as -tls instead of starting without them.
