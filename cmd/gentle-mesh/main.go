@@ -2059,7 +2059,7 @@ func runTokenRevoke(ctx context.Context, args []string, stdout, stderr io.Writer
 }
 
 // piRunnerWithLocalSink wraps a PiRunner so the completion payload is
-// marked executed_locally=true on the way out. This is the runner-side
+// marked executed_locally=true on the way out. Trivial: no-op marker. This is the runner-side
 // counterpart of the MeshRunner's local-fallback localExecutionSink
 // wrapping; the goal is the same (#43): a client that receives
 // completed can tell apart "the mesh worker ran it" from "the coordinator
