@@ -637,3 +637,55 @@ func TestTokenStoreInitSchemaAddsRevokedAtToExistingDatabase(t *testing.T) {
 		t.Error("the migrated row must accept a revocation")
 	}
 }
+
+// #7b: cuando 3 nodos distintos consumen el mismo token multi-uso, used_by
+// debe terminar siendo la lista completa separada por comas ("a,b,c"),
+// no solo el último nodo. Reproduce la evidencia original del issue.
+func TestTokenStoreUseTokenAccumulatesAllNodesOnMultiUseToken(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "accumulate.db"))
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	if err := InitTokenSchema(db); err != nil {
+		t.Fatalf("InitTokenSchema: %v", err)
+	}
+	st := NewSQLiteTokenStore(db)
+	ctx := context.Background()
+
+	createdAt := time.Now()
+	if err := st.CreateToken(ctx, &TokenRecord{
+		Token:     "multi-use-token",
+		CreatedAt: createdAt,
+		MaxUses:   3,
+	}); err != nil {
+		t.Fatalf("CreateToken: %v", err)
+	}
+
+	for _, nodeID := range []string{"probe-a", "probe-b", "probe-c"} {
+		if _, err := st.UseToken(ctx, "multi-use-token", nodeID); err != nil {
+			t.Fatalf("UseToken(%s) failed: %v", nodeID, err)
+		}
+	}
+
+	got, err := st.GetToken(ctx, "multi-use-token")
+	if err != nil {
+		t.Fatalf("GetToken failed: %v", err)
+	}
+	if got.Uses != 3 {
+		t.Errorf("uses = %d, want 3", got.Uses)
+	}
+
+	if got.UsedBy == nil {
+		t.Fatal("used_by must not be nil after 3 distinct enrolls")
+	}
+	want := "probe-a,probe-b,probe-c"
+	if *got.UsedBy != want {
+		t.Errorf("used_by = %q, want %q (the full ordered list, not just the last node)", *got.UsedBy, want)
+	}
+
+	if _, err := st.UseToken(ctx, "multi-use-token", "probe-d"); err == nil || err.Error() != "token max uses exceeded" {
+		t.Errorf("a fourth UseToken must report 'token max uses exceeded', got %v", err)
+	}
+}
