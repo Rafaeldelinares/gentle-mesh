@@ -463,7 +463,15 @@ func buildRunner(opts runnerBuildOptions) (runner.Runner, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve workspace root for the pi runner: %w", err)
 		}
-		return runner.NewPiRunner(runner.PiRunnerOptions{WorkspaceRoot: workspaceRoot}), nil
+		// #43: the pi runner runs the Pi CLI on the coordinator itself, not
+		// on a mesh worker. The MeshRunner already wraps the sink in
+		// localExecutionSink when its simulated fallback runs; the pi
+		// runner must do the same so GET /v1/tasks/<id> shows
+		// executed_locally=true and the operator can distinguish local
+		// from worker execution.
+		return piRunnerWithLocalSink{
+			inner: runner.NewPiRunner(runner.PiRunnerOptions{WorkspaceRoot: workspaceRoot}),
+		}, nil
 	case "gentle-shell":
 		if opts.RepoCache == "" {
 			return nil, errors.New("-gentle-shell-repo-cache is required when -runner=gentle-shell")
@@ -2048,6 +2056,41 @@ func runTokenRevoke(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 
 	return nil
+}
+
+// piRunnerWithLocalSink wraps a PiRunner so the completion payload is
+// marked executed_locally=true on the way out. This is the runner-side
+// counterpart of the MeshRunner's local-fallback localExecutionSink
+// wrapping; the goal is the same (#43): a client that receives
+// completed can tell apart "the mesh worker ran it" from "the coordinator
+// ran it locally via the pi runner or the simulated fallback".
+type piRunnerWithLocalSink struct {
+	inner runner.Runner
+}
+
+// Run delegates to the wrapped pi runner after wrapping the sink in a
+// local-execution marker. The marker only fires for completion events;
+// all other events pass through untouched.
+func (w piRunnerWithLocalSink) Run(ctx context.Context, req protocol.TaskRequest, sink runner.EventSink) error {
+	return w.inner.Run(ctx, req, localPiRunnerSink{EventSink: sink})
+}
+
+// localPiRunnerSink sets ExecutedLocally=true on the completion payload.
+// Mirrors the runner.localExecutionSink type that the MeshRunner uses
+// for its simulated fallback (kept in sync; see also runner_test.go in
+// the runner package for the unit test).
+type localPiRunnerSink struct {
+	runner.EventSink
+}
+
+func (s localPiRunnerSink) EmitEvent(eventType protocol.EventType, payload any) (protocol.Event, error) {
+	if eventType == protocol.EventCompletion {
+		if completion, ok := payload.(protocol.CompletionPayload); ok {
+			completion.ExecutedLocally = true
+			payload = completion
+		}
+	}
+	return s.EventSink.EmitEvent(eventType, payload)
 }
 
 // generateSecureToken generates a cryptographically secure random token.
