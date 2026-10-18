@@ -51,6 +51,23 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("failed to set busy timeout: %w", err)
 	}
 
+	if err := InitSQLiteStoreForTest(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	return &SQLiteStore{
+		db: db,
+	}, nil
+}
+
+// InitSQLiteStoreForTest runs the schema and migration DDL on an existing
+// *sql.DB. Exposed so tests can build a store from a pre-seeded database
+// (e.g. to exercise the migration path on a legacy schema). Safe to call
+// multiple times: the DDL uses CREATE TABLE IF NOT EXISTS and the
+// migration uses tasksTableHasColumn to skip the ALTER when the column
+// already exists.
+func InitSQLiteStoreForTest(db *sql.DB) error {
 	// Create table and indexes
 	ddlStatements := []string{
 		`CREATE TABLE IF NOT EXISTS tasks (
@@ -69,7 +86,8 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 			started_at INTEGER NOT NULL,
 			finished_at INTEGER NOT NULL,
 			error_message TEXT NOT NULL,
-			result_summary TEXT NOT NULL
+			result_summary TEXT NOT NULL,
+			executed_locally INTEGER NOT NULL DEFAULT 0
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_created_at ON tasks(created_at DESC);`,
@@ -78,26 +96,41 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 
 	for _, stmt := range ddlStatements {
 		if _, err := db.Exec(stmt); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("failed to initialize sqlite schema: %w", err)
+			return fmt.Errorf("failed to initialize sqlite schema: %w", err)
+		}
+	}
+
+	// CREATE TABLE IF NOT EXISTS leaves an existing table untouched, so an old
+	// database would never see the new column: add it explicitly. This
+	// mirrors the pattern used by InitTokenSchema for the revoked_at column.
+	hasExecutedLocally, err := tasksTableHasColumn(db, "executed_locally")
+	if err != nil {
+		return fmt.Errorf("failed to inspect the tasks schema: %w", err)
+	}
+	if !hasExecutedLocally {
+		if _, err := db.Exec(`ALTER TABLE tasks ADD COLUMN executed_locally INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("failed to add the executed_locally column: %w", err)
 		}
 	}
 
 	// Initialize certificate schema
 	if err := InitCertSchema(db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to initialize cert schema: %w", err)
+		return fmt.Errorf("failed to initialize cert schema: %w", err)
 	}
 
 	// Initialize token schema
 	if err := InitTokenSchema(db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to initialize token schema: %w", err)
+		return fmt.Errorf("failed to initialize token schema: %w", err)
 	}
 
-	return &SQLiteStore{
-		db: db,
-	}, nil
+	return nil
+}
+
+// NewSQLiteStoreFromDB wraps an already-open *sql.DB in a *SQLiteStore. The
+// caller is responsible for running InitSQLiteStoreForTest on the DB
+// beforehand; this constructor does not touch the schema.
+func NewSQLiteStoreFromDB(db *sql.DB) *SQLiteStore {
+	return &SQLiteStore{db: db}
 }
 
 // SaveTask persists or updates a TaskRecord in the SQLite database.
@@ -134,8 +167,9 @@ func (s *SQLiteStore) SaveTask(ctx context.Context, task *TaskRecord) error {
 	INSERT INTO tasks (
 		task_id, branch, repository, domain, blast_radius, phase,
 		current_action, status, worker_id, tags, edit_surfaces,
-		created_at, started_at, finished_at, error_message, result_summary
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		created_at, started_at, finished_at, error_message, result_summary,
+		executed_locally
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(task_id) DO UPDATE SET
 		branch = excluded.branch,
 		repository = excluded.repository,
@@ -151,7 +185,8 @@ func (s *SQLiteStore) SaveTask(ctx context.Context, task *TaskRecord) error {
 		started_at = excluded.started_at,
 		finished_at = excluded.finished_at,
 		error_message = excluded.error_message,
-		result_summary = excluded.result_summary;
+		result_summary = excluded.result_summary,
+		executed_locally = excluded.executed_locally;
 	`
 
 	_, err = s.db.ExecContext(
@@ -173,6 +208,7 @@ func (s *SQLiteStore) SaveTask(ctx context.Context, task *TaskRecord) error {
 		task.FinishedAt,
 		task.ErrorMessage,
 		task.ResultSummary,
+		boolToInt(task.ExecutedLocally),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save task record: %w", err)
@@ -199,7 +235,8 @@ func (s *SQLiteStore) GetTask(ctx context.Context, taskID string) (*TaskRecord, 
 	query := `
 	SELECT task_id, branch, repository, domain, blast_radius, phase,
 	       current_action, status, worker_id, tags, edit_surfaces,
-	       created_at, started_at, finished_at, error_message, result_summary
+	       created_at, started_at, finished_at, error_message, result_summary,
+	       executed_locally
 	FROM tasks
 	WHERE task_id = ?;
 	`
@@ -213,6 +250,7 @@ func (s *SQLiteStore) GetTask(ctx context.Context, taskID string) (*TaskRecord, 
 		status           string
 		tagsJSON         string
 		editSurfacesJSON string
+		executedLocally  int
 	)
 
 	err := row.Scan(
@@ -232,7 +270,15 @@ func (s *SQLiteStore) GetTask(ctx context.Context, taskID string) (*TaskRecord, 
 		&task.FinishedAt,
 		&task.ErrorMessage,
 		&task.ResultSummary,
+		&executedLocally,
 	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrTaskNotFound
+		}
+		return nil, fmt.Errorf("failed to query task: %w", err)
+	}
+task.ExecutedLocally = executedLocally != 0
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrTaskNotFound
@@ -341,7 +387,8 @@ func (s *SQLiteStore) ListTasks(ctx context.Context, filter TaskFilter) ([]*Task
 	query := `
 	SELECT task_id, branch, repository, domain, blast_radius, phase,
 	       current_action, status, worker_id, tags, edit_surfaces,
-	       created_at, started_at, finished_at, error_message, result_summary
+	       created_at, started_at, finished_at, error_message, result_summary,
+	       executed_locally
 	FROM tasks
 	`
 
@@ -378,6 +425,7 @@ func (s *SQLiteStore) ListTasks(ctx context.Context, filter TaskFilter) ([]*Task
 			status           string
 			tagsJSON         string
 			editSurfacesJSON string
+			executedLocally  int
 		)
 
 		err := rows.Scan(
@@ -397,10 +445,12 @@ func (s *SQLiteStore) ListTasks(ctx context.Context, filter TaskFilter) ([]*Task
 			&task.FinishedAt,
 			&task.ErrorMessage,
 			&task.ResultSummary,
+			&executedLocally,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan task row: %w", err)
 		}
+		task.ExecutedLocally = executedLocally != 0
 
 		task.BlastRadius = protocol.BlastRadius(blastRadius)
 		task.Phase = protocol.AgentPhase(phase)
@@ -447,4 +497,47 @@ func (s *SQLiteStore) Close() error {
 	err := s.db.Close()
 	s.db = nil
 	return err
+}
+
+// boolToInt maps a boolean to the 0/1 INTEGER convention used by the
+// executed_locally column. SQLite stores booleans as INTEGER.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// tasksTableHasColumn reports whether the tasks table already has a column
+// with that name. Mirrors tokenTableHasColumn in tokenstore.go so the
+// migration path is consistent across both stores. The arguments are
+// fixed literals from this package; nothing user-supplied reaches the
+// statement.
+func tasksTableHasColumn(db *sql.DB, column string) (bool, error) {
+	rows, err := db.Query("PRAGMA table_info(tasks)")
+	if err != nil {
+		return false, fmt.Errorf("failed to inspect the tasks schema: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid          int
+			name         string
+			columnType   string
+			notNull      int
+			defaultValue *string
+			primaryKey   int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("failed to read the tasks schema: %w", err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("failed to read the tasks schema: %w", err)
+	}
+	return false, nil
 }
