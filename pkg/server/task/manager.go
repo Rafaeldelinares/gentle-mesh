@@ -613,8 +613,18 @@ func (m *TaskManager) rehydrateTask(rec *store.TaskRecord) *ManagedTask {
 	}
 
 	if rec.ResultSummary != "" || rec.Status == protocol.TaskStatusCompleted {
-		task.Completion = &protocol.CompletionPayload{
-			Result: rec.ResultSummary,
+		// #9c: the executed_locally flag is persisted in its own column
+		// (store.TaskRecord.ExecutedLocally) and read back here. We do
+		// #9c: the executed_locally flag is persisted in its own column
+		// (store.TaskRecord.ExecutedLocally) and read back here. We do
+		// NOT touch rec.ResultSummary at all, so a real ResultSummary
+		// that happens to end with the literal string "\n[executed_locally=true]"
+		// stays intact and does not get interpreted as a marker.
+		if rec.ResultSummary != "" || rec.Status == protocol.TaskStatusCompleted {
+			task.Completion = &protocol.CompletionPayload{
+				Result:          rec.ResultSummary,
+				ExecutedLocally: rec.ExecutedLocally,
+			}
 		}
 	}
 
@@ -657,27 +667,34 @@ func (m *TaskManager) syncTaskToStore(t *ManagedTask) {
 		errMsg = t.Error.Message
 	}
 	var summary string
+	var executedLocally bool
 	if t.Completion != nil {
 		summary = t.Completion.Result
+		// #9c: the executed_locally flag is persisted in its own column
+		// (store.TaskRecord.ExecutedLocally). We do NOT touch
+		// t.Completion.Result, so a real ResultSummary that happens to
+		// end with the literal marker string stays intact.
+		executedLocally = t.Completion.ExecutedLocally
 	}
 
 	record := &store.TaskRecord{
-		TaskID:        t.TaskID,
-		Branch:        t.Request.GitBranch,
-		Repository:    t.Request.GitRepo,
-		Domain:        t.Domain,
-		BlastRadius:   t.BlastRadius,
-		Phase:         t.Phase,
-		CurrentAction: t.CurrentAction,
-		Status:        t.Status,
-		WorkerID:      t.NodeID,
-		Tags:          append([]string(nil), t.Request.Tags...),
-		EditSurfaces:  append([]string(nil), t.EditSurfaces...),
-		CreatedAt:     t.CreatedAt,
-		StartedAt:     t.StartedAt,
-		FinishedAt:    t.FinishedAt,
-		ErrorMessage:  errMsg,
-		ResultSummary: summary,
+		TaskID:          t.TaskID,
+		Branch:          t.Request.GitBranch,
+		Repository:      t.Request.GitRepo,
+		Domain:          t.Domain,
+		BlastRadius:     t.BlastRadius,
+		Phase:           t.Phase,
+		CurrentAction:   t.CurrentAction,
+		Status:          t.Status,
+		WorkerID:        t.NodeID,
+		Tags:            append([]string(nil), t.Request.Tags...),
+		EditSurfaces:    append([]string(nil), t.EditSurfaces...),
+		CreatedAt:       t.CreatedAt,
+		StartedAt:       t.StartedAt,
+		FinishedAt:      t.FinishedAt,
+		ErrorMessage:    errMsg,
+		ResultSummary:   summary,
+		ExecutedLocally: executedLocally,
 	}
 	taskID := t.TaskID
 	status := t.Status
