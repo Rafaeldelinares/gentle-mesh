@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -92,6 +93,8 @@ func runCLIWithIO(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		return runTokenRevoke(ctx, cmdArgs, stdout, stderr)
 	case "gen-csr":
 		return runGenCSR(ctx, cmdArgs, stdout, stderr)
+	case "apply":
+		return runApply(ctx, cmdArgs, stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -118,6 +121,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  token-list   List enrollment tokens")
 	fmt.Fprintln(w, "  token-revoke Revoke an enrollment token")
 	fmt.Fprintln(w, "  gen-csr      Generate a CSR locally for enrollment (no CA needed)")
+	fmt.Fprintln(w, "  apply        Materialize a proposal/<task_id> branch from the worker cache into a local merge branch (no push, no merge to main)")
 	fmt.Fprintln(w, "  help      Show help for gentle-mesh")
 }
 
@@ -2071,4 +2075,228 @@ func generateSecureToken() string {
 	}
 
 	return string(result)
+}
+
+// runApply materialises a `proposal/<task_id>` branch from the worker cache
+// into a LOCAL merge branch in the target repo. It never pushes, never
+// merges into main, and never touches a remote. The result is always a
+// local branch the operator can inspect with `git log` / `git diff` before
+// deciding the next step.
+//
+// The flow:
+//  1. Add the worker cache as a TEMPORARY remote of the target repo
+//     (named apply-cache-<task_id>, removed on exit, even on error).
+//  2. Fetch only the proposal/<task_id> refspec.
+//  3. Verify the proposal ref actually exists and has at least one commit
+//     ahead of the base (otherwise the runner reported NO_COMMIT_PRODUCED
+//     and there is nothing to apply).
+//  4. Verify the working tree is clean (git status --porcelain).
+//  5. Create a new branch `proposal-merge/<task_id>` from --base and
+//     merge the proposal with --no-ff so the merge commit is explicit
+//     and the proposal commits stay grouped.
+func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	taskID := fs.String("task", "", "Task ID whose proposal/<task_id> branch to apply (required)")
+	cache := fs.String("cache", "/home/rafael/a2a-golang/cache.git", "Path to the worker bare cache (RepoCache)")
+	repo := fs.String("repo", "", "Target repo to apply the proposal into (default: cwd)")
+	base := fs.String("base", "main", "Base ref to create the merge branch from")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *taskID == "" {
+		return errors.New("-task is required (the proposal/<task_id> branch to apply)")
+	}
+	if *repo == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("cannot determine cwd for -repo default: %w", err)
+		}
+		*repo = cwd
+	}
+
+	remoteName := fmt.Sprintf("apply-cache-%s", *taskID)
+	targetBranch := fmt.Sprintf("proposal-merge/%s", *taskID)
+	proposalRef := fmt.Sprintf("proposal/%s", *taskID)
+	// applyTmpRef is the local ref where we stage the fetched proposal so
+	// we never write to refs/heads/proposal/<task_id> directly: that branch
+	// name belongs to the runner's namespace and an operator may already
+	// have a local proposal/<task_id> branch they care about. The ref lives
+	// under refs/apply-tmp/ (clearly owned by this subcommand) and is
+	// deleted in the same cleanup that removes the temporary remote.
+	applyTmpRef := fmt.Sprintf("refs/apply-tmp/proposal/%s", *taskID)
+
+	// runGit runs a git command in dir and returns trimmed stdout. The caller
+	// decides what to do with non-zero exits; this helper does not silently
+	// swallow errors.
+	runGit := func(dir string, args ...string) (string, error) {
+		fullArgs := append([]string{"-C", dir}, args...)
+		cmd := exec.CommandContext(ctx, "git", fullArgs...)
+		var out, errOut bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &errOut
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("git %s in %s: %w (%s)", strings.Join(args, " "), dir, err, strings.TrimSpace(errOut.String()))
+		}
+		return strings.TrimRight(out.String(), "\n"), nil
+	}
+
+	// 1. Validate the cache is a bare repo with the proposal branch.
+	if _, err := runGit(*cache, "rev-parse", "--git-dir"); err != nil {
+		return fmt.Errorf("cache %q is not a git repo: %w", *cache, err)
+	}
+	if _, err := runGit(*cache, "show-ref", "--verify", "--quiet", "refs/heads/"+proposalRef); err != nil {
+		return fmt.Errorf("proposal branch %q not found in cache %q: %w (the runner may have reported NO_COMMIT_PRODUCED, or the task is still running)", proposalRef, *cache, err)
+	}
+
+	// 2. Validate the target repo.
+	if _, err := runGit(*repo, "rev-parse", "--git-dir"); err != nil {
+		return fmt.Errorf("target repo %q is not a git repo: %w", *repo, err)
+	}
+	if *repo == "" {
+		// safety net (defensive: should not be reachable because of the cwd default above)
+		return errors.New("target repo path is empty")
+	}
+
+	// 2b. Resolve the git toplevel of the target repo and surface it to
+	// the operator BEFORE any mutation. This catches two foot-guns:
+	//   - the cwd default can resolve to a subdirectory of a repo the
+	//     operator did not intend (git rev-parse --show-toplevel walks up
+	//     to the enclosing repo, and apply then operates there);
+	//   - the operator passed -repo pointing at a subdir on purpose
+	//     (e.g. /home/rafael/proyectos/gentle-mesh/cmd/gentle-mesh) and
+	//     may not have noticed the effective repo is the parent.
+	// We do not block: a subdir target may be intentional. We just make
+	// it impossible to miss.
+	toplevel, err := runGit(*repo, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return fmt.Errorf("failed to resolve git toplevel of %q: %w", *repo, err)
+	}
+	toplevelResolved, err := filepath.Abs(toplevel)
+	if err != nil {
+		return fmt.Errorf("failed to make toplevel path absolute: %w", err)
+	}
+	repoAbs, err := filepath.Abs(*repo)
+	if err != nil {
+		return fmt.Errorf("failed to make -repo path absolute: %w", err)
+	}
+	fmt.Fprintf(stdout, "[apply] -repo=%s\n[apply] resolved toplevel=%s\n", *repo, toplevelResolved)
+	if toplevelResolved != repoAbs {
+		fmt.Fprintf(stdout, "[apply] WARNING: -repo %q is not the toplevel of its git repo (toplevel=%q). The apply will operate on the toplevel, not on the subdir you passed. If this is intentional, no action needed; if not, pass the toplevel path to -repo.\n", *repo, toplevelResolved)
+	}
+
+	// 3. Check the working tree is clean. We will not checkout a new branch
+	// over uncommitted local work; bail out and let the operator commit or
+	// stash first.
+	porcelain, err := runGit(*repo, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("failed to read working tree status: %w", err)
+	}
+	if porcelain != "" {
+		return fmt.Errorf("target repo %q has uncommitted changes:\n%s\ncommit or stash them before applying", *repo, porcelain)
+	}
+
+	// 4. Resolve the base ref to a SHA so the merge works even if the
+	// branch name is ambiguous locally.
+	baseSHA, err := runGit(*repo, "rev-parse", "--verify", "--quiet", *base)
+	if err != nil {
+		return fmt.Errorf("base ref %q not found in %q: %w", *base, *repo, err)
+	}
+
+	// 5. Add the temporary remote (idempotently), fetch ONLY the proposal
+	// refspec, and remember to clean it up.
+	cleanupRemote := true
+	defer func() {
+		if !cleanupRemote {
+			return
+		}
+		if _, err := runGit(*repo, "remote", "remove", remoteName); err != nil {
+			fmt.Fprintf(stderr, "warning: failed to remove temporary remote %q: %v\n", remoteName, err)
+		}
+		if _, err := runGit(*repo, "update-ref", "-d", applyTmpRef); err != nil {
+			fmt.Fprintf(stderr, "warning: failed to remove temporary ref %q: %v\n", applyTmpRef, err)
+		}
+	}()
+	if _, err := runGit(*repo, "remote", "add", remoteName, *cache); err != nil {
+		// `git remote add` fails if the name already exists; treat that as
+		// recoverable (it could be a leftover from a previous interrupted
+		// run) and keep the existing remote.
+		if _, errRem := runGit(*repo, "remote", "set-url", remoteName, *cache); errRem != nil {
+			return fmt.Errorf("failed to add or set-url temporary remote %q -> %q: add: %v / set-url: %v", remoteName, *cache, err, errRem)
+		}
+	}
+	if _, err := runGit(*repo, "fetch", "--no-tags", remoteName, "+"+proposalRef+":"+applyTmpRef); err != nil {
+		return fmt.Errorf("fetch of %s from %s failed: %w", proposalRef, remoteName, err)
+	}
+
+	// 6. Confirm the proposal has at least one commit ahead of the base.
+	ahead, err := runGit(*repo, "rev-list", "--count", baseSHA+".."+applyTmpRef)
+	if err != nil {
+		return fmt.Errorf("failed to count commits ahead of %s: %w", baseSHA[:8], err)
+	}
+	if ahead == "0" {
+		return fmt.Errorf("proposal %s has no commits ahead of %s (NO_COMMIT_PRODUCED?)", proposalRef, *base)
+	}
+
+	// 7. Create the local merge branch from the base SHA, then merge the
+	// fetched proposal with --no-ff so the merge commit is explicit and
+	// the proposal commits stay grouped together.
+	//
+	// First, check the target branch does not already exist: a previous
+	// apply on the same task_id leaves it behind on purpose (it is the
+	// operator's local artifact). Re-running apply with the same task_id
+	// must NOT silently overwrite or check it out — we surface a clear
+	// message that tells the operator how to discard the previous apply
+	// before retrying.
+	if _, err := runGit(*repo, "show-ref", "--verify", "--quiet", "refs/heads/"+targetBranch); err == nil {
+		return fmt.Errorf("branch %s already exists from a previous apply; run 'git branch -D %s' to discard it, then retry", targetBranch, targetBranch)
+	}
+	if _, err := runGit(*repo, "checkout", "-b", targetBranch, baseSHA); err != nil {
+		return fmt.Errorf("failed to create branch %q from %s: %w", targetBranch, baseSHA[:8], err)
+	}
+	mergeOut, err := runGit(*repo, "merge", "--no-ff", "-m",
+		fmt.Sprintf("apply proposal/%s\n\nBranch created by `gentle-mesh apply` (no push, no merge to main).\nLocal-only artifact for the operator to inspect before deciding the next step.", *taskID),
+		applyTmpRef)
+	if err != nil {
+		// Best-effort: try to roll back the new branch so the repo
+		// does not stay in an unexpected state.
+		fmt.Fprintf(stderr, "merge failed: %v\nattempting rollback (checkout %s; branch -D %s)\n", err, *base, targetBranch)
+		if _, rbErr := runGit(*repo, "checkout", *base); rbErr != nil {
+			fmt.Fprintf(stderr, "rollback failed: %v\n", rbErr)
+		}
+		if _, rbErr := runGit(*repo, "branch", "-D", targetBranch); rbErr != nil {
+			fmt.Fprintf(stderr, "rollback failed: %v\n", rbErr)
+		}
+		return fmt.Errorf("merge of %s into %s failed: %w (repo rolled back to %s)", applyTmpRef, targetBranch, err, *base)
+	}
+
+	// 8. Final state: remove the temporary remote AND the temporary ref
+	// (we own the namespace refs/apply-tmp/, never refs/heads/proposal/),
+	// leave the local branch checked out. Report a summary so the operator
+	// knows exactly what to do next.
+	cleanupRemote = false
+	if _, err := runGit(*repo, "remote", "remove", remoteName); err != nil {
+		fmt.Fprintf(stderr, "warning: failed to remove temporary remote %q: %v\n", remoteName, err)
+	}
+	if _, err := runGit(*repo, "update-ref", "-d", applyTmpRef); err != nil {
+		fmt.Fprintf(stderr, "warning: failed to remove temporary ref %q: %v\n", applyTmpRef, err)
+	}
+
+	fmt.Fprintf(stdout, "Applied proposal/%s to %s as a LOCAL branch.\n\n", *taskID, targetBranch)
+	fmt.Fprintf(stdout, "  task_id      : %s\n", *taskID)
+	fmt.Fprintf(stdout, "  cache         : %s\n", *cache)
+	fmt.Fprintf(stdout, "  target repo   : %s\n", *repo)
+	fmt.Fprintf(stdout, "  base          : %s (%s)\n", *base, baseSHA[:8])
+	fmt.Fprintf(stdout, "  new branch    : %s (currently checked out)\n", targetBranch)
+	fmt.Fprintf(stdout, "  commits ahead : %s\n", ahead)
+	if mergeOut != "" {
+		fmt.Fprintf(stdout, "\nmerge summary:\n%s\n", mergeOut)
+	}
+	fmt.Fprintf(stdout, "\nNext steps (manual, no push performed):\n")
+	fmt.Fprintf(stdout, "  cd %s\n", *repo)
+	fmt.Fprintf(stdout, "  git log %s --stat\n", targetBranch)
+	fmt.Fprintf(stdout, "  git diff %s..%s   # inspect the diff before any push\n", baseSHA[:8], targetBranch)
+	fmt.Fprintf(stdout, "  # once you are happy, decide what to do (push, PR, etc.).\n")
+	fmt.Fprintf(stdout, "  # if you want to discard the apply: git checkout %s && git branch -D %s\n", *base, targetBranch)
+	return nil
 }

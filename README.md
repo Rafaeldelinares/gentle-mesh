@@ -271,6 +271,30 @@ go run ./cmd/gentle-mesh run -coordinator http://localhost:8080 \
 > sólo se guarda en la columna `branch` de la tarea y en el lock, que vive **en memoria** del coordinador y no sobrevive
 > a un reinicio.
 
+### Aplicar la propuesta de una tarea con `apply`
+
+Después de que un worker termina una tarea y produce una rama `proposal/<task_id>` en el cache bare (`RepoCache`), el operador puede **materializarla como una rama local** en el repo de destino para revisarla con `git log` / `git diff` normales y decidir el merge final a mano. **Nunca se hace push, nunca se mergea a `main`, nunca se modifica un remoto**: el resultado es siempre una rama local nombrada `proposal-merge/<task_id>` lista para inspección.
+
+```bash
+go run ./cmd/gentle-mesh apply -task <task_id> \
+  -cache /path/to/worker-cache.git \
+  -repo /path/to/target-repo
+```
+
+- `-task` (required): ID de la tarea cuya rama `proposal/<task_id>` se aplica.
+- `-cache` (default `/home/rafael/a2a-golang/cache.git`): ruta al cache bare donde el runner deja la propuesta.
+- `-repo` (default: cwd): ruta al repo donde se crea la rama local.
+- `-base` (default `main`): ref base desde la que se crea la rama merge.
+
+El subcomando:
+1. Añade el cache como **remote temporal** `apply-cache-<task_id>` (se elimina siempre, incluso en error).
+2. Hace **fetch** solo del refspec `proposal/<task_id>:proposal/<task_id>` (forzado, sobreescribe la rama local si ya existía de un apply anterior).
+3. Verifica que la propuesta tiene **al menos un commit ahead** de la base y que el **working tree** del repo está limpio.
+4. Crea la rama `proposal-merge/<task_id>` desde la base y mergea la propuesta con `--no-ff` (commit de merge explícito).
+5. Reporta qué hacer a continuación (`git log` / `git diff` para inspeccionar, `git checkout main && git branch -D proposal-merge/<task_id>` para descartar).
+
+**No se hace push** bajo ningún concepto. La rama vive solo en el repo del operador hasta que él decida qué hacer con ella.
+
 ### Puente Drop-in JSON-RPC (`rpc`) para Open Pi Viewer
 
 Si ya contás con una interfaz gráfica que habla el protocolo RPC de Pi (Open Pi Viewer stock, cockpits móviles o cualquier herramienta que dialogue por `stdin`/`stdout`), no hace falta reescribir el cliente: el subcomando `gentle-mesh rpc` actúa como un **puente transparente drop-in** sobre `stdin`/`stdout`.
