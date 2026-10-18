@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"database/sql"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
@@ -707,3 +709,184 @@ func TestStoreClosed(t *testing.T) {
 	})
 }
 
+
+// #9c: a database created before the executed_locally column existed gains
+// the column without losing any existing rows. Mirrors the precedent in
+// tokenstore_test.go for the revoked_at column.
+func TestSQLiteStoreInitSchemaAddsExecutedLocallyToExistingDatabase(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db"))
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	// Legacy schema: tasks without the executed_locally column.
+	legacy := `CREATE TABLE tasks (
+		task_id TEXT PRIMARY KEY,
+		branch TEXT NOT NULL,
+		repository TEXT NOT NULL,
+		domain TEXT NOT NULL,
+		blast_radius TEXT NOT NULL,
+		phase TEXT NOT NULL,
+		current_action TEXT NOT NULL,
+		status TEXT NOT NULL,
+		worker_id TEXT NOT NULL,
+		tags TEXT NOT NULL,
+		edit_surfaces TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		started_at INTEGER NOT NULL,
+		finished_at INTEGER NOT NULL,
+		error_message TEXT NOT NULL,
+		result_summary TEXT NOT NULL
+	);`
+	if _, err := db.Exec(legacy); err != nil {
+		t.Fatalf("failed to create the legacy table: %v", err)
+	}
+	// Seed a legacy row whose ResultSummary intentionally ends with the
+	// marker string the old fix used. The migration must NOT touch this
+	// text: it lives in its own column now.
+	const seedResult = "legacy result\n[executed_locally=true]"
+	if _, err := db.Exec(
+		`INSERT INTO tasks (task_id, branch, repository, domain, blast_radius, phase, current_action, status, worker_id, tags, edit_surfaces, created_at, started_at, finished_at, error_message, result_summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"legacy-task", "main", "r", "d", "isolated-branch", "pending", "init", "completed", "node-old", "[]", "[]", 1, 1, 1, "", seedResult); err != nil {
+		t.Fatalf("failed to seed the legacy row: %v", err)
+	}
+
+	// The migration path is exercised inside NewSQLiteStore. That path
+	// runs CREATE TABLE IF NOT EXISTS (a no-op on the legacy db) plus the
+	// tasksTableHasColumn + ALTER TABLE block.
+	if err := store.InitSQLiteStoreForTest(db); err != nil {
+		t.Fatalf("InitSQLiteStoreForTest must migrate the legacy db: %v", err)
+	}
+	// Idempotency: a second init must succeed too.
+	if err := store.InitSQLiteStoreForTest(db); err != nil {
+		t.Fatalf("a second InitSQLiteStoreForTest failed: %v", err)
+	}
+
+	s := store.NewSQLiteStoreFromDB(db)
+	ctx := context.Background()
+
+	rec, err := s.GetTask(ctx, "legacy-task")
+	if err != nil {
+		t.Fatalf("GetTask failed: %v", err)
+	}
+	if rec == nil {
+		t.Fatal("the migration must not lose the existing row")
+	}
+	if rec.ResultSummary != seedResult {
+		t.Errorf("the migration must NOT touch ResultSummary: got %q, want %q", rec.ResultSummary, seedResult)
+	}
+	if rec.ExecutedLocally {
+		t.Errorf("the migration must not flip ExecutedLocally to true on a legacy row (the column defaults to false); got true")
+	}
+	// The new column path must be functional: we can update the flag and read it back.
+	rec.ExecutedLocally = true
+	if err := s.SaveTask(ctx, rec); err != nil {
+		t.Fatalf("SaveTask on migrated row failed: %v", err)
+	}
+	rec2, _ := s.GetTask(ctx, "legacy-task")
+	if rec2 == nil || !rec2.ExecutedLocally {
+		t.Errorf("after setting ExecutedLocally=true and SaveTask, the column must read back as true: got %+v", rec2)
+	}
+	if rec2.ResultSummary != seedResult {
+		t.Errorf("SaveTask must not have rewritten ResultSummary: got %q, want %q", rec2.ResultSummary, seedResult)
+	}
+}
+
+// #9c: a ResultSummary that legitimately ends with the marker text
+// (because the agent's actual output contained that string) must NOT be
+// interpreted as a marker. The fix uses a dedicated column, so the
+// ResultSummary text is preserved verbatim and the ExecutedLocally flag
+// is whatever the column says (false in this case, because the task ran
+// on a real mesh worker).
+func TestSQLiteStoreExecutedLocallyColumnIsIndependentOfResultSummary(t *testing.T) {
+	f, err := os.CreateTemp("", "collision-*.db")
+	if err != nil {
+		t.Fatalf("failed to create temp db: %v", err)
+	}
+	f.Close()
+	defer os.Remove(f.Name())
+	db, err := sql.Open("sqlite", f.Name())
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	if err := store.InitSQLiteStoreForTest(db); err != nil {
+		t.Fatalf("InitSQLiteStoreForTest failed: %v", err)
+	}
+	s := store.NewSQLiteStoreFromDB(db)
+	ctx := context.Background()
+
+	// The simulated agent output: it ended with the literal text
+	// "\n[executed_locally=true]" because the prompt asked the agent to
+	// print a status line. That text is now part of ResultSummary
+	// verbatim; the ExecutedLocally column should stay false.
+	const agentOutput = "analysis complete\n[executed_locally=true]"
+	rec := &store.TaskRecord{
+		TaskID:          "collision-1",
+		Branch:          "main",
+		Repository:      "r",
+		Domain:          "d",
+		BlastRadius:     protocol.BlastRadius("isolated-branch"),
+		Phase:           protocol.AgentPhase("pending"),
+		CurrentAction:   "init",
+		Status:          protocol.TaskStatus("completed"),
+		WorkerID:        "node-real",
+		Tags:            nil,
+		EditSurfaces:    nil,
+		CreatedAt:       1,
+		StartedAt:       1,
+		FinishedAt:      1,
+		ErrorMessage:    "",
+		ResultSummary:   agentOutput,
+		ExecutedLocally: false, // ran on a real mesh worker
+	}
+	if err := s.SaveTask(ctx, rec); err != nil {
+		t.Fatalf("SaveTask failed: %v", err)
+	}
+
+	// Restart: rehydrate from store.
+	s2 := store.NewSQLiteStoreFromDB(db)
+	rec2, err := s2.GetTask(ctx, "collision-1")
+	if err != nil {
+		t.Fatalf("GetTask after rehydrate failed: %v", err)
+	}
+	if rec2.ResultSummary != agentOutput {
+		t.Errorf("ResultSummary must be preserved verbatim; got %q, want %q", rec2.ResultSummary, agentOutput)
+	}
+	if rec2.ExecutedLocally {
+		t.Errorf("ExecutedLocally must come from the column, not from the ResultSummary text; got true (column should say false). The literal text '\\n[executed_locally=true]' in ResultSummary must not flip the flag.")
+	}
+
+	// And the reverse: a task that really did run locally has the flag set
+	// even if its ResultSummary does not contain the marker text.
+	const cleanOutput = "result with no marker"
+	rec3 := &store.TaskRecord{
+		TaskID:          "collision-2",
+		Branch:          "main",
+		Repository:      "r",
+		Domain:          "d",
+		BlastRadius:     protocol.BlastRadius("isolated-branch"),
+		Phase:           protocol.AgentPhase("pending"),
+		CurrentAction:   "init",
+		Status:          protocol.TaskStatus("completed"),
+		WorkerID:        "node-local",
+		Tags:            nil,
+		EditSurfaces:    nil,
+		CreatedAt:       1,
+		StartedAt:       1,
+		FinishedAt:      1,
+		ErrorMessage:    "",
+		ResultSummary:   cleanOutput,
+		ExecutedLocally: true, // ran locally
+	}
+	if err := s.SaveTask(ctx, rec3); err != nil {
+		t.Fatalf("SaveTask failed: %v", err)
+	}
+	s3 := store.NewSQLiteStoreFromDB(db)
+	rec4, _ := s3.GetTask(ctx, "collision-2")
+	if !rec4.ExecutedLocally {
+		t.Errorf("a task with ExecutedLocally=true and clean ResultSummary must read back with the flag set")
+	}
+}
