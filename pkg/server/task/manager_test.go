@@ -1380,3 +1380,88 @@ func TestManagedTask_QueuedEventWhileRunningPreservesStatusAndDeliversToSubscrib
 	}
 }
 
+
+// #9c end-to-end: a task persisted with ExecutedLocally=true must rehydrate
+// as ExecutedLocally=true after a coordinator restart, while the
+// ResultSummary is preserved verbatim (no marker stripping — we no longer
+// embed a marker in the text). Simulates a SaveTask → close → reopen
+// against the same DB file.
+func TestExecutedLocallySurvivesRestartEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+
+	const agentOutput = "analyzed the codebase\n[executed_locally=true]"
+	row := func(id, workerID string, executedLocally bool) *store.TaskRecord {
+		return &store.TaskRecord{
+			TaskID:          id,
+			Branch:          "main",
+			Repository:      "r",
+			Domain:          "d",
+			BlastRadius:     protocol.BlastRadius("isolated-branch"),
+			Phase:           protocol.AgentPhase("pending"),
+			CurrentAction:   "init",
+			Status:          protocol.TaskStatus("completed"),
+			WorkerID:        workerID,
+			Tags:            []string{"demo"},
+			EditSurfaces:    []string{"pkg/server/task"},
+			CreatedAt:       1700000000,
+			StartedAt:       1700000001,
+			FinishedAt:      1700000002,
+			ErrorMessage:    "",
+			ResultSummary:   agentOutput,
+			ExecutedLocally: executedLocally,
+		}
+	}
+
+	// Phase 1: write two rows under one TaskManager instance, then close it.
+	dbPath := dir + "/coord.db"
+	s1, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	if err := s1.SaveTask(context.Background(), row("restart-9c-1", "node-local", true)); err != nil {
+		t.Fatalf("SaveTask local: %v", err)
+	}
+	if err := s1.SaveTask(context.Background(), row("restart-9c-2", "node-real", false)); err != nil {
+		t.Fatalf("SaveTask real: %v", err)
+	}
+	_ = s1.Close()
+
+	// Phase 2: simulate a coordinator restart by opening a brand new
+	// TaskManager against the same DB file. The rehydrate path must
+	// preserve the ExecutedLocally flag AND the verbatim ResultSummary.
+	s2, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore on restart: %v", err)
+	}
+	defer s2.Close()
+	m2, err := NewTaskManager(dir, 0, WithStore(s2))
+	if err != nil {
+		t.Fatalf("NewTaskManager on restart: %v", err)
+	}
+	defer m2.Close()
+
+	for _, tc := range []struct {
+		taskID         string
+		wantExecuted   bool
+		wantResultText string
+	}{
+		{"restart-9c-1", true, agentOutput},
+		{"restart-9c-2", false, agentOutput},
+	} {
+		mt, ok := m2.GetTask(tc.taskID)
+		if !ok || mt == nil {
+			t.Errorf("%s: task must rehydrate after restart (ok=%v, mt==nil=%v)", tc.taskID, !ok, mt == nil)
+			continue
+		}
+		if mt.Completion == nil {
+			t.Errorf("%s: Completion must be set after restart", tc.taskID)
+			continue
+		}
+		if mt.Completion.ExecutedLocally != tc.wantExecuted {
+			t.Errorf("%s: Completion.ExecutedLocally = %v, want %v (column must drive the flag, not the text)", tc.taskID, mt.Completion.ExecutedLocally, tc.wantExecuted)
+		}
+		if mt.Completion.Result != tc.wantResultText {
+			t.Errorf("%s: Completion.Result = %q, want %q (verbatim, no marker stripping)", tc.taskID, mt.Completion.Result, tc.wantResultText)
+		}
+	}
+}
