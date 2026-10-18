@@ -1,5 +1,7 @@
 # Gentle Mesh 🌐
 
+[![CI](https://github.com/Rafaeldelinares/gentle-mesh/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Rafaeldelinares/gentle-mesh/actions/workflows/ci.yml)
+
 > **Transporte Distribuido Federado, Ejecución Remota de Subagentes y Consciencia Situacional para el Ecosistema Pi & Gentle AI.**
 
 <p align="center">
