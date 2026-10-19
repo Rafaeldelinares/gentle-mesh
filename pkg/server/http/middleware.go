@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"log"
@@ -349,10 +350,23 @@ func AuthMiddlewareWithConfig(cfg AuthConfig, next stdhttp.Handler) stdhttp.Hand
 	})
 }
 
+// CertRevocationChecker checks whether a certificate serial is revoked.
+type CertRevocationChecker interface {
+	IsCertRevoked(ctx context.Context, serial string) (bool, error)
+}
+
 // MTLSMiddleware validates that incoming HTTPS requests present a verified client certificate.
 // The bootstrap routes ("/healthz", "/healthz/", "/v1/mesh/ca", "/v1/certs/enroll") bypass this check.
 // If no verified client certificate is present, it responds with HTTP 401 and {"error":"client certificate required"}.
 func MTLSMiddleware(next stdhttp.Handler) stdhttp.Handler {
+	return MTLSMiddlewareWithRevocation(nil, next)
+}
+
+// MTLSMiddlewareWithRevocation validates that incoming HTTPS requests present a verified client certificate
+// and checks revocation status against the provided checker (e.g. in-memory revocation cache + cert store).
+// If the certificate is revoked, it responds with HTTP 403 Forbidden, sets Connection: close to tear down
+// any reused keep-alive TCP connections, and responds with {"error":"certificate revoked"}.
+func MTLSMiddlewareWithRevocation(checker CertRevocationChecker, next stdhttp.Handler) stdhttp.Handler {
 	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		if r.URL.Path == "/healthz" || r.URL.Path == "/healthz/" ||
 			r.URL.Path == "/v1/mesh/ca" || r.URL.Path == "/v1/certs/enroll" {
@@ -360,11 +374,30 @@ func MTLSMiddleware(next stdhttp.Handler) stdhttp.Handler {
 			return
 		}
 
-		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 {
+		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(stdhttp.StatusUnauthorized)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "client certificate required"})
 			return
+		}
+
+		if checker != nil {
+			clientCert := r.TLS.VerifiedChains[0][0]
+			serial := clientCert.SerialNumber.String()
+			revoked, err := checker.IsCertRevoked(r.Context(), serial)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(stdhttp.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to verify certificate status"})
+				return
+			}
+			if revoked {
+				w.Header().Set("Connection", "close")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(stdhttp.StatusForbidden)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "certificate revoked"})
+				return
+			}
 		}
 
 		next.ServeHTTP(w, r)

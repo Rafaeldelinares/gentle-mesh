@@ -194,6 +194,12 @@ func configureCoordinatorTLS(cfg *meshhttp.ServerConfig, tlsDirPath, dbPath stri
 	}
 	cfg.WebhookStore = store.NewSQLiteWebhookStore(db)
 
+	// Initialize cert store for node certificates and revocation
+	if err := store.InitCertSchema(db); err != nil {
+		return nil, nil, false, fmt.Errorf("failed to init cert schema: %w", err)
+	}
+	cfg.CertStore = store.NewSQLiteCertStore(db)
+
 	return ca, serverCert, regenerated, nil
 }
 

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
@@ -59,6 +60,7 @@ type ServerConfig struct {
 	RequireMTLS    bool // Require client certificates for all connections
 	// Enrollment configuration
 	TokenStore  store.TokenStore // For enrollment token validation
+	CertStore   store.CertStore  // For node certificate tracking and revocation
 	// Webhook configuration
 	WebhookStore store.WebhookStore // For webhook notifications
 	// Rate limiting configuration
@@ -81,6 +83,8 @@ type Server struct {
 	startTime        time.Time
 	meshCA           *pki.MeshCA
 	tokenStore       store.TokenStore
+	certStore        store.CertStore
+	revocationCache  *revocationCache
 	webhookStore     store.WebhookStore
 }
 
@@ -197,6 +201,18 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		WebhookDispatcher: webhookDispatcher,
 	})
 
+	revCache := newRevocationCache()
+	if cfg.CertStore != nil {
+		certs, err := cfg.CertStore.ListCerts(context.Background())
+		if err == nil {
+			for _, c := range certs {
+				if c.Revoked && c.Serial != "" {
+					revCache.Add(c.Serial)
+				}
+			}
+		}
+	}
+
 	s := &Server{
 		config:           cfg,
 		registry:         cfg.Registry,
@@ -209,6 +225,8 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		startTime:        time.Now(),
 		meshCA:           cfg.MeshCA,
 		tokenStore:       cfg.TokenStore,
+		certStore:        cfg.CertStore,
+		revocationCache:  revCache,
 		webhookStore:     cfg.WebhookStore,
 	}
 
@@ -245,6 +263,81 @@ func (s *Server) Runner() runner.Runner {
 // Scheduler returns the territory scheduler coordinating queueing and dispatch.
 func (s *Server) Scheduler() *TerritoryScheduler {
 	return s.scheduler
+}
+
+// CertStore returns the attached certificate store.
+func (s *Server) CertStore() store.CertStore {
+	return s.certStore
+}
+
+// RevokeCert revokes a node certificate by node ID and updates the in-memory revocation cache.
+func (s *Server) RevokeCert(ctx context.Context, nodeID string) error {
+	if s.certStore == nil {
+		return errors.New("cert store is not configured")
+	}
+	rec, err := s.certStore.GetCert(ctx, nodeID)
+	if err != nil {
+		return fmt.Errorf("failed to get certificate for revocation: %w", err)
+	}
+	if rec == nil {
+		return errors.New("certificate not found")
+	}
+	if err := s.certStore.RevokeCert(ctx, nodeID); err != nil {
+		return err
+	}
+	if rec.Serial != "" && s.revocationCache != nil {
+		s.revocationCache.Add(rec.Serial)
+	}
+	return nil
+}
+
+// IsCertRevoked checks if a certificate is revoked by serial number, consulting the in-memory cache first.
+func (s *Server) IsCertRevoked(ctx context.Context, serial string) (bool, error) {
+	if s.revocationCache != nil && s.revocationCache.IsRevoked(serial) {
+		return true, nil
+	}
+	if s.certStore == nil {
+		return false, nil
+	}
+	revoked, err := s.certStore.IsCertRevoked(ctx, serial)
+	if err != nil {
+		return false, err
+	}
+	if revoked && s.revocationCache != nil {
+		s.revocationCache.Add(serial)
+	}
+	return revoked, nil
+}
+
+// revocationCache provides atomic in-memory lookups and updates of revoked certificate serials.
+type revocationCache struct {
+	mu      sync.RWMutex
+	revoked map[string]struct{}
+}
+
+func newRevocationCache() *revocationCache {
+	return &revocationCache{
+		revoked: make(map[string]struct{}),
+	}
+}
+
+func (c *revocationCache) IsRevoked(serial string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	_, ok := c.revoked[serial]
+	return ok
+}
+
+func (c *revocationCache) Add(serial string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.revoked[serial] = struct{}{}
+}
+
+func (c *revocationCache) Remove(serial string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.revoked, serial)
 }
 
 // TerritoryMode returns the normalized territory conflict policy in effect.
@@ -286,7 +379,11 @@ func (s *Server) Handler() stdhttp.Handler {
 		}, h)
 	}
 	if s.config.RequireMTLS {
-		h = MTLSMiddleware(h)
+		var checker CertRevocationChecker
+		if s.certStore != nil {
+			checker = s
+		}
+		h = MTLSMiddlewareWithRevocation(checker, h)
 	}
 	h = CORSMiddlewareWithOrigins(s.config.CORSOrigins, h)
 	allowedHosts := defaultAllowedHosts(s.config.Addr, s.config.AllowedHosts...)
@@ -427,6 +524,45 @@ func (s *Server) buildTLSConfig() (*tls.Config, error) {
 
 	baseConfig.ClientAuth = tls.VerifyClientCertIfGiven
 	baseConfig.ClientCAs = pool
+	if s.certStore != nil {
+		verifyChain := func(verifiedChains [][]*x509.Certificate) error {
+			if len(verifiedChains) == 0 || len(verifiedChains[0]) == 0 {
+				return nil
+			}
+			serial := verifiedChains[0][0].SerialNumber.String()
+			revoked, err := s.IsCertRevoked(context.Background(), serial)
+			if err != nil {
+				return fmt.Errorf("tls: failed to verify certificate revocation: %w", err)
+			}
+			if revoked {
+				return errors.New("tls: certificate is revoked")
+			}
+			return nil
+		}
+
+		baseConfig.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return nil
+			}
+			var chains [][]*x509.Certificate
+			if len(verifiedChains) > 0 {
+				chains = verifiedChains
+			} else if len(rawCerts) > 0 {
+				cert, err := x509.ParseCertificate(rawCerts[0])
+				if err != nil {
+					return err
+				}
+				chains = [][]*x509.Certificate{{cert}}
+			}
+			return verifyChain(chains)
+		}
+
+		// VerifyConnection validates both initial and resumed TLS sessions to prevent
+		// session resumption from bypassing revocation checks (Gosec G123).
+		baseConfig.VerifyConnection = func(cs tls.ConnectionState) error {
+			return verifyChain(cs.VerifiedChains)
+		}
+	}
 	return baseConfig, nil
 }
 
