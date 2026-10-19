@@ -1773,14 +1773,98 @@ func runCertRevoke(ctx context.Context, args []string, stdout, stderr io.Writer)
 	fs := flag.NewFlagSet("cert-revoke", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	fs.String("tls-dir", "", "TLS directory with CA (required)")
-	fs.String("node-id", "", "Node identifier to revoke (required)")
+	nodeID := fs.String("node-id", "", "Node identifier to revoke (required)")
+	dbPath := fs.String("db-path", "", "Path to SQLite database (for direct DB revocation)")
+	coordinator := fs.String("coordinator", "", "Coordinator base URL (for remote revocation via REST API)")
+	token := fs.String("token", "", "Bearer token for coordinator API authentication")
 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	return errors.New("la revocación de certificados no está implementada en esta versión; ver issue #25")
+	if *nodeID == "" {
+		return errors.New("-node-id is required")
+	}
+
+	// Mode 1: Remote revocation via Coordinator REST API
+	if *coordinator != "" {
+		coordURL := strings.TrimRight(*coordinator, "/") + "/v1/certs/revoke"
+		reqBody, err := json.Marshal(map[string]string{
+			"node_id": *nodeID,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to encode revoke payload: %w", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, coordURL, bytes.NewReader(reqBody))
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if *token != "" {
+			req.Header.Set("Authorization", "Bearer "+*token)
+		}
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to contact coordinator at %s: %w", coordURL, err)
+		}
+		defer resp.Body.Close()
+
+		respBytes, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("coordinator rejected certificate revocation (status %d): %s", resp.StatusCode, strings.TrimSpace(string(respBytes)))
+		}
+
+		var result struct {
+			Status         string `json:"status"`
+			NodeID         string `json:"node_id"`
+			TasksCancelled int    `json:"tasks_cancelled"`
+		}
+		if err := json.Unmarshal(respBytes, &result); err == nil && result.Status != "" {
+			fmt.Fprintf(stdout, "✅ Certificate for node %s successfully revoked via coordinator\n", *nodeID)
+			fmt.Fprintf(stdout, "  Active tasks cancelled: %d\n", result.TasksCancelled)
+		} else {
+			fmt.Fprintf(stdout, "✅ Certificate for node %s successfully revoked via coordinator\n", *nodeID)
+		}
+		return nil
+	}
+
+	// Mode 2: Direct SQLite DB revocation (offline / local maintenance)
+	if *dbPath == "" || *dbPath == "none" {
+		return errors.New("either -coordinator or -db-path is required for certificate revocation")
+	}
+
+	db, err := sql.Open("sqlite", *dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to open database: %w", err)
+	}
+	defer db.Close()
+
+	if err := store.InitCertSchema(db); err != nil {
+		return fmt.Errorf("failed to initialize cert schema: %w", err)
+	}
+
+	certStore := store.NewSQLiteCertStore(db)
+	defer certStore.Close()
+
+	rec, err := certStore.GetCert(ctx, *nodeID)
+	if err != nil {
+		return fmt.Errorf("failed to query certificate: %w", err)
+	}
+	if rec == nil {
+		return fmt.Errorf("certificate for node %q not found in database", *nodeID)
+	}
+
+	if err := certStore.RevokeCert(ctx, *nodeID); err != nil {
+		return fmt.Errorf("failed to revoke certificate: %w", err)
+	}
+
+	fmt.Fprintf(stdout, "✅ Certificate for node %s revoked in database (serial: %s)\n", *nodeID, rec.Serial)
+	fmt.Fprintln(stdout, "⚠️  WARNING: Direct database revocation does not update the in-memory cache of a running coordinator.")
+	fmt.Fprintln(stdout, "   It has no immediate effect if the coordinator is still running. For immediate revocation, use -coordinator.")
+	return nil
 }
 
 // runCertList lists all issued certificates.

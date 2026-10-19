@@ -356,7 +356,7 @@ type CertRevocationChecker interface {
 }
 
 // MTLSMiddleware validates that incoming HTTPS requests present a verified client certificate.
-// The bootstrap routes ("/healthz", "/healthz/", "/v1/mesh/ca", "/v1/certs/enroll") bypass this check.
+// The bootstrap routes ("/healthz", "/healthz/", "/v1/mesh/ca", "/v1/certs/enroll", "/v1/certs/revoke") bypass this check.
 // If no verified client certificate is present, it responds with HTTP 401 and {"error":"client certificate required"}.
 func MTLSMiddleware(next stdhttp.Handler) stdhttp.Handler {
 	return MTLSMiddlewareWithRevocation(nil, next)
@@ -369,7 +369,8 @@ func MTLSMiddleware(next stdhttp.Handler) stdhttp.Handler {
 func MTLSMiddlewareWithRevocation(checker CertRevocationChecker, next stdhttp.Handler) stdhttp.Handler {
 	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		if r.URL.Path == "/healthz" || r.URL.Path == "/healthz/" ||
-			r.URL.Path == "/v1/mesh/ca" || r.URL.Path == "/v1/certs/enroll" {
+			r.URL.Path == "/v1/mesh/ca" || r.URL.Path == "/v1/certs/enroll" ||
+			r.URL.Path == "/v1/certs/revoke" {
 			next.ServeHTTP(w, r)
 			return
 		}

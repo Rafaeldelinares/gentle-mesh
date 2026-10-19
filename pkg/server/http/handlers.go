@@ -43,6 +43,7 @@ func (s *Server) registerRoutes(mux *stdhttp.ServeMux) {
 	mux.HandleFunc("GET /v1/workspace/tree", s.handleWorkspaceTree)
 	mux.HandleFunc("GET /v1/workspace/file", s.handleWorkspaceFile)
 	mux.HandleFunc("POST /v1/certs/enroll", s.handleCertsEnroll)
+	mux.HandleFunc("POST /v1/certs/revoke", s.handleCertsRevoke)
 	// Webhook management
 	mux.HandleFunc("POST /v1/webhooks", s.handleCreateWebhook)
 	mux.HandleFunc("GET /v1/webhooks", s.handleListWebhooks)
@@ -804,7 +805,76 @@ func (s *Server) handleWorkspaceFile(w stdhttp.ResponseWriter, r *stdhttp.Reques
 	})
 }
 
-// Webhook management handlers
+// CertRevokeRequest represents a certificate revocation request via REST API.
+type CertRevokeRequest struct {
+	NodeID string `json:"node_id"`
+}
+
+// CertRevokeResponse represents the response after revoking a certificate.
+type CertRevokeResponse struct {
+	Status         string `json:"status"`
+	NodeID         string `json:"node_id"`
+	TasksCancelled int    `json:"tasks_cancelled"`
+}
+
+func (s *Server) handleCertsRevoke(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if s.config.BearerToken == "" {
+		writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]string{
+			"error": "certificate revocation API is unavailable: coordinator has no bearer token configured",
+		})
+		return
+	}
+
+	if s.certStore == nil {
+		writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]string{
+			"error": "cert store is not configured",
+		})
+		return
+	}
+
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, 4<<10)
+	var req CertRevokeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	if strings.TrimSpace(req.NodeID) == "" {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "node_id is required"})
+		return
+	}
+
+	nodeID := strings.TrimSpace(req.NodeID)
+
+	rec, err := s.certStore.GetCert(r.Context(), nodeID)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to get certificate: %v", err),
+		})
+		return
+	}
+	if rec == nil {
+		writeJSON(w, stdhttp.StatusNotFound, map[string]string{
+			"error": fmt.Sprintf("certificate for node %q not found", nodeID),
+		})
+		return
+	}
+
+	cancelledCount, err := s.RevokeCertWithCount(r.Context(), nodeID)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to revoke certificate: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, stdhttp.StatusOK, CertRevokeResponse{
+		Status:         "revoked",
+		NodeID:         nodeID,
+		TasksCancelled: cancelledCount,
+	})
+}
+
 
 // CreateWebhookRequest represents a webhook creation request.
 type CreateWebhookRequest struct {
