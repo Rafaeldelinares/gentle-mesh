@@ -68,6 +68,12 @@ type EnvelopeResponse struct {
 	Error    string `json:"error,omitempty"`
 }
 
+// RegisterKeyRequest is the POST /keys request body.
+type RegisterKeyRequest struct {
+	AgentID      string `json:"agent_id"`
+	PublicKeyHex string `json:"public_key_hex"`
+}
+
 // SettleRequest is the POST /settle request body.
 type SettleRequest struct {
 	EnvelopeJSON []byte `json:"envelope_json"`

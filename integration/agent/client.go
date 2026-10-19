@@ -139,6 +139,34 @@ func (c *HTTPClient) SubmitEnvelope(ctx context.Context, envelopeJSON []byte) (*
 	return &result, nil
 }
 
+// RegisterKey registers an agent's public key with the remote agent server via POST /register-key.
+func (c *HTTPClient) RegisterKey(ctx context.Context, agentID, pubKeyHex string) error {
+	body, err := json.Marshal(&RegisterKeyRequest{
+		AgentID:      agentID,
+		PublicKeyHex: pubKeyHex,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/register-key", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return c.readError(resp)
+	}
+	return nil
+}
+
 // CreateLease requests a lease for an envelope via POST /leases and validates the returned lease.
 func (c *HTTPClient) CreateLease(ctx context.Context, envelopeJSON []byte) (*envelope.Lease, error) {
 	body, err := json.Marshal(map[string]any{"envelope_json": envelopeJSON})

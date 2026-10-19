@@ -1,6 +1,6 @@
 module github.com/gentleman-programming/gentle-mesh
 
-go 1.26.7
+go 1.26.9
 
 require modernc.org/sqlite v1.59.0
 

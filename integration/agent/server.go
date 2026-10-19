@@ -160,7 +160,7 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("create settlement engine: %w", err)
 	}
 
-	return &Server{
+	srv := &Server{
 		config:      cfg,
 		chainStore:  chainStore,
 		evaluator:   evaluator,
@@ -168,7 +168,11 @@ func NewServer(cfg Config) (*Server, error) {
 		signer:      signer,
 		keyResolver: keyResolver,
 		leases:      make(map[string]*envelope.Lease),
-	}, nil
+	}
+	if signer != nil {
+		_ = srv.RegisterAgentKey(signer.AgentID(), signer.PublicKey())
+	}
+	return srv, nil
 }
 
 // RegisterAgentKey registers an agent's public key with the server's key resolver.

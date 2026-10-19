@@ -5,6 +5,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
@@ -14,11 +15,12 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
 )
 
-// registerTestHarnessEndpoints registers /execute and /inject-receipt.
+// registerTestHarnessEndpoints registers /execute, /inject-receipt, and /register-key.
 // These endpoints bypass security checks and are ONLY for test scenarios.
 func (s *Server) registerTestHarnessEndpoints(mux *http.ServeMux) {
 	mux.HandleFunc("POST /execute", s.handleExecute)
 	mux.HandleFunc("POST /inject-receipt", s.handleInjectReceipt)
+	mux.HandleFunc("POST /register-key", s.handleRegisterKey)
 }
 
 // handleExecute handles POST /execute (simulated task execution).
@@ -121,4 +123,33 @@ func (s *Server) handleInjectReceipt(w http.ResponseWriter, r *http.Request) {
 		ReceiptID: rec.ReceiptID,
 		Injected:  true,
 	})
+}
+
+// handleRegisterKey handles POST /register-key (test-harness key registration).
+func (s *Server) handleRegisterKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	defer r.Body.Close()
+
+	var req RegisterKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "decode: "+err.Error())
+		return
+	}
+	if req.AgentID == "" || req.PublicKeyHex == "" {
+		writeError(w, http.StatusBadRequest, "agent_id and public_key_hex required")
+		return
+	}
+	pubKey, err := hex.DecodeString(req.PublicKeyHex)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid public_key_hex: "+err.Error())
+		return
+	}
+	if err := s.RegisterAgentKey(req.AgentID, pubKey); err != nil {
+		writeError(w, http.StatusInternalServerError, "register key: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "registered"})
 }

@@ -153,6 +153,26 @@ func composeUp(t *testing.T, composeDir string) func() {
 		}
 		if allHealthy {
 			t.Log("[setup] All agents are healthy via host ports")
+			// Cross-register agent public keys for mesh communication.
+			clients := map[string]*agent.HTTPClient{
+				"agent-a": newTestTLSClient("https://localhost:18443"),
+				"agent-b": newTestTLSClient("https://localhost:28443"),
+				"agent-c": newTestTLSClient("https://localhost:38443"),
+			}
+			pubKeys := make(map[string]string)
+			for name, client := range clients {
+				h, err := client.Health(ctx)
+				if err == nil && h.PublicKey != "" {
+					pubKeys[name] = h.PublicKey
+				}
+			}
+			for targetName, client := range clients {
+				for srcName, pk := range pubKeys {
+					if targetName != srcName {
+						_ = client.RegisterKey(ctx, srcName, pk)
+					}
+				}
+			}
 			break
 		}
 		time.Sleep(2 * time.Second)
@@ -311,6 +331,8 @@ def subtract(a, b):
 	// Step 2: Agent A creates and signs CognitiveTaskEnvelope.
 	t.Log("[2] Agent A: creating and signing CognitiveTaskEnvelope...")
 	aSigner, _ := signing.GenerateSigner("agent-a")
+	_ = aClient.RegisterKey(ctx, "agent-a", aSigner.PublicKeyHex())
+	_ = bClient.RegisterKey(ctx, "agent-a", aSigner.PublicKeyHex())
 
 	env := &envelope.CognitiveTaskEnvelope{
 		EnvelopeID:      newUUIDv7(),
@@ -608,6 +630,9 @@ func buildEnvelope(emitterID, executorID, id, workspace, filePath, expectedHash 
 // fanDispatch runs one fan-out leg: creates a file, builds/sends envelope, executes, settles.
 func fanDispatch(ctx context.Context, aClient, executorClient *agent.HTTPClient,
 	aSigner *signing.BasicSigner, executorID, calcPrefix string) (*receipt.SettlementReceipt, error) {
+
+	_ = aClient.RegisterKey(ctx, aSigner.AgentID(), aSigner.PublicKeyHex())
+	_ = executorClient.RegisterKey(ctx, aSigner.AgentID(), aSigner.PublicKeyHex())
 
 	workspace := "/srv/workspace"
 	calcFile := fmt.Sprintf("%s.py", calcPrefix)
