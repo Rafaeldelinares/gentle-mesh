@@ -271,25 +271,40 @@ func (s *Server) CertStore() store.CertStore {
 	return s.certStore
 }
 
-// RevokeCert revokes a node certificate by node ID and updates the in-memory revocation cache.
+// RevokeCert revokes a node certificate by node ID, updates the in-memory revocation cache,
+// evicts the node from the active registry, and cancels active running tasks with NODE_REVOKED.
+// Returns the number of cancelled running tasks and any error encountered.
 func (s *Server) RevokeCert(ctx context.Context, nodeID string) error {
+	_, err := s.RevokeCertWithCount(ctx, nodeID)
+	return err
+}
+
+// RevokeCertWithCount revokes a node certificate and returns the count of cancelled running tasks.
+func (s *Server) RevokeCertWithCount(ctx context.Context, nodeID string) (int, error) {
 	if s.certStore == nil {
-		return errors.New("cert store is not configured")
+		return 0, errors.New("cert store is not configured")
 	}
 	rec, err := s.certStore.GetCert(ctx, nodeID)
 	if err != nil {
-		return fmt.Errorf("failed to get certificate for revocation: %w", err)
+		return 0, fmt.Errorf("failed to get certificate for revocation: %w", err)
 	}
 	if rec == nil {
-		return errors.New("certificate not found")
+		return 0, errors.New("certificate not found")
 	}
 	if err := s.certStore.RevokeCert(ctx, nodeID); err != nil {
-		return err
+		return 0, err
 	}
 	if rec.Serial != "" && s.revocationCache != nil {
 		s.revocationCache.Add(rec.Serial)
 	}
-	return nil
+	if s.registry != nil {
+		_ = s.registry.DeregisterNode(nodeID)
+	}
+	cancelledTasks := 0
+	if s.taskManager != nil {
+		cancelledTasks = s.taskManager.FailTasksOfNode(nodeID, "NODE_REVOKED", fmt.Sprintf("node %s certificate has been revoked", nodeID))
+	}
+	return cancelledTasks, nil
 }
 
 // IsCertRevoked checks if a certificate is revoked by serial number against the in-memory blocklist.
