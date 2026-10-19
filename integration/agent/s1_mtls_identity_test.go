@@ -278,3 +278,75 @@ func TestS1_ReceiptEndpoints_MTLS_MismatchRejectedWith403(t *testing.T) {
 		})
 	}
 }
+
+// TestS1_Envelope_TLS_NoClientCert_RejectedWith403 is a regression test:
+// when the server is on TLS and receives a request without a client certificate
+// (e.g. 1-way TLS or optional client auth), it MUST reject with HTTP 403 Forbidden
+// rather than silently bypassing mTLS identity verification.
+func TestS1_Envelope_TLS_NoClientCert_RejectedWith403(t *testing.T) {
+	caCert, caKey, err := generateCA()
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+	srvCert, srvKey, err := generateSignedCert("localhost", caCert, caKey, "serverAuth")
+	if err != nil {
+		t.Fatalf("generate srv cert: %v", err)
+	}
+
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "server.crt")
+	keyFile := filepath.Join(dir, "server.key")
+	caFile := filepath.Join(dir, "ca.crt")
+	os.WriteFile(certFile, srvCert, 0644)
+	os.WriteFile(keyFile, srvKey, 0600)
+	os.WriteFile(caFile, caCert, 0644)
+
+	srv, err := NewServer(Config{
+		AgentID:      "agent-b",
+		MeshID:       "gentle-mesh-test",
+		Role:         RoleExecutor,
+		TLSCertFile:  certFile,
+		TLSKeyFile:   keyFile,
+		ClientCAFile: caFile,
+		ChainDBPath:  filepath.Join(dir, "chain.db"),
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	victimSigner, _ := signing.GenerateSigner("agent-victim")
+	_ = srv.RegisterAgentKey("agent-victim", victimSigner.PublicKey())
+
+	tlsCert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		t.Fatalf("LoadX509KeyPair: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	srv.registerHandlers(mux)
+	ts := httptest.NewUnstartedServer(mux)
+	// Server has TLS active, but ClientAuth is NoClientCert (1-way TLS scenario)
+	ts.TLS = &tls.Config{
+		Certificates: []tls.Certificate{tlsCert},
+		MinVersion:   tls.VersionTLS12,
+		ClientAuth:   tls.NoClientCert,
+	}
+	ts.StartTLS()
+	t.Cleanup(ts.Close)
+
+	// Client validates server cert via CA, but presents NO client certificate
+	client := newTLSClient(caCert)
+	envJSON := createSignedTestEnvelope(t, "agent-victim", victimSigner)
+
+	reqBody, _ := json.Marshal(&EnvelopeRequest{EnvelopeJSON: envJSON})
+	resp, err := client.Post(ts.URL+"/envelopes", "application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("POST /envelopes: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("POST /envelopes status = %d, want %d (Forbidden: client cert required under TLS)",
+			resp.StatusCode, http.StatusForbidden)
+	}
+}

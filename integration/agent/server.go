@@ -232,14 +232,17 @@ func (s *Server) verifyEmitterReceiptSignature(stored *receipt.SettlementReceipt
 	return nil
 }
 
-// verifyMTLSIdentity verifies that if an mTLS client certificate was presented,
-// its Subject CommonName or one of its SAN DNSNames matches claimedAgentID (RFC-002 S1).
-// If no client certificate was presented (e.g. non-mTLS or plain HTTP),
-// it returns nil. If a certificate was presented and neither CN nor any SAN
-// matches claimedAgentID, it returns an error.
+// verifyMTLSIdentity verifies that under TLS, a client certificate is presented
+// and its Subject CommonName or one of its SAN DNSNames matches claimedAgentID (RFC-002 S1).
+// Plain HTTP (r.TLS == nil) is permitted solely for local dev / non-TLS unit tests.
+// Under TLS (r.TLS != nil), a client certificate is strictly required; missing certificates
+// or identity discrepancies return an error that maps to HTTP 403 Forbidden.
 func (s *Server) verifyMTLSIdentity(r *http.Request, claimedAgentID string) error {
-	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+	if r.TLS == nil {
 		return nil
+	}
+	if len(r.TLS.PeerCertificates) == 0 {
+		return errors.New("mTLS client certificate required under TLS")
 	}
 	cert := r.TLS.PeerCertificates[0]
 	if cert.Subject.CommonName == claimedAgentID {
