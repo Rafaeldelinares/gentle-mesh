@@ -247,3 +247,56 @@ func TestS2_Server_RejectsInvalidDisputeSignature(t *testing.T) {
 		t.Errorf("stored receipt expected DISPUTED, got: %s", storedAfter.EmitterAcceptance)
 	}
 }
+
+// TestS2_Server_WithKeystoreIntegration verifies S2 using pkg/keystore as PublicKeyResolver.
+func TestS2_Server_WithKeystoreIntegration(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	emitterSigner, _ := signing.GenerateSigner("agent-emitter")
+
+	cfg := Config{
+		AgentID:      "test-executor",
+		MeshID:       "mesh-s2-test",
+		Role:         RoleExecutor,
+		ChainDBPath:  filepath.Join(tmpDir, "chain.db"),
+		WorkspaceDir: filepath.Join(tmpDir, "workspace"),
+		KeystoreDir:  filepath.Join(tmpDir, "keystore"),
+		EvalTimeout:  5 * time.Second,
+		MaxRemed:     1,
+	}
+
+	srv, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer with KeystoreDir: %v", err)
+	}
+	if err := srv.RegisterAgentKey("agent-emitter", emitterSigner.PublicKey()); err != nil {
+		t.Fatalf("RegisterAgentKey: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	srv.registerHandlers(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	client := ts.Client()
+
+	// 1. Signed with registered emitter -> 200
+	env := makeS2Envelope("mesh-s2-test", "agent-emitter", "test-executor")
+	_ = envelope.SignEnvelope(env, emitterSigner)
+	envJSON, _ := json.Marshal(env)
+
+	if resp, _ := postJSON(t, client, ts.URL+"/envelopes", &EnvelopeRequest{EnvelopeJSON: envJSON}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /envelopes with keystore resolver status=%d, want 200", resp.StatusCode)
+	}
+
+	// 2. Signed with unregistered emitter -> 401
+	unregisteredSigner, _ := signing.GenerateSigner("agent-unknown")
+	envUnk := makeS2Envelope("mesh-s2-test", "agent-unknown", "test-executor")
+	_ = envelope.SignEnvelope(envUnk, unregisteredSigner)
+	envUnkJSON, _ := json.Marshal(envUnk)
+
+	if resp, _ := postJSON(t, client, ts.URL+"/envelopes", &EnvelopeRequest{EnvelopeJSON: envUnkJSON}); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("POST /envelopes with unregistered emitter status=%d, want 401", resp.StatusCode)
+	}
+}
+

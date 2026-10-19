@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
+	"github.com/gentleman-programming/gentle-mesh/pkg/keystore"
 	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
 	"github.com/gentleman-programming/gentle-mesh/pkg/settlement"
 	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
@@ -114,10 +115,36 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("init chain schema: %w", err)
 	}
 
-	// Create Ed25519 signer (in-memory, key generated on startup).
-	signer, err := signing.GenerateSigner(cfg.AgentID)
-	if err != nil {
-		return nil, fmt.Errorf("generate signer: %w", err)
+	// Initialize signer and key resolver.
+	// If KeystoreDir is configured, use pkg/keystore for persistent keys.
+	var (
+		signer      signing.Signer
+		keyResolver PublicKeyResolver = cfg.KeyResolver
+	)
+
+	if cfg.KeystoreDir != "" {
+		ks, err := keystore.New(cfg.KeystoreDir, cfg.AgentID, true)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("init keystore: %w", err)
+		}
+		if keyResolver == nil {
+			keyResolver = ks
+		}
+		signer = ks
+	}
+
+	if signer == nil {
+		var err error
+		signer, err = signing.GenerateSigner(cfg.AgentID)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("generate signer: %w", err)
+		}
+	}
+
+	if keyResolver == nil {
+		keyResolver = newInMemoryKeyResolver()
 	}
 
 	// Create settlement engine.
@@ -129,12 +156,8 @@ func NewServer(cfg Config) (*Server, error) {
 		RemediationMax: cfg.MaxRemed,
 	})
 	if err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("create settlement engine: %w", err)
-	}
-
-	keyResolver := cfg.KeyResolver
-	if keyResolver == nil {
-		keyResolver = newInMemoryKeyResolver()
 	}
 
 	return &Server{

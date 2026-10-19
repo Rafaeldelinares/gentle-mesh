@@ -29,6 +29,7 @@ type Config struct {
 	MaxRemed     int
 	Signer       Signer // Ed25519 signing capability
 	KeyResolver  PublicKeyResolver // Resolver for agent public keys (S2)
+	KeystoreDir  string // Keystore directory path for persistent Ed25519 keys (optional)
 
 	// TLS configuration. If CertFile and KeyFile are set, the server
 	// runs HTTPS instead of HTTP.
