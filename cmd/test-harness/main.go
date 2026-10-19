@@ -97,6 +97,10 @@ func runServe(args []string) {
 		ClientCAFile: *clientCA,
 	}
 
+	if *keystoreDir == "" {
+		log.Println("WARNING: no --keystore-dir configured; using ephemeral in-memory keystore (incoming signed envelopes will be rejected unless keys are registered dynamically)")
+	}
+
 	srv, err := agent.NewServer(cfg)
 	if err != nil {
 		log.Fatalf("create server: %v", err)
