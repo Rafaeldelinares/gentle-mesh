@@ -201,6 +201,24 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 		return
 	}
 
+	if s.certStore != nil {
+		certRecord := &store.CertRecord{
+			NodeID:     nodeID,
+			CommonName: cert.Subject.CommonName,
+			Serial:     cert.SerialNumber.String(),
+			CertPEM:    certPEM,
+			IssuedAt:   cert.NotBefore,
+			ExpiresAt:  cert.NotAfter,
+		}
+		if err := s.certStore.IssueCert(r.Context(), certRecord); err != nil {
+			writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to record issued certificate: %v", err)})
+			return
+		}
+		if s.revocationCache != nil {
+			s.revocationCache.Remove(certRecord.Serial)
+		}
+	}
+
 	writeJSON(w, stdhttp.StatusOK, EnrollmentResponse{
 		CertPEM: certPEM,
 		NodeID:  nodeID,
