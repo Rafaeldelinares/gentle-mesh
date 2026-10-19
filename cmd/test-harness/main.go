@@ -64,6 +64,7 @@ func runServe(args []string) {
 	workspace := fs.String("workspace", "/srv/workspace", "Workspace directory")
 	evalTimeout := fs.Duration("eval-timeout", 30*time.Second, "Evaluation timeout")
 	maxRemed := fs.Int("max-remediations", 1, "Max remediation attempts")
+	keystoreDir := fs.String("keystore-dir", "", "Path to keystore directory for persistent agent keys (optional)")
 
 	// TLS flags.
 	tlsCert := fs.String("tls-cert", "", "TLS certificate file (enables HTTPS)")
@@ -90,9 +91,14 @@ func runServe(args []string) {
 		WorkspaceDir: *workspace,
 		EvalTimeout:  *evalTimeout,
 		MaxRemed:     *maxRemed,
+		KeystoreDir:  *keystoreDir,
 		TLSCertFile:  *tlsCert,
 		TLSKeyFile:   *tlsKey,
 		ClientCAFile: *clientCA,
+	}
+
+	if *keystoreDir == "" {
+		log.Println("WARNING: no --keystore-dir configured; using ephemeral in-memory keystore (incoming signed envelopes will be rejected unless keys are registered dynamically)")
 	}
 
 	srv, err := agent.NewServer(cfg)

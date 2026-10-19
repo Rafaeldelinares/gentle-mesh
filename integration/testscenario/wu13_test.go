@@ -197,6 +197,9 @@ func TestWU13_FanOutOneToThree(t *testing.T) {
 func fanDispatchLeg(ctx context.Context, aClient, executorClient *agent.HTTPClient,
 	aSigner *signing.BasicSigner, executorAgentID, containerName, fileName string) (*receipt.SettlementReceipt, error) {
 
+	_ = aClient.RegisterKey(ctx, aSigner.AgentID(), aSigner.PublicKeyHex())
+	_ = executorClient.RegisterKey(ctx, aSigner.AgentID(), aSigner.PublicKeyHex())
+
 	workspace := "/srv/workspace"
 	filePath := filepath.Join(workspace, fileName)
 
@@ -551,6 +554,9 @@ type dispatchResult struct {
 func dispatchLegSync(ctx context.Context, aClient, executorClient *agent.HTTPClient,
 	aSigner *signing.BasicSigner, env *envelope.CognitiveTaskEnvelope) (*receipt.SettlementReceipt, error) {
 
+	_ = aClient.RegisterKey(ctx, aSigner.AgentID(), aSigner.PublicKeyHex())
+	_ = executorClient.RegisterKey(ctx, aSigner.AgentID(), aSigner.PublicKeyHex())
+
 	signable := *env
 	signable.EmitterSignature = ""
 	data, err := jcs.Marshal(&signable)
@@ -616,6 +622,8 @@ func TestWU13_PreFlightRejectsDirtyWorktree(t *testing.T) {
 	aClient := newInsecureTLSClient("https://localhost:18443")
 	bClient := newInsecureTLSClient("https://localhost:28443")
 	aSigner, _ := signing.GenerateSigner("agent-a")
+	_ = aClient.RegisterKey(ctx, aSigner.AgentID(), aSigner.PublicKeyHex())
+	_ = bClient.RegisterKey(ctx, aSigner.AgentID(), aSigner.PublicKeyHex())
 
 	// Create a file and commit it.
 	workspace := "/srv/workspace"
@@ -721,6 +729,8 @@ func TestWU13_ChainStressTenReceipts(t *testing.T) {
 	aClient := newInsecureTLSClient("https://localhost:18443")
 	bClient := newInsecureTLSClient("https://localhost:28443")
 	aSigner, _ := signing.GenerateSigner("agent-a")
+	_ = aClient.RegisterKey(ctx, aSigner.AgentID(), aSigner.PublicKeyHex())
+	_ = bClient.RegisterKey(ctx, aSigner.AgentID(), aSigner.PublicKeyHex())
 
 	const numReceipts = 10
 	workspace := "/srv/workspace"
@@ -869,6 +879,8 @@ func TestWU14_AcceptReceiptE2E(t *testing.T) {
 	}
 	aPubKeyHex := aSigner.PublicKeyHex()
 	t.Logf("  agent-a public key: %s...", aPubKeyHex[:16])
+	_ = aClient.RegisterKey(ctx, "agent-a", aPubKeyHex)
+	_ = bClient.RegisterKey(ctx, "agent-a", aPubKeyHex)
 
 	// Get agent-b's public key for local verification.
 	bHealth, err := bClient.Health(ctx)
@@ -1545,6 +1557,8 @@ func TestWU16_DisputeReceiptE2E(t *testing.T) {
 	}
 	aPubKey := aSigner.PublicKey()
 	t.Logf("  agent-a public key: %s...", hex.EncodeToString(aPubKey)[:16])
+	_ = aClient.RegisterKey(ctx, "agent-a", aSigner.PublicKeyHex())
+	_ = bClient.RegisterKey(ctx, "agent-a", aSigner.PublicKeyHex())
 
 	// Get executor public key.
 	bHealth, err := bClient.Health(ctx)
@@ -1874,6 +1888,8 @@ func TestWU17_VerifyChain_WrongExecutorKey(t *testing.T) {
 	}
 	aPubKey := aSigner.PublicKey()
 	t.Logf("  agent-a public key: %s...", hex.EncodeToString(aPubKey)[:16])
+	_ = aClient.RegisterKey(ctx, "agent-a", aSigner.PublicKeyHex())
+	_ = bClient.RegisterKey(ctx, "agent-a", aSigner.PublicKeyHex())
 
 	// Get executor public keys.
 	bHealth, err := bClient.Health(ctx)

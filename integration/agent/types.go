@@ -28,6 +28,8 @@ type Config struct {
 	EvalTimeout  time.Duration
 	MaxRemed     int
 	Signer       Signer // Ed25519 signing capability
+	KeyResolver  PublicKeyResolver // Resolver for agent public keys (S2)
+	KeystoreDir  string // Keystore directory path for persistent Ed25519 keys (optional)
 
 	// TLS configuration. If CertFile and KeyFile are set, the server
 	// runs HTTPS instead of HTTP.
@@ -36,6 +38,11 @@ type Config struct {
 	// ClientCAFile enables mutual TLS (mTLS). If set, the server requires
 	// a valid client certificate signed by this CA.
 	ClientCAFile string
+}
+
+// PublicKeyResolver resolves public keys by agent ID.
+type PublicKeyResolver interface {
+	GetAgentPublicKey(agentID string) ([]byte, error)
 }
 
 // Signer abstracts Ed25519 signing for test harness flexibility.
@@ -59,6 +66,12 @@ type EnvelopeResponse struct {
 	Accepted bool   `json:"accepted"`
 	LeaseID  string `json:"lease_id,omitempty"`
 	Error    string `json:"error,omitempty"`
+}
+
+// RegisterKeyRequest is the POST /keys request body.
+type RegisterKeyRequest struct {
+	AgentID      string `json:"agent_id"`
+	PublicKeyHex string `json:"public_key_hex"`
 }
 
 // SettleRequest is the POST /settle request body.

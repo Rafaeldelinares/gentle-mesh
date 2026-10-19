@@ -66,6 +66,7 @@ func TestEndpointsAbsentInProduction(t *testing.T) {
 	}{
 		{http.MethodPost, "/execute"},
 		{http.MethodPost, "/inject-receipt"},
+		{http.MethodPost, "/register-key"},
 	} {
 		tc := tc
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
