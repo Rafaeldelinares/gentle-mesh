@@ -429,3 +429,108 @@ func TestServer_RevocationCacheWarmupAtStartup(t *testing.T) {
 		t.Errorf("expected serial %s to be recognized as revoked on server startup", revokedSerial)
 	}
 }
+
+func TestServer_RevokedCertRejectedOnTLSResumption(t *testing.T) {
+	ca, tlsDir, tokenStore, certStore, _ := setupMTLSTestEnvironment(t)
+
+	cfg := meshhttp.ServerConfig{
+		TasksDir:         t.TempDir(),
+		HeartbeatTimeout: 5 * time.Second,
+		TaskTTL:          1 * time.Hour,
+		TLSEnabled:       true,
+		TLSCertFile:      filepath.Join(tlsDir, pki.CertPemFile),
+		TLSKeyFile:       filepath.Join(tlsDir, pki.CertKeyFile),
+		MeshCA:           ca,
+		RequireMTLS:      true,
+		TokenStore:       tokenStore,
+		CertStore:        certStore,
+	}
+
+	srv, addr := startTestServer(t, cfg)
+	srvURL := "https://" + addr
+
+	// Phase 1: Prove session resumption actually works for an unrevoked node certificate
+	validNodeID := "node-resume-valid"
+	validNodeCert := enrollTestNode(t, srvURL, ca, tokenStore, validNodeID)
+
+	validTLSConfig := &tls.Config{
+		RootCAs:            meshCAPool(t, ca),
+		ServerName:         "localhost",
+		Certificates:       []tls.Certificate{validNodeCert},
+		ClientSessionCache: tls.NewLRUClientSessionCache(32),
+	}
+
+	// First connection: initial full handshake to acquire session ticket
+	conn1, err := tls.Dial("tcp", addr, validTLSConfig)
+	if err != nil {
+		t.Fatalf("valid node first TLS dial failed: %v", err)
+	}
+	// Send request and read response to ensure post-handshake session ticket is received
+	if _, err := conn1.Write([]byte("GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")); err != nil {
+		t.Fatalf("failed to write to conn1: %v", err)
+	}
+	buf := make([]byte, 1024)
+	_, _ = conn1.Read(buf)
+	_ = conn1.Close()
+
+	// Second connection: should successfully resume session
+	conn2, err := tls.Dial("tcp", addr, validTLSConfig)
+	if err != nil {
+		t.Fatalf("valid node second TLS dial failed: %v", err)
+	}
+	if !conn2.ConnectionState().DidResume {
+		t.Errorf("expected second connection to resume TLS session, but DidResume=false")
+	}
+	_ = conn2.Close()
+
+	// Phase 2: Verify that a revoked certificate attempting TLS session resumption is rejected by VerifyConnection
+	revokedNodeID := "node-resume-revoked"
+	revokedNodeCert := enrollTestNode(t, srvURL, ca, tokenStore, revokedNodeID)
+
+	revokedTLSConfig := &tls.Config{
+		RootCAs:            meshCAPool(t, ca),
+		ServerName:         "localhost",
+		Certificates:       []tls.Certificate{revokedNodeCert},
+		ClientSessionCache: tls.NewLRUClientSessionCache(32),
+	}
+
+	// First connection: full handshake to acquire session ticket while still valid
+	rConn1, err := tls.Dial("tcp", addr, revokedTLSConfig)
+	if err != nil {
+		t.Fatalf("revoked node first TLS dial failed: %v", err)
+	}
+	if _, err := rConn1.Write([]byte("GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")); err != nil {
+		t.Fatalf("failed to write to rConn1: %v", err)
+	}
+	_, _ = rConn1.Read(buf)
+	_ = rConn1.Close()
+
+	// Revoke the certificate
+	if err := srv.RevokeCert(context.Background(), revokedNodeID); err != nil {
+		t.Fatalf("failed to revoke cert for %s: %v", revokedNodeID, err)
+	}
+
+	// Second connection: attempts session resumption with cached session ticket.
+	// VerifyConnection must intercept the resumed session and abort the handshake with alertBadCertificate.
+	rConn2, err := tls.Dial("tcp", addr, revokedTLSConfig)
+	if err == nil {
+		// In TLS 1.3 1-RTT handshake, the server sends alertBadCertificate upon VerifyConnection failure.
+		// Any read or write on the connection will immediately fail with the alert received from the server.
+		_, writeErr := rConn2.Write([]byte("GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n"))
+		_, readErr := rConn2.Read(buf)
+		_ = rConn2.Close()
+		if writeErr == nil && readErr == nil {
+			t.Fatal("expected connection to fail on session resumption for revoked certificate, but read and write succeeded")
+		}
+		err = readErr
+		if err == nil {
+			err = writeErr
+		}
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "bad certificate") && !strings.Contains(errMsg, "revoked") && !strings.Contains(errMsg, "tls:") && !strings.Contains(errMsg, "handshake") && !strings.Contains(errMsg, "EOF") && !strings.Contains(errMsg, "closed") {
+		t.Errorf("expected TLS error indicating bad certificate or closed connection, got: %v", err)
+	}
+}
+

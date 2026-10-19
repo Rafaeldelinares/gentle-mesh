@@ -204,11 +204,12 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	revCache := newRevocationCache()
 	if cfg.CertStore != nil {
 		certs, err := cfg.CertStore.ListCerts(context.Background())
-		if err == nil {
-			for _, c := range certs {
-				if c.Revoked && c.Serial != "" {
-					revCache.Add(c.Serial)
-				}
+		if err != nil {
+			return nil, fmt.Errorf("failed to warm up certificate revocation cache: %w", err)
+		}
+		for _, c := range certs {
+			if c.Revoked && c.Serial != "" {
+				revCache.Add(c.Serial)
 			}
 		}
 	}
@@ -291,22 +292,13 @@ func (s *Server) RevokeCert(ctx context.Context, nodeID string) error {
 	return nil
 }
 
-// IsCertRevoked checks if a certificate is revoked by serial number, consulting the in-memory cache first.
+// IsCertRevoked checks if a certificate is revoked by serial number against the in-memory blocklist.
+// Absence in the in-memory blocklist indicates the certificate is not revoked, without querying SQLite.
 func (s *Server) IsCertRevoked(ctx context.Context, serial string) (bool, error) {
-	if s.revocationCache != nil && s.revocationCache.IsRevoked(serial) {
-		return true, nil
+	if s.revocationCache != nil {
+		return s.revocationCache.IsRevoked(serial), nil
 	}
-	if s.certStore == nil {
-		return false, nil
-	}
-	revoked, err := s.certStore.IsCertRevoked(ctx, serial)
-	if err != nil {
-		return false, err
-	}
-	if revoked && s.revocationCache != nil {
-		s.revocationCache.Add(serial)
-	}
-	return revoked, nil
+	return false, nil
 }
 
 // revocationCache provides atomic in-memory lookups and updates of revoked certificate serials.
@@ -525,11 +517,17 @@ func (s *Server) buildTLSConfig() (*tls.Config, error) {
 	baseConfig.ClientAuth = tls.VerifyClientCertIfGiven
 	baseConfig.ClientCAs = pool
 	if s.certStore != nil {
-		verifyChain := func(verifiedChains [][]*x509.Certificate) error {
-			if len(verifiedChains) == 0 || len(verifiedChains[0]) == 0 {
+		verifyChain := func(verifiedChains [][]*x509.Certificate, peerCerts []*x509.Certificate) error {
+			var cert *x509.Certificate
+			if len(verifiedChains) > 0 && len(verifiedChains[0]) > 0 {
+				cert = verifiedChains[0][0]
+			} else if len(peerCerts) > 0 {
+				cert = peerCerts[0]
+			}
+			if cert == nil {
 				return nil
 			}
-			serial := verifiedChains[0][0].SerialNumber.String()
+			serial := cert.SerialNumber.String()
 			revoked, err := s.IsCertRevoked(context.Background(), serial)
 			if err != nil {
 				return fmt.Errorf("tls: failed to verify certificate revocation: %w", err)
@@ -554,13 +552,13 @@ func (s *Server) buildTLSConfig() (*tls.Config, error) {
 				}
 				chains = [][]*x509.Certificate{{cert}}
 			}
-			return verifyChain(chains)
+			return verifyChain(chains, nil)
 		}
 
 		// VerifyConnection validates both initial and resumed TLS sessions to prevent
 		// session resumption from bypassing revocation checks (Gosec G123).
 		baseConfig.VerifyConnection = func(cs tls.ConnectionState) error {
-			return verifyChain(cs.VerifiedChains)
+			return verifyChain(cs.VerifiedChains, cs.PeerCertificates)
 		}
 	}
 	return baseConfig, nil
