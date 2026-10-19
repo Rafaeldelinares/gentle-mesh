@@ -1627,6 +1627,9 @@ func TestCLI_CertRevoke_DirectDBAndRemote(t *testing.T) {
 	if !strings.Contains(stdout.String(), "revoked in database") {
 		t.Errorf("expected confirmation in stdout, got: %s", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "WARNING: Direct database revocation does not update the in-memory cache") {
+		t.Errorf("expected warning in stdout for direct db revocation, got: %s", stdout.String())
+	}
 
 	// Verify directly in store that it is revoked
 	c, err := certStore.GetCert(ctx, "worker-cli-test")

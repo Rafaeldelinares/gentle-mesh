@@ -1862,6 +1862,8 @@ func runCertRevoke(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 
 	fmt.Fprintf(stdout, "✅ Certificate for node %s revoked in database (serial: %s)\n", *nodeID, rec.Serial)
+	fmt.Fprintln(stdout, "⚠️  WARNING: Direct database revocation does not update the in-memory cache of a running coordinator.")
+	fmt.Fprintln(stdout, "   It has no immediate effect if the coordinator is still running. For immediate revocation, use -coordinator.")
 	return nil
 }
 

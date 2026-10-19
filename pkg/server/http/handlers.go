@@ -818,6 +818,13 @@ type CertRevokeResponse struct {
 }
 
 func (s *Server) handleCertsRevoke(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if s.config.BearerToken == "" {
+		writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]string{
+			"error": "certificate revocation API is unavailable: coordinator has no bearer token configured",
+		})
+		return
+	}
+
 	if s.certStore == nil {
 		writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]string{
 			"error": "cert store is not configured",

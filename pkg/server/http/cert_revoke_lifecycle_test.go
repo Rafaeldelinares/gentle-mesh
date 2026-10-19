@@ -182,3 +182,22 @@ func TestServer_HTTP_CertsRevoke_Endpoint(t *testing.T) {
 	}
 }
 
+func TestServer_HTTP_CertsRevoke_NoBearerConfigured_Returns503(t *testing.T) {
+	srv, srvURL, ca, _ := setupRevocationServer(t, "") // no bearer token configured
+	_ = srv
+	client := createClient(t, ca, nil)
+
+	revokePayload, _ := json.Marshal(map[string]string{"node_id": "test-node"})
+	resp, err := client.Post(srvURL+"/v1/certs/revoke", "application/json", bytes.NewReader(revokePayload))
+	if err != nil {
+		t.Fatalf("POST /v1/certs/revoke failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 503 Service Unavailable when no bearer token configured, got %d: %s", resp.StatusCode, string(body))
+	}
+}
+
+
