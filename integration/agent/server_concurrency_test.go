@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
+	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
 )
 
 // TestServer_ConcurrentLeaseWrites is an in-process concurrency test using httptest
@@ -48,6 +49,12 @@ func TestServer_ConcurrentLeaseWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+
+	emitterSigner, err := signing.GenerateSigner("agent-emitter")
+	if err != nil {
+		t.Fatalf("GenerateSigner: %v", err)
+	}
+	_ = srv.RegisterAgentKey("agent-emitter", emitterSigner.PublicKey())
 
 	mux := http.NewServeMux()
 	srv.registerHandlers(mux)
@@ -93,6 +100,10 @@ func TestServer_ConcurrentLeaseWrites(t *testing.T) {
 			// Create a distinct envelope for each request to avoid any deduplication.
 			env := *baseEnv
 			env.EnvelopeID = fmt.Sprintf("01923456-789a-7bc0-8123-%012x", idx)
+			if err := envelope.SignEnvelope(&env, emitterSigner); err != nil {
+				t.Errorf("SignEnvelope: %v", err)
+				return
+			}
 			envJSON, err := json.Marshal(&env)
 			if err != nil {
 				t.Errorf("marshal envelope: %v", err)

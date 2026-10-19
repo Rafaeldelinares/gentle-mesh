@@ -29,17 +29,44 @@ import (
 
 // Server is an HTTP server that implements the RFC-002 agent protocol.
 type Server struct {
-	config     Config
-	httpServer *http.Server
-	chainStore *receipt.ChainStore
-	evaluator  *settlement.Evaluator
-	engine     *settlement.Engine
-	signerMu   sync.RWMutex
-	signer     signing.Signer
+	config      Config
+	httpServer  *http.Server
+	chainStore  *receipt.ChainStore
+	evaluator   *settlement.Evaluator
+	engine      *settlement.Engine
+	signerMu    sync.RWMutex
+	signer      signing.Signer
+	keyResolver PublicKeyResolver
 
 	// In-memory state for the integration test.
 	leasesMu sync.RWMutex
 	leases   map[string]*envelope.Lease // leaseID → Lease
+}
+
+// inMemoryKeyResolver is a thread-safe in-memory key resolver.
+type inMemoryKeyResolver struct {
+	mu   sync.RWMutex
+	keys map[string][]byte
+}
+
+func newInMemoryKeyResolver() *inMemoryKeyResolver {
+	return &inMemoryKeyResolver{keys: make(map[string][]byte)}
+}
+
+func (r *inMemoryKeyResolver) Register(agentID string, key []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.keys[agentID] = key
+}
+
+func (r *inMemoryKeyResolver) GetAgentPublicKey(agentID string) ([]byte, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	k, ok := r.keys[agentID]
+	if !ok {
+		return nil, fmt.Errorf("agent %q not found in keystore", agentID)
+	}
+	return k, nil
 }
 
 // NewServer creates a new agent server with the given configuration.
@@ -105,14 +132,77 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("create settlement engine: %w", err)
 	}
 
+	keyResolver := cfg.KeyResolver
+	if keyResolver == nil {
+		keyResolver = newInMemoryKeyResolver()
+	}
+
 	return &Server{
-		config:     cfg,
-		chainStore: chainStore,
-		evaluator:  evaluator,
-		engine:     engine,
-		signer:     signer,
-		leases:     make(map[string]*envelope.Lease),
+		config:      cfg,
+		chainStore:  chainStore,
+		evaluator:   evaluator,
+		engine:      engine,
+		signer:      signer,
+		keyResolver: keyResolver,
+		leases:      make(map[string]*envelope.Lease),
 	}, nil
+}
+
+// RegisterAgentKey registers an agent's public key with the server's key resolver.
+func (s *Server) RegisterAgentKey(agentID string, pubKey []byte) error {
+	if mem, ok := s.keyResolver.(*inMemoryKeyResolver); ok {
+		mem.Register(agentID, pubKey)
+		return nil
+	}
+	type dynamicRegistrar interface {
+		AddAgentKey(agentID string, publicKeyHex string) error
+	}
+	if reg, ok := s.keyResolver.(dynamicRegistrar); ok {
+		return reg.AddAgentKey(agentID, hex.EncodeToString(pubKey))
+	}
+	return errors.New("key resolver does not support dynamic registration")
+}
+
+// KeyResolver returns the active public key resolver.
+func (s *Server) KeyResolver() PublicKeyResolver {
+	return s.keyResolver
+}
+
+func (s *Server) getEmitterPublicKey(agentID string) ([]byte, error) {
+	if s.keyResolver == nil {
+		return nil, errors.New("no key resolver configured")
+	}
+	return s.keyResolver.GetAgentPublicKey(agentID)
+}
+
+func (s *Server) verifyEnvelope(env *envelope.CognitiveTaskEnvelope) error {
+	if env == nil {
+		return errors.New("envelope is nil")
+	}
+	if env.EmitterSignature == "" {
+		return errors.New("envelope is unsigned: emitter_signature required (S2)")
+	}
+	pubKey, err := s.getEmitterPublicKey(env.EmitterAgentID)
+	if err != nil {
+		return fmt.Errorf("emitter agent %q key not registered: %w", env.EmitterAgentID, err)
+	}
+	if err := envelope.VerifyEnvelopeSignature(env, pubKey); err != nil {
+		return fmt.Errorf("invalid envelope signature: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) verifyEmitterReceiptSignature(stored *receipt.SettlementReceipt, emitterSig string) error {
+	emitterPubKey, err := s.getEmitterPublicKey(stored.EmitterAgentID)
+	if err != nil {
+		return fmt.Errorf("emitter key not found: %w", err)
+	}
+	candidate := *stored
+	candidate.EmitterSignature = emitterSig
+	if err := receipt.VerifyEmitterSignature(&candidate, emitterPubKey); err != nil {
+		return fmt.Errorf("emitter signature invalid: %w", err)
+	}
+	return nil
 }
 
 // Run starts the HTTP server on the given port.
@@ -325,6 +415,12 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// S2: Verify emitter's signature before issuing lease.
+	if err := s.verifyEnvelope(env); err != nil {
+		writeError(w, http.StatusUnauthorized, "verify envelope: "+err.Error())
+		return
+	}
+
 	// Pre-flight: check preconditions synchronously.
 	precondResults := s.runPreconditions(env.Preconditions)
 	allPassed := true
@@ -399,6 +495,12 @@ func (s *Server) handleCreateLease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// S2: Verify emitter's signature before creating lease.
+	if err := s.verifyEnvelope(env); err != nil {
+		writeError(w, http.StatusUnauthorized, "verify envelope: "+err.Error())
+		return
+	}
+
 	precondResults := s.runPreconditions(env.Preconditions)
 	allPassed := true
 	for _, r := range precondResults {
@@ -462,6 +564,12 @@ func (s *Server) handleSettle(w http.ResponseWriter, r *http.Request) {
 	}
 	if env.MeshID != s.config.MeshID {
 		writeError(w, http.StatusBadRequest, envelope.ErrMeshMismatch.Error())
+		return
+	}
+
+	// S2: Verify emitter's signature before executing settlement.
+	if err := s.verifyEnvelope(env); err != nil {
+		writeError(w, http.StatusUnauthorized, "verify envelope: "+err.Error())
 		return
 	}
 
@@ -571,6 +679,12 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// S2: Verify emitter's signature on the receipt before persisting acceptance.
+	if err := s.verifyEmitterReceiptSignature(stored, req.EmitterSignature); err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
 	// Apply the acceptance fields. A already computed EmitterSignature locally
 	// using AcceptReceipt; we just store the acceptance on B's chain.
 	now := time.Now().UTC()
@@ -675,6 +789,12 @@ func (s *Server) handleDispute(w http.ResponseWriter, r *http.Request) {
 	// hash mismatch if A's JSON parse/serialize lost precision or content.
 	if err := receipt.VerifyExecutorSignature(stored, s.Signer().PublicKey()); err != nil {
 		writeError(w, http.StatusUnauthorized, "executor signature invalid: "+err.Error())
+		return
+	}
+
+	// S2: Verify emitter's signature on the receipt before persisting dispute.
+	if err := s.verifyEmitterReceiptSignature(stored, req.EmitterSignature); err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 

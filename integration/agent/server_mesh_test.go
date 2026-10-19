@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"io"
@@ -19,6 +20,20 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
 	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
 )
+
+var (
+	testEmitterSeed   = bytes.Repeat([]byte{0x42}, ed25519.SeedSize)
+	testEmitterSigner = mustCreateTestSigner(testEmitterSeed, "agent-emitter")
+)
+
+func mustCreateTestSigner(seed []byte, agentID string) signing.Signer {
+	priv := ed25519.NewKeyFromSeed(seed)
+	signer, err := signing.NewBasicSigner(priv, agentID)
+	if err != nil {
+		panic(err)
+	}
+	return signer
+}
 
 func setupTestServerWithMesh(t *testing.T, meshID string) (*Server, *httptest.Server, signing.Signer) {
 	t.Helper()
@@ -48,6 +63,8 @@ func setupTestServerWithMesh(t *testing.T, meshID string) (*Server, *httptest.Se
 		t.Fatalf("NewServer: %v", err)
 	}
 
+	_ = srv.RegisterAgentKey("agent-emitter", testEmitterSigner.PublicKey())
+
 	mux := http.NewServeMux()
 	srv.registerHandlers(mux)
 	ts := httptest.NewServer(mux)
@@ -57,7 +74,7 @@ func setupTestServerWithMesh(t *testing.T, meshID string) (*Server, *httptest.Se
 }
 
 func makeValidEnvelope(meshID string) *envelope.CognitiveTaskEnvelope {
-	return &envelope.CognitiveTaskEnvelope{
+	env := &envelope.CognitiveTaskEnvelope{
 		ProtocolVersion: envelope.CurrentProtocolVersion,
 		MeshID:          meshID,
 		EnvelopeID:      "01923456-789a-7bc0-8123-456789abcdef",
@@ -79,7 +96,10 @@ func makeValidEnvelope(meshID string) *envelope.CognitiveTaskEnvelope {
 				},
 			},
 		},
+		CreatedAt: time.Now().UTC(),
 	}
+	_ = envelope.SignEnvelope(env, testEmitterSigner)
+	return env
 }
 
 // 1. Leases version and mesh ID: Test that all server-issued leases set
@@ -464,6 +484,9 @@ func TestServer_LeaseSigning_ErrorHandling(t *testing.T) {
 
 	srv.SetSigner(&faultySigner{agentID: "agent-b"})
 
+	emitterSigner, _ := signing.GenerateSigner("agent-a")
+	_ = srv.RegisterAgentKey("agent-a", emitterSigner.PublicKey())
+
 	env := &envelope.CognitiveTaskEnvelope{
 		ProtocolVersion: envelope.CurrentProtocolVersion,
 		MeshID:          "mesh-alpha",
@@ -479,7 +502,9 @@ func TestServer_LeaseSigning_ErrorHandling(t *testing.T) {
 			{ID: "a1", Type: envelope.AssertionCommandExitCode, Params: envelope.AssertionParams{Command: "true"}},
 		},
 		TimeoutSeconds: 30,
+		CreatedAt:      time.Now().UTC(),
 	}
+	_ = envelope.SignEnvelope(env, emitterSigner)
 	envJSON, err := json.Marshal(env)
 	if err != nil {
 		t.Fatalf("marshal env: %v", err)
