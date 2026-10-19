@@ -232,6 +232,34 @@ func (s *Server) verifyEmitterReceiptSignature(stored *receipt.SettlementReceipt
 	return nil
 }
 
+// verifyMTLSIdentity verifies that under TLS, a client certificate is presented
+// and its Subject CommonName or one of its SAN DNSNames matches claimedAgentID (RFC-002 S1).
+// Plain HTTP (r.TLS == nil) is permitted solely for local dev / non-TLS unit tests.
+// Under TLS with mTLS enabled (s.config.ClientCAFile != ""), a client certificate is strictly required;
+// missing certificates or identity discrepancies return an error that maps to HTTP 403 Forbidden.
+func (s *Server) verifyMTLSIdentity(r *http.Request, claimedAgentID string) error {
+	if r.TLS == nil {
+		return nil
+	}
+	if len(r.TLS.PeerCertificates) == 0 {
+		if s.config.ClientCAFile != "" {
+			return errors.New("mTLS client certificate required under TLS")
+		}
+		return nil
+	}
+	cert := r.TLS.PeerCertificates[0]
+	if cert.Subject.CommonName == claimedAgentID {
+		return nil
+	}
+	for _, san := range cert.DNSNames {
+		if san == claimedAgentID {
+			return nil
+		}
+	}
+	return fmt.Errorf("client certificate CN %q and SANs %v do not match claimed agent %q",
+		cert.Subject.CommonName, cert.DNSNames, claimedAgentID)
+}
+
 // Run starts the HTTP server on the given port.
 // If TLSCertFile and TLSKeyFile are configured, it runs HTTPS.
 func (s *Server) Run(port int) error {
@@ -442,6 +470,12 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// S1: Verify mTLS client certificate identity matches emitter agent ID.
+	if err := s.verifyMTLSIdentity(r, env.EmitterAgentID); err != nil {
+		writeError(w, http.StatusForbidden, "mTLS identity mismatch: "+err.Error())
+		return
+	}
+
 	// S2: Verify emitter's signature before issuing lease.
 	if err := s.verifyEnvelope(env); err != nil {
 		writeError(w, http.StatusUnauthorized, "verify envelope: "+err.Error())
@@ -522,6 +556,12 @@ func (s *Server) handleCreateLease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// S1: Verify mTLS client certificate identity matches emitter agent ID.
+	if err := s.verifyMTLSIdentity(r, env.EmitterAgentID); err != nil {
+		writeError(w, http.StatusForbidden, "mTLS identity mismatch: "+err.Error())
+		return
+	}
+
 	// S2: Verify emitter's signature before creating lease.
 	if err := s.verifyEnvelope(env); err != nil {
 		writeError(w, http.StatusUnauthorized, "verify envelope: "+err.Error())
@@ -591,6 +631,12 @@ func (s *Server) handleSettle(w http.ResponseWriter, r *http.Request) {
 	}
 	if env.MeshID != s.config.MeshID {
 		writeError(w, http.StatusBadRequest, envelope.ErrMeshMismatch.Error())
+		return
+	}
+
+	// S1: Verify mTLS client certificate identity matches emitter agent ID.
+	if err := s.verifyMTLSIdentity(r, env.EmitterAgentID); err != nil {
+		writeError(w, http.StatusForbidden, "mTLS identity mismatch: "+err.Error())
 		return
 	}
 
@@ -691,6 +737,12 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 	}
 	if stored.MeshID != s.config.MeshID {
 		writeError(w, http.StatusBadRequest, receipt.ErrMeshMismatch.Error())
+		return
+	}
+
+	// S1: Verify mTLS client certificate identity matches emitter agent ID.
+	if err := s.verifyMTLSIdentity(r, stored.EmitterAgentID); err != nil {
+		writeError(w, http.StatusForbidden, "mTLS identity mismatch: "+err.Error())
 		return
 	}
 
@@ -799,6 +851,12 @@ func (s *Server) handleDispute(w http.ResponseWriter, r *http.Request) {
 	}
 	if stored.MeshID != s.config.MeshID {
 		writeError(w, http.StatusBadRequest, receipt.ErrMeshMismatch.Error())
+		return
+	}
+
+	// S1: Verify mTLS client certificate identity matches emitter agent ID.
+	if err := s.verifyMTLSIdentity(r, stored.EmitterAgentID); err != nil {
+		writeError(w, http.StatusForbidden, "mTLS identity mismatch: "+err.Error())
 		return
 	}
 
