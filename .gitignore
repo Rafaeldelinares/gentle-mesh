@@ -72,6 +72,10 @@ Thumbs.db
 .codegraph/
 *.prof
 
+# ── Memory ───────────────────────────────────────────────────────────────────
+# Local Engram memory exports (never commit)
+.engram/
+
 # ── Temporary ────────────────────────────────────────────────────────────────
 *.tmp
 *.bak
