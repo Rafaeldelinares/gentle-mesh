@@ -833,4 +833,14 @@ Resuelve tres problemas críticos en la colaboración autónoma entre agentes:
 
 ---
 
+## Recuperación de tareas: NODE_LOST y re-dispatch del emisor
+
+Cuando un worker muere durante la ejecución de una tarea (validado por el E2E de recuperación de la Fase 2, con el runner real y pi ejecutando dentro del sandbox):
+
+1. **El coordinador NO re-despacha automáticamente.** La tarea en vuelo queda `failed` con código `NODE_LOST` y el territorio deja de ser despachable: el registry marca al worker muerto `offline` a los 3× heartbeat-timeout (`PruneStaleNodes` no borra el nodo — un nodo `offline` nunca recibe work). La reintención es una decisión del emisor.
+2. **El re-dispatch es responsabilidad del emisor y debe ser un contrato nuevo** (nuevo `EnvelopeID`). El `contract_id` del intento fallido ya lleva su liquidación: si el lease venció, el reaper de expiración emite el recibo `SETTLEMENT_TIMEOUT` de forma autónoma, y la idempotencia por `contract_id` (R1) impide liquidar un segundo intento del mismo contrato como `SETTLED_CLEAN`. Cadena final observada: `[SETTLEMENT_TIMEOUT(intento A), SETTLED_CLEAN(intento B)]` — sin recibos fantasma ni liquidaciones dobles.
+3. **Residuos del intento muerto**: el sandbox bwrap muere con el worker (el kill del proceso derriba el árbol completo); quedan un worktree efímero y una branch `proposal/<taskID>` sin commit en el repo cache. No hay colisión (cada intento es dueño de su `proposal/<taskID>`), pero acumulan sin GC — tracked en issue aparte.
+
+---
+
 Código abierto bajo licencia MIT; ver [LICENSE](LICENSE). Si el proyecto se integra en la organización Gentleman-Programming, cualquier cambio de licencia se acordaría con sus mantenedores.
