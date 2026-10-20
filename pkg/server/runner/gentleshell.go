@@ -532,6 +532,11 @@ func (r *GentleShellRunner) Run(ctx context.Context, req protocol.TaskRequest, s
 		completion.Text = completion.Result
 	}
 
+	// Usage exposure: F2-3 reads tokens/cost from the task state without
+	// re-parsing pi's NDJSON stream.
+	completion.Result = appendUsageToResult(completion.Result, state.usage)
+	completion.Text = completion.Result
+
 	_, emitErr := sink.EmitEvent(protocol.EventCompletion, completion)
 	if emitErr != nil {
 		return fmt.Errorf("failed to emit completion event: %w", emitErr)
@@ -811,6 +816,7 @@ func (r *GentleShellRunner) failRun(sink EventSink, code string, err error) erro
 type gentleShellStream struct {
 	sink          EventSink
 	fullText      strings.Builder
+	usage         *piUsage
 	startedAt     time.Time
 	idleTimeout   time.Duration
 	maxToolCalls  int
@@ -937,6 +943,11 @@ func (s *gentleShellStream) handleMessageUpdate(evt gentleShellEvent) error {
 }
 
 func (s *gentleShellStream) handleMessageEnd(evt gentleShellEvent) {
+	// Usage capture: the final message_end carries the run total; interim
+	// turns observed reporting zeros, so only non-zero totals overwrite.
+	if evt.Message != nil && evt.Message.Usage != nil && evt.Message.Usage.TotalTokens > 0 {
+		s.usage = evt.Message.Usage
+	}
 	if s.fullText.Len() > 0 || evt.Message == nil || evt.Message.Role != "assistant" {
 		return
 	}
@@ -967,8 +978,9 @@ type gentleShellEventD struct {
 }
 
 type gentleShellMessage struct {
-	Role    string                  `json:"role,omitempty"`
+	Role    string                   `json:"role,omitempty"`
 	Content []gentleShellContentPart `json:"content,omitempty"`
+	Usage   *piUsage                 `json:"usage,omitempty"`
 }
 
 type gentleShellContentPart struct {
