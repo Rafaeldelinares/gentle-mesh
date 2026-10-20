@@ -65,6 +65,7 @@ func runServe(args []string) {
 	evalTimeout := fs.Duration("eval-timeout", 30*time.Second, "Evaluation timeout")
 	maxRemed := fs.Int("max-remediations", 1, "Max remediation attempts")
 	keystoreDir := fs.String("keystore-dir", "", "Path to keystore directory for persistent agent keys (optional)")
+	leaseReaper := fs.Duration("lease-reaper-interval", 30*time.Second, "Lease expiration monitor interval; emits SETTLEMENT_TIMEOUT receipts for expired leases (RFC-002 R2). 0 disables the monitor")
 
 	// TLS flags.
 	tlsCert := fs.String("tls-cert", "", "TLS certificate file (enables HTTPS)")
@@ -95,6 +96,8 @@ func runServe(args []string) {
 		TLSCertFile:  *tlsCert,
 		TLSKeyFile:   *tlsKey,
 		ClientCAFile: *clientCA,
+
+		LeaseReaperInterval: *leaseReaper,
 	}
 
 	if *keystoreDir == "" {

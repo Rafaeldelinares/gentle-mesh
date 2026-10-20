@@ -42,6 +42,14 @@ type Server struct {
 	// In-memory state for the integration test.
 	leasesMu sync.RWMutex
 	leases   map[string]*envelope.Lease // leaseID → Lease
+
+	// R2 (RFC-002 #69): envelope registry for lease expiration. The reaper
+	// needs the envelope hash and agent IDs to build the timeout receipt.
+	leaseEnvelopes map[string]*envelope.CognitiveTaskEnvelope // EnvelopeID → envelope
+
+	// R2: reaper lifecycle — context cancellation, no orphan goroutines.
+	reaperDone   chan struct{}
+	reaperCancel context.CancelFunc
 }
 
 // inMemoryKeyResolver is a thread-safe in-memory key resolver.
@@ -161,16 +169,20 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	srv := &Server{
-		config:      cfg,
-		chainStore:  chainStore,
-		evaluator:   evaluator,
-		engine:      engine,
-		signer:      signer,
-		keyResolver: keyResolver,
-		leases:      make(map[string]*envelope.Lease),
+		config:         cfg,
+		chainStore:     chainStore,
+		evaluator:      evaluator,
+		engine:         engine,
+		signer:         signer,
+		keyResolver:    keyResolver,
+		leases:         make(map[string]*envelope.Lease),
+		leaseEnvelopes: make(map[string]*envelope.CognitiveTaskEnvelope),
 	}
 	if signer != nil {
 		_ = srv.RegisterAgentKey(signer.AgentID(), signer.PublicKey())
+	}
+	if cfg.LeaseReaperInterval > 0 {
+		srv.startLeaseReaper(cfg.LeaseReaperInterval)
 	}
 	return srv, nil
 }
@@ -372,12 +384,187 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 	s.registerTestHarnessEndpoints(mux)
 }
 
-// Shutdown gracefully shuts down the server.
+// Shutdown gracefully shuts down the server: it stops the lease reaper first
+// (context cancellation, no orphan goroutines) and then the HTTP server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.reaperCancel != nil {
+		s.reaperCancel()
+		if s.reaperDone != nil {
+			select {
+			case <-s.reaperDone:
+			case <-ctx.Done():
+			}
+		}
+	}
 	if s.httpServer == nil {
 		return nil
 	}
 	return s.httpServer.Shutdown(ctx)
+}
+
+// startLeaseReaper launches the lease expiration monitor (RFC-002 R2).
+// Every tick it purges expired leases and emits a SETTLEMENT_TIMEOUT receipt
+// for each — autonomously, without any incoming request. It stops cleanly on
+// context cancellation and closes reaperDone.
+func (s *Server) startLeaseReaper(interval time.Duration) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.reaperCancel = cancel
+	done := make(chan struct{})
+	s.reaperDone = done
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.purgeExpiredLeases(time.Now())
+			}
+		}
+	}()
+}
+
+// expiredLease is a snapshot entry of one expired lease. Lease identity and
+// ExpiresAt are copied BY VALUE at snapshot time: the confirmation phase
+// compares them against the live state, so a renewal (a new future ExpiresAt
+// under the same leaseID) is detected and the lease survives.
+type expiredLease struct {
+	leaseID    string
+	envelopeID string
+	expiresAt  time.Time
+	envelope   *envelope.CognitiveTaskEnvelope // immutable once signed; nil if unregistered
+}
+
+// snapshotExpiredLeases (reaper phase 1) reads the currently expired leases
+// with their envelopes. Read-only: nothing is purged here.
+func (s *Server) snapshotExpiredLeases(now time.Time) []expiredLease {
+	s.leasesMu.RLock()
+	defer s.leasesMu.RUnlock()
+	var out []expiredLease
+	for _, l := range s.leases {
+		if !l.ExpiresAt.After(now) {
+			out = append(out, expiredLease{
+				leaseID:    l.LeaseID,
+				envelopeID: l.EnvelopeID,
+				expiresAt:  l.ExpiresAt,
+				envelope:   s.leaseEnvelopes[l.EnvelopeID],
+			})
+		}
+	}
+	return out
+}
+
+// confirmAndEmit (reaper phase 2) confirms each snapshot still matches the
+// live lease, purges the confirmed ones, and emits one SETTLEMENT_TIMEOUT
+// receipt per confirmed lease with a registered envelope.
+//
+// Locking contract: leasesMu is NEVER held during receipt I/O. The
+// confirmation (a compare-and-delete: the purge only takes effect when
+// ExpiresAt still equals the snapshot value) runs in one short critical
+// section; receipt persistence runs afterwards with no server locks held
+// (chainMu is taken inside SignAndSaveReceipt). No path holds leasesMu and
+// chainMu together, so lock-order deadlock is impossible by construction.
+func (s *Server) confirmAndEmit(snaps []expiredLease, now time.Time) (confirmed, emitted int) {
+	var toEmit []*envelope.CognitiveTaskEnvelope
+
+	s.leasesMu.Lock()
+	for _, sn := range snaps {
+		l, ok := s.leases[sn.leaseID]
+		if !ok {
+			continue // already purged by another path
+		}
+		// Compare-and-delete: a renewal changed ExpiresAt under the same
+		// leaseID — the lease is legitimately alive again; skip entirely.
+		if !l.ExpiresAt.Equal(sn.expiresAt) {
+			continue
+		}
+		delete(s.leases, sn.leaseID)
+		if sn.envelopeID != "" {
+			delete(s.leaseEnvelopes, sn.envelopeID)
+		}
+		confirmed++
+		toEmit = append(toEmit, sn.envelope)
+	}
+	s.leasesMu.Unlock()
+
+	for _, env := range toEmit {
+		rec, err := s.emitSettlementTimeout(env)
+		if err != nil {
+			log.Printf("[%s] reaper: emit SETTLEMENT_TIMEOUT failed: %v", s.config.AgentID, err)
+			continue
+		}
+		if rec != nil && rec.Verdict == receipt.VerdictTimeout {
+			log.Printf("[%s] reaper: lease expired, emitted SETTLEMENT_TIMEOUT receipt=%s contract=%s",
+				s.config.AgentID, rec.ReceiptID, rec.ContractID)
+			emitted++
+		}
+	}
+	return confirmed, emitted
+}
+
+// purgeExpiredLeases runs both reaper phases and returns how many leases
+// were confirmed purged. Used by the reaper ticker and by tests.
+func (s *Server) purgeExpiredLeases(now time.Time) int {
+	snaps := s.snapshotExpiredLeases(now)
+	confirmed, _ := s.confirmAndEmit(snaps, now)
+	return confirmed
+}
+
+// emitSettlementTimeout persists a SETTLEMENT_TIMEOUT receipt for the given
+// envelope, idempotently (RFC-002 R1): a contract that already carries a
+// receipt — settled before expiry, or a racing settle that won the UNIQUE
+// index — keeps its winner; no timeout receipt is added.
+func (s *Server) emitSettlementTimeout(env *envelope.CognitiveTaskEnvelope) (*receipt.SettlementReceipt, error) {
+	if env == nil {
+		// No envelope registered (lease created outside the envelope flow):
+		// purge silently, there is no contract to time out.
+		return nil, nil
+	}
+	if s.signer == nil {
+		return nil, errors.New("server signer unavailable")
+	}
+
+	// R1 idempotency: an existing receipt for this contract wins.
+	if existing, err := s.chainStore.GetReceiptByContractID(context.Background(), env.EnvelopeID); err == nil && existing != nil {
+		return existing, nil
+	} else if err != nil && !errors.Is(err, receipt.ErrReceiptNotFound) {
+		return nil, fmt.Errorf("check existing receipt: %w", err)
+	}
+
+	envHash := env.EnvelopeHash
+	if envHash == "" {
+		h, err := envelope.ComputeEnvelopeHash(env)
+		if err != nil {
+			return nil, fmt.Errorf("compute envelope hash: %w", err)
+		}
+		envHash = h
+	}
+
+	rec, err := receipt.SignAndSaveReceipt(context.Background(), s.chainStore, receipt.AppendConfig{
+		EmitterAgentID:  env.EmitterAgentID,
+		ExecutorAgentID: s.config.AgentID,
+		Signer:          s.signer,
+	}, func() (*receipt.SettlementReceipt, error) {
+		return &receipt.SettlementReceipt{
+			ProtocolVersion: receipt.CurrentProtocolVersion,
+			MeshID:          env.MeshID,
+			ContractID:      env.EnvelopeID,
+			EnvelopeHash:    envHash,
+			Verdict:         receipt.VerdictTimeout,
+			// No assertions: the executor aborted without executing anything.
+		}, nil
+	})
+	if err != nil {
+		if errors.Is(err, receipt.ErrDuplicateContract) {
+			// Lost a UNIQUE (contract_id) race against a legitimate settle:
+			// R1 arbitrates — the winner stands, no timeout receipt is added.
+			return s.chainStore.GetReceiptByContractID(context.Background(), env.EnvelopeID)
+		}
+		return nil, err
+	}
+	return rec, nil
 }
 
 // PublicKey returns the agent's Ed25519 public key as hex string.
@@ -514,6 +701,7 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 
 	s.leasesMu.Lock()
 	s.leases[lease.LeaseID] = lease
+	s.leaseEnvelopes[env.EnvelopeID] = env
 	s.leasesMu.Unlock()
 
 	log.Printf("[%s] Lease %s: accepted=%v (%d preconditions)",
@@ -598,6 +786,7 @@ func (s *Server) handleCreateLease(w http.ResponseWriter, r *http.Request) {
 
 	s.leasesMu.Lock()
 	s.leases[lease.LeaseID] = lease
+	s.leaseEnvelopes[env.EnvelopeID] = env
 	s.leasesMu.Unlock()
 	writeJSON(w, http.StatusOK, lease)
 }
@@ -644,6 +833,29 @@ func (s *Server) handleSettle(w http.ResponseWriter, r *http.Request) {
 	if err := s.verifyEnvelope(env); err != nil {
 		writeError(w, http.StatusUnauthorized, "verify envelope: "+err.Error())
 		return
+	}
+
+	// R2: reactive lease-expiration check. A settle whose lease already
+	// expired aborts without executing and emits a SETTLEMENT_TIMEOUT receipt
+	// (idempotent: an already-settled contract keeps its receipt, R1).
+	if req.LeaseID != "" {
+		if l, ok := s.GetLease(req.LeaseID); ok && l.EnvelopeID == env.EnvelopeID && !l.ExpiresAt.After(time.Now()) {
+			timeoutRec, emitErr := s.emitSettlementTimeout(env)
+			if emitErr != nil {
+				log.Printf("[%s] emit SETTLEMENT_TIMEOUT for expired lease %s: %v", s.config.AgentID, req.LeaseID, emitErr)
+				writeError(w, http.StatusInternalServerError, "emit timeout receipt: "+emitErr.Error())
+				return
+			}
+			receiptJSON, err := json.Marshal(timeoutRec)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			log.Printf("[%s] lease %s expired: SETTLEMENT_TIMEOUT receipt=%s",
+				s.config.AgentID, req.LeaseID, timeoutRec.ReceiptID)
+			writeJSON(w, http.StatusOK, &SettleResponse{ReceiptJSON: receiptJSON, ReceiptID: timeoutRec.ReceiptID})
+			return
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.config.EvalTimeout)
