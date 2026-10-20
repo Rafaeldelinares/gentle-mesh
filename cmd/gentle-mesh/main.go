@@ -298,6 +298,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		IdleTimeout:   *gentleShellIdleTimeout,
 		MaxToolCalls:  *gentleShellMaxToolCalls,
 		ThinkingLevel: *gentleShellThinking,
+		TasksDir:      *tasksDir,
 	})
 	if err != nil {
 		return err
@@ -453,6 +454,7 @@ type runnerBuildOptions struct {
 	IdleTimeout   time.Duration
 	MaxToolCalls  int
 	ThinkingLevel string
+	TasksDir      string // required by the gentleshell runner for oversized diffs/patches
 }
 
 // buildRunner resolves the -runner flag into a task execution runner. A nil
@@ -495,7 +497,7 @@ func buildRunner(opts runnerBuildOptions) (runner.Runner, error) {
 			IdleTimeout:   opts.IdleTimeout,
 			MaxToolCalls:  opts.MaxToolCalls,
 			ThinkingLevel: opts.ThinkingLevel,
-			TasksDir:      "", // coordinator-level tasks dir; workers will set their own
+			TasksDir:      opts.TasksDir, // a server or worker running -runner gentle-shell must not hit GENTLESHELL_CONFIG_ERROR (the gap the F2 E2E found in the worker)
 		}), nil
 	default:
 		return nil, fmt.Errorf("invalid -runner %q: must be one of mesh, simulated, pi, gentle-shell", opts.Name)
@@ -588,6 +590,7 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	queueSize := fs.Int("queue-size", 0, "Maximum queued tasks waiting for execution (default: same as -concurrency)")
 	queueTimeout := fs.Duration("queue-timeout", 30*time.Second, "Maximum wait time in queue before timeout")
 	taskDelay := fs.Duration("task-delay", 0, "Artificial delay for simulated task execution (for load testing)")
+	tasksDir := fs.String("tasks-dir", "", "Directory for the runner's oversized diffs and patch bundles (the -gentle-shell-tasks-dir default); empty uses a worker-owned temp directory")
 	heartbeatInterval := fs.Duration("heartbeat-interval", 10*time.Second, "Heartbeat ping interval")
 	token := fs.String("token", "", "Optional bearer authentication token for the coordinator API; it is also accepted as an inbound credential of the worker HTTP server")
 	workerToken := fs.String("worker-token", "", "Bearer token that protects the worker HTTP server, accepted in addition to -token (required on a non-loopback address unless -insecure-no-auth)")
@@ -870,6 +873,21 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		if *gentleShellWorktrees == "" {
 			return errors.New("-gentle-shell-worktrees is required when -runner=gentle-shell")
 		}
+		// Resolve -gentle-shell-tasks-dir: its documented default is
+		// "-tasks-dir", but this flagset never defined -tasks-dir, so the
+		// empty value reached the runner and every task failed at runtime with
+		// GENTLESHELL_CONFIG_ERROR: TasksDir is required (found by the F2-1
+		// real-execution E2E).
+		gentleShellTasks := *gentleShellTasksDir
+		if gentleShellTasks == "" {
+			gentleShellTasks = *tasksDir
+		}
+		if gentleShellTasks == "" {
+			gentleShellTasks = filepath.Join(os.TempDir(), "gentle-mesh-worker", "tasks")
+		}
+		if err := os.MkdirAll(gentleShellTasks, 0o755); err != nil {
+			return fmt.Errorf("create gentle-shell tasks dir: %w", err)
+		}
 		workerRunner = runner.NewGentleShellRunner(runner.GentleShellRunnerOptions{
 			Bwrap:         *bwrapBin,
 			GentleShell:   *gentleShellBin,
@@ -880,7 +898,7 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			IdleTimeout:   *gentleShellIdleTimeout,
 			MaxToolCalls:  *gentleShellMaxToolCalls,
 			ThinkingLevel: *gentleShellThinking,
-			TasksDir:      *gentleShellTasksDir,
+			TasksDir:      gentleShellTasks,
 			Provider:      *gentleShellProvider,
 			Model:         *gentleShellModel,
 		})

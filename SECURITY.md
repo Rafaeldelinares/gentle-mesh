@@ -15,8 +15,13 @@ Report privately through GitHub Security Advisories:
 
 → https://github.com/Rafaeldelinares/gentle-mesh/security/advisories/new
 
-Include as much detail as you can: a description, the affected version(s), the potential
-impact, and any suggested fix. Anonymized reproduction notes are fine.
+Include as much detail as you can:
+
+- Description of the vulnerability
+- Steps to reproduce (anonymized if needed)
+- Affected version(s)
+- Potential impact
+- Any suggested fixes (optional)
 
 ## Supported versions
 

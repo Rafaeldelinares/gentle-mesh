@@ -148,7 +148,7 @@ func (r *PiRunner) Run(ctx context.Context, req protocol.TaskRequest, sink Event
 		return r.failRun(sink, "PI_EXIT_ERROR", exitErr)
 	}
 
-	text := state.fullText.String()
+	text := appendUsageToResult(state.fullText.String(), state.usage)
 	return state.emitEvent(protocol.EventCompletion, protocol.CompletionPayload{
 		Result: text,
 		Text:   text,
@@ -194,6 +194,7 @@ func (r *PiRunner) workDir(req protocol.TaskRequest) string {
 type piStream struct {
 	sink     EventSink
 	fullText strings.Builder
+	usage    *piUsage
 }
 
 // consume reads newline-delimited JSON events until the stream ends.
@@ -292,6 +293,11 @@ func (s *piStream) handleMessageUpdate(evt piEvent) error {
 // handleMessageEnd supplies the completion text when the stream carried no
 // assistant text deltas, so a non-streaming answer is still reported.
 func (s *piStream) handleMessageEnd(evt piEvent) {
+	// Usage capture: the final message_end carries the run total; interim
+	// turns observed reporting zeros, so only non-zero totals overwrite.
+	if evt.Message != nil && evt.Message.Usage != nil && evt.Message.Usage.TotalTokens > 0 {
+		s.usage = evt.Message.Usage
+	}
 	if s.fullText.Len() > 0 || evt.Message == nil || evt.Message.Role != "assistant" {
 		return
 	}
@@ -352,6 +358,43 @@ type piAssistantEvent struct {
 type piAssistantMessage struct {
 	Role    string          `json:"role,omitempty"`
 	Content []piContentPart `json:"content,omitempty"`
+	Usage   *piUsage        `json:"usage,omitempty"`
+}
+
+// piUsage mirrors the usage block pi reports on assistant messages: token
+// counts plus the provider cost. The final message_end of a run carries the
+// run total — interim turns observed reporting zeros.
+type piUsage struct {
+	Input       int64   `json:"input"`
+	Output      int64   `json:"output"`
+	CacheRead   int64   `json:"cacheRead"`
+	CacheWrite  int64   `json:"cacheWrite"`
+	TotalTokens int64   `json:"totalTokens"`
+	Cost        *piCost `json:"cost,omitempty"`
+	DurationMs  int64   `json:"durationMs,omitempty"`
+}
+
+type piCost struct {
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheRead  float64 `json:"cacheRead"`
+	CacheWrite float64 `json:"cacheWrite"`
+	Total      float64 `json:"total"`
+}
+
+// appendUsageToResult appends a parseable usage summary line to a completion
+// result so cost comparisons (F2-3) can read tokens/cost from the task state
+// without re-parsing pi's NDJSON stream. usage is nil-safe.
+func appendUsageToResult(result string, u *piUsage) string {
+	if u == nil {
+		return result
+	}
+	var cost float64
+	if u.Cost != nil {
+		cost = u.Cost.Total
+	}
+	return fmt.Sprintf("%s\nUsage: input=%d output=%d cacheRead=%d totalTokens=%d cost=%v",
+		result, u.Input, u.Output, u.CacheRead, u.TotalTokens, cost)
 }
 
 // piContentPart is a single assistant message content block.
