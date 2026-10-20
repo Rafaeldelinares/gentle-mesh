@@ -27,6 +27,7 @@ var (
 	ErrInvalidReceipt          = errors.New("invalid receipt")
 	ErrInvalidPreviousHash     = fmt.Errorf("%w: invalid previous receipt hash", ErrChainBroken)
 	ErrSequenceConflict        = errors.New("sequence conflict")
+	ErrDuplicateContract       = errors.New("duplicate contract id")
 )
 
 // ChainStore manages the receipt chain for an agent pair.
@@ -87,7 +88,7 @@ func (cs *ChainStore) InitSchema(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_receipts_pair
 		ON receipts(emitter_agent_id, executor_agent_id, executor_signed_at);
 
-	CREATE INDEX IF NOT EXISTS idx_receipts_contract
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_contract
 		ON receipts(contract_id);
 	`
 	if _, err := conn.ExecContext(ctx, schema); err != nil {
@@ -127,6 +128,26 @@ func (cs *ChainStore) migrateSeqSchema(ctx context.Context, conn *sql.Conn) erro
 	// Create unique index only after seq column is confirmed to exist and backfilled.
 	if _, err := conn.ExecContext(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_pair_seq ON receipts(emitter_agent_id, executor_agent_id, seq);"); err != nil {
 		return fmt.Errorf("create unique index idx_receipts_pair_seq: %w", err)
+	}
+
+	// Ensure idx_receipts_contract is unique. If it already exists as non-unique, drop and recreate it.
+	var isContractIdxUnique int
+	err := conn.QueryRowContext(ctx, "SELECT \"unique\" FROM pragma_index_list('receipts') WHERE name = 'idx_receipts_contract';").Scan(&isContractIdxUnique)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			if _, err := conn.ExecContext(ctx, "CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_contract ON receipts(contract_id);"); err != nil {
+				return fmt.Errorf("create unique index idx_receipts_contract: %w", err)
+			}
+		} else {
+			return fmt.Errorf("check idx_receipts_contract uniqueness: %w", err)
+		}
+	} else if isContractIdxUnique == 0 {
+		if _, err := conn.ExecContext(ctx, "DROP INDEX IF EXISTS idx_receipts_contract;"); err != nil {
+			return fmt.Errorf("drop non-unique idx_receipts_contract: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, "CREATE UNIQUE INDEX idx_receipts_contract ON receipts(contract_id);"); err != nil {
+			return fmt.Errorf("create unique index idx_receipts_contract: %w", err)
+		}
 	}
 
 	if _, err := conn.ExecContext(ctx, "COMMIT;"); err != nil {
@@ -388,6 +409,9 @@ func (cs *ChainStore) SaveReceipt(ctx context.Context, r *SettlementReceipt) err
 		if isPairSeqUniqueViolation(err) {
 			return fmt.Errorf("%w: insert receipt: %v", ErrSequenceConflict, err)
 		}
+		if isContractUniqueViolation(err) {
+			return fmt.Errorf("%w: insert receipt: %v", ErrDuplicateContract, err)
+		}
 		return fmt.Errorf("insert receipt: %w", err)
 	}
 
@@ -416,6 +440,17 @@ func isPairSeqUniqueViolation(err error) bool {
 		strings.Contains(msg, "receipts.seq")
 }
 
+// isContractUniqueViolation reports whether err is a SQLite UNIQUE constraint
+// violation of the contract_id index (idx_receipts_contract).
+func isContractUniqueViolation(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) || sqliteErr.Code() != sqlite3.SQLITE_CONSTRAINT_UNIQUE {
+		return false
+	}
+	msg := sqliteErr.Error()
+	return strings.Contains(msg, "receipts.contract_id")
+}
+
 // nullable returns a pointer to the string, or nil if empty.
 func nullable(s string) *string {
 	if s == "" {
@@ -430,6 +465,26 @@ func (cs *ChainStore) GetReceipt(ctx context.Context, receiptID string) (*Settle
 	var seq int64
 	err := cs.db.QueryRowContext(ctx,
 		"SELECT data, seq FROM receipts WHERE receipt_id = ?", receiptID).Scan(&data, &seq)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrReceiptNotFound
+		}
+		return nil, err
+	}
+	var r SettlementReceipt
+	if err := json.Unmarshal([]byte(data), &r); err != nil {
+		return nil, fmt.Errorf("unmarshal receipt: %w", err)
+	}
+	r.SequenceNumber = seq
+	return &r, nil
+}
+
+// GetReceiptByContractID retrieves a receipt by its contract_id.
+func (cs *ChainStore) GetReceiptByContractID(ctx context.Context, contractID string) (*SettlementReceipt, error) {
+	var data string
+	var seq int64
+	err := cs.db.QueryRowContext(ctx,
+		"SELECT data, seq FROM receipts WHERE contract_id = ?", contractID).Scan(&data, &seq)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrReceiptNotFound

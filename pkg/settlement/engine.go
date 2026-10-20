@@ -95,7 +95,15 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 		return nil, fmt.Errorf("envelope hash mismatch: input %q != computed %q", in.Envelope.EnvelopeHash, expectedHash)
 	}
 
-	// 1. prev_hash is computed inside ChainStore.SaveReceipt (under mutex) to ensure
+	// 1. Idempotency check: if a receipt already exists for this contract (envelope ID),
+	// return it immediately without re-executing or appending a new receipt.
+	if existing, err := eng.chainStore.GetReceiptByContractID(ctx, in.Envelope.EnvelopeID); err == nil && existing != nil {
+		return &SettlementOutput{Receipt: existing, RemediationUsed: 0}, nil
+	} else if err != nil && !errors.Is(err, receipt.ErrReceiptNotFound) {
+		return nil, fmt.Errorf("check existing receipt by contract id: %w", err)
+	}
+
+	// 2. prev_hash is computed inside ChainStore.SaveReceipt (under mutex) to ensure
 	// correct chain linkage even when concurrent Settle() calls race.
 
 	// 2. Convert envelope assertions to settlement assertions.
@@ -132,6 +140,15 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 		}, nil
 	})
 	if err != nil {
+		if errors.Is(err, receipt.ErrDuplicateContract) {
+			// Concurrent settle race: another caller persisted the receipt first.
+			// Return the winner's receipt idempotently.
+			existing, getErr := eng.chainStore.GetReceiptByContractID(ctx, in.Envelope.EnvelopeID)
+			if getErr == nil && existing != nil {
+				return &SettlementOutput{Receipt: existing, RemediationUsed: 0}, nil
+			}
+			return nil, fmt.Errorf("fetch existing receipt after duplicate contract conflict: %w", getErr)
+		}
 		return nil, err
 	}
 

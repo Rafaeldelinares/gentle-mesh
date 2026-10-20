@@ -28,6 +28,11 @@ func setupEngine(t *testing.T) (*Engine, *receipt.ChainStore, func()) {
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
+		db.Close()
+		t.Fatalf("enable WAL and busy timeout: %v", err)
+	}
 	cs := receipt.NewChainStore(db)
 	if err := cs.InitSchema(context.Background()); err != nil {
 		t.Fatalf("InitSchema: %v", err)
@@ -300,6 +305,52 @@ func TestSettle_PersistedToChain(t *testing.T) {
 	}
 	if chain[0].Verdict != receipt.VerdictSettledClean {
 		t.Errorf("Chain[0].Verdict = %v, want SETTLED_CLEAN", chain[0].Verdict)
+	}
+}
+
+// TestSettle_IdempotentByEnvelopeID verifies RFC-002 R1:
+// Calling Settle with an envelope whose EnvelopeID (contract_id) was already settled
+// returns the existing receipt without re-executing or creating a duplicate receipt.
+func TestSettle_IdempotentByEnvelopeID(t *testing.T) {
+	eng, cs, cleanup := setupEngine(t)
+	defer cleanup()
+
+	in := SettlementInput{
+		Envelope:        validEnvelope(),
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+	}
+
+	out1, err := eng.Settle(context.Background(), in)
+	if err != nil {
+		t.Fatalf("first Settle error: %v", err)
+	}
+	if out1 == nil || out1.Receipt == nil {
+		t.Fatal("first Settle receipt is nil")
+	}
+
+	// Second Settle with the identical envelope
+	out2, err := eng.Settle(context.Background(), in)
+	if err != nil {
+		t.Fatalf("second Settle error: %v", err)
+	}
+	if out2 == nil || out2.Receipt == nil {
+		t.Fatal("second Settle receipt is nil")
+	}
+
+	// Must return the exact same receipt ID
+	if out2.Receipt.ReceiptID != out1.Receipt.ReceiptID {
+		t.Fatalf("idempotency violated: second receipt ID %q != first receipt ID %q",
+			out2.Receipt.ReceiptID, out1.Receipt.ReceiptID)
+	}
+
+	// Chain count must remain exactly 1
+	count, err := cs.Count(context.Background(), "agent-a", "agent-b")
+	if err != nil {
+		t.Fatalf("cs.Count error: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected chain count 1 after duplicate settle, got %d", count)
 	}
 }
 
