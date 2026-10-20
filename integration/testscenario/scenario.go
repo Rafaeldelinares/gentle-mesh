@@ -5,6 +5,7 @@ package testscenario
 
 import (
 	"context"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -348,15 +349,26 @@ func fileSHA256(path string) (string, error) {
 }
 
 func newUUIDv7() string {
-	now := time.Now().UTC()
-	unixMs := now.UnixMilli()
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		uint32(unixMs>>32),
-		uint16(unixMs>>16)&0xFFFF,
-		uint16(unixMs)&0xFFFF,
-		uint16(0x8000|((now.UnixNano()>>48)&0x3FFF)),
-		uint64(0x4000000000000000|((now.UnixNano()/1000000)&0x3FFFFFFFFFFFFF)),
-	)
+	var b [16]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		// crypto/rand.Read never fails in practice. Fail loudly: a silent
+		// timestamp fallback would reintroduce the exact collision class this
+		// generator used to have (duplicate EnvelopeIDs under concurrency,
+		// masked as duplicate settlement receipts for the same contract).
+		panic(fmt.Sprintf("crypto/rand unavailable: %v", err))
+	}
+	// RFC 9562 UUIDv7: 48-bit unix_ts_ms + version 7 + 12 rand_a bits +
+	// variant 10b + 62 rand_b bits (74 random bits in total).
+	ms := time.Now().UnixMilli()
+	b[0] = byte(ms >> 40)
+	b[1] = byte(ms >> 32)
+	b[2] = byte(ms >> 24)
+	b[3] = byte(ms >> 16)
+	b[4] = byte(ms >> 8)
+	b[5] = byte(ms)
+	b[6] = (b[6] & 0x0F) | 0x70
+	b[8] = (b[8] & 0x3F) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // calculatorSource is the initial calculator.py content.

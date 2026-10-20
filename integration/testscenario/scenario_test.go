@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sync"
 	"testing"
 	"time"
 
@@ -437,3 +439,46 @@ func isGitClean(dir string) bool {
 }
 
 
+
+// TestNewUUIDv7_ConcurrentUnique proves the test UUID generator is
+// collision-resistant under concurrency: 200 simultaneous calls must yield
+// 200 distinct RFC 9562 UUIDv7 identifiers.
+//
+// The pre-fix implementation was a pure timestamp (effective millisecond
+// resolution, zero entropy), so concurrent envelopes shared one EnvelopeID
+// and settlement receipts were silently duplicated for the same contract —
+// the exact defect RFC-002 R1 now rejects via the UNIQUE (contract_id)
+// index. WU13 chain-stress depended on those duplicates to reach 10 receipts.
+func TestNewUUIDv7_ConcurrentUnique(t *testing.T) {
+	const n = 200
+	ids := make([]string, n)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			ids[idx] = newUUIDv7()
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	seen := make(map[string]bool, n)
+	for _, id := range ids {
+		if seen[id] {
+			t.Fatalf("duplicate UUID generated under concurrency: %s", id)
+		}
+		seen[id] = true
+	}
+
+	// RFC 9562 shape: 8-4-4-4-12 hex, version 7 (high nibble of the third
+	// group) and variant 10b (two high bits of the fourth group).
+	re := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	for _, id := range ids {
+		if !re.MatchString(id) {
+			t.Fatalf("id %q is not a valid RFC 9562 UUIDv7", id)
+		}
+	}
+}
