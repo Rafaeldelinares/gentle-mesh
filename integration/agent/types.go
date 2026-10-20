@@ -27,9 +27,9 @@ type Config struct {
 	WorkspaceDir string
 	EvalTimeout  time.Duration
 	MaxRemed     int
-	Signer       Signer // Ed25519 signing capability
+	Signer       Signer            // Ed25519 signing capability
 	KeyResolver  PublicKeyResolver // Resolver for agent public keys (S2)
-	KeystoreDir  string // Keystore directory path for persistent Ed25519 keys (optional)
+	KeystoreDir  string            // Keystore directory path for persistent Ed25519 keys (optional)
 
 	// TLS configuration. If CertFile and KeyFile are set, the server
 	// runs HTTPS instead of HTTP.
@@ -38,6 +38,12 @@ type Config struct {
 	// ClientCAFile enables mutual TLS (mTLS). If set, the server requires
 	// a valid client certificate signed by this CA.
 	ClientCAFile string
+
+	// LeaseReaperInterval controls the lease expiration monitor (RFC-002 R2).
+	// When > 0, a background reaper purges expired leases and emits a
+	// SETTLEMENT_TIMEOUT receipt for each, autonomously (no incoming request
+	// required). 0 disables the reaper.
+	LeaseReaperInterval time.Duration
 }
 
 // PublicKeyResolver resolves public keys by agent ID.
