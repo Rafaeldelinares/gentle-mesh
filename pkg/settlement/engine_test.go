@@ -354,6 +354,108 @@ func TestSettle_IdempotentByEnvelopeID(t *testing.T) {
 	}
 }
 
+// TestSettle_DuplicateContractRecovery_PathTaken proves deterministically that
+// the duplicate-contract recovery branch (lost INSERT race against the UNIQUE
+// (contract_id) index → fetch the winner's receipt) is exercised — not just
+// the easy pre-check path.
+//
+// Mechanism: beforeSign runs strictly AFTER Settle's pre-check and strictly
+// BEFORE this caller's INSERT inside SignAndSaveReceipt, so injecting the
+// racing winner there reproduces the exact race window ("another caller
+// committed between my pre-check and my INSERT") imposed by code instead of
+// the scheduler. The recovery branch is the only way Settle can succeed.
+func TestSettle_DuplicateContractRecovery_PathTaken(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "chain.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
+		t.Fatalf("enable WAL and busy timeout: %v", err)
+	}
+	cs := receipt.NewChainStore(db)
+	if err := cs.InitSchema(context.Background()); err != nil {
+		t.Fatalf("InitSchema: %v", err)
+	}
+	ev := NewEvaluator(dir)
+
+	baseSigner, err := signing.GenerateSigner("agent-b")
+	if err != nil {
+		t.Fatalf("GenerateSigner: %v", err)
+	}
+
+	env := validEnvelope()
+
+	hSigner := &hookSigner{
+		Signer: baseSigner,
+		beforeSign: func(attempt int) error {
+			// Attempt 1 runs after the pre-check found no receipt: inject the
+			// concurrent winner with the SAME contract_id, exactly as a racing
+			// goroutine that commits first would.
+			if attempt == 1 {
+				winner := &receipt.SettlementReceipt{
+					ProtocolVersion:  receipt.CurrentProtocolVersion,
+					MeshID:           "gentle-mesh-dev",
+					ReceiptID:        "rcpt-winner-1",
+					ContractID:       env.EnvelopeID,
+					EnvelopeHash:     "hash-winner-1",
+					EmitterAgentID:   "agent-a",
+					ExecutorAgentID:  "agent-b",
+					Verdict:          receipt.VerdictSettledClean,
+					ExecutorSignedAt: time.Now(),
+				}
+				if err := receipt.SignReceipt(winner, baseSigner); err != nil {
+					return fmt.Errorf("sign winner receipt: %w", err)
+				}
+				if err := cs.SaveReceipt(context.Background(), winner); err != nil {
+					return fmt.Errorf("save winner receipt: %w", err)
+				}
+			}
+			return nil
+		},
+	}
+
+	eng, err := NewEngine(EngineConfig{
+		Evaluator:      ev,
+		ChainStore:     cs,
+		ExecutorSigner: hSigner,
+	})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	in := SettlementInput{
+		Envelope:        env,
+		EmitterAgentID:  "agent-a",
+		ExecutorAgentID: "agent-b",
+	}
+
+	out, err := eng.Settle(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Settle error (recovery branch failed): %v", err)
+	}
+
+	// Settle must have returned the injected winner's receipt, proving the
+	// ErrDuplicateContract recovery branch ran (the caller's own INSERT lost).
+	if out.Receipt.ReceiptID != "rcpt-winner-1" {
+		t.Fatalf("recovery branch not exercised: got receipt %q, want the racing winner %q",
+			out.Receipt.ReceiptID, "rcpt-winner-1")
+	}
+	if got := eng.DuplicateRecoveries(); got != 1 {
+		t.Fatalf("duplicate-contract recovery branch taken %d times, want exactly 1", got)
+	}
+
+	count, err := cs.Count(context.Background(), "agent-a", "agent-b")
+	if err != nil {
+		t.Fatalf("cs.Count error: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected chain count 1 after race, got %d", count)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Settle — verdict
 // ─────────────────────────────────────────────────────────────────
@@ -1743,4 +1845,3 @@ func TestErrorIs_ErrChainBroken_DoesNotMatch_ErrInvalidPreviousHash(t *testing.T
 		t.Fatal("ErrInvalidPreviousHash must also match ErrChainBroken (as parent)")
 	}
 }
-

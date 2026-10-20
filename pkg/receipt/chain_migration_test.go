@@ -499,5 +499,3 @@ func TestMigration_SignatureVerification_OldChain_3Receipts(t *testing.T) {
 		}
 	}
 }
-
-

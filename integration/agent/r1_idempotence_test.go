@@ -77,7 +77,7 @@ func TestR1_ConcurrentSettlement_ReturnsSameReceipt(t *testing.T) {
 			WorkspacePath: "/tmp/workspace",
 		},
 		Assertions: []envelope.Assertion{
-			{ID: "check-exit", Type: envelope.AssertionCommandExitCode, Params: envelope.AssertionParams{Command: "true"}},
+			{ID: "check-exit", Type: envelope.AssertionCommandExitCode, Params: envelope.AssertionParams{Command: "sleep 0.1"}},
 		},
 		CreatedAt: time.Now().UTC(),
 	}
@@ -163,6 +163,14 @@ func TestR1_ConcurrentSettlement_ReturnsSameReceipt(t *testing.T) {
 		t.Errorf("idempotency violated: goroutine 0 receiptID=%q != goroutine 1 receiptID=%q",
 			results[0].receiptID, results[1].receiptID)
 	}
+
+	// The 100ms executor window forces both requests through the pre-check
+	// before either INSERT commits, so the loser must reach the
+	// ErrDuplicateContract recovery branch — not just the easy pre-check path.
+	if got := srv.engine.DuplicateRecoveries(); got < 1 {
+		t.Errorf("duplicate-contract recovery branch never taken (recoveries=%d): the race window did not open", got)
+	}
+	t.Logf("duplicate-contract recoveries observed: %d", srv.engine.DuplicateRecoveries())
 
 	// Check chain store: must contain exactly 1 receipt for this agent pair
 	chain, err := srv.ChainStore().GetChain(context.Background(), "agent-emitter", "test-executor")

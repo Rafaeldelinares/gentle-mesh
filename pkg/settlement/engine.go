@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
@@ -23,6 +24,11 @@ type Engine struct {
 	executorSigner signing.Signer
 	remMax         int
 	chainMu        sync.Mutex
+	// duplicateRecoveries counts how many Settle calls hit the UNIQUE
+	// (contract_id) constraint during a concurrent insert race and recovered
+	// the winner's receipt instead of failing. Operational signal: it measures
+	// how often the idempotency race window is actually entered.
+	duplicateRecoveries atomic.Int64
 }
 
 // EngineConfig holds the dependencies for the settlement engine.
@@ -54,6 +60,13 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		executorSigner: cfg.ExecutorSigner,
 		remMax:         remMax,
 	}, nil
+}
+
+// DuplicateRecoveries reports how many Settle calls entered the
+// duplicate-contract recovery branch (lost a concurrent insert race against
+// the UNIQUE (contract_id) index and returned the winner's receipt).
+func (eng *Engine) DuplicateRecoveries() int64 {
+	return eng.duplicateRecoveries.Load()
 }
 
 // SettlementInput is the input for a settlement run.
@@ -145,6 +158,7 @@ func (eng *Engine) Settle(ctx context.Context, in SettlementInput) (*SettlementO
 			// Return the winner's receipt idempotently.
 			existing, getErr := eng.chainStore.GetReceiptByContractID(ctx, in.Envelope.EnvelopeID)
 			if getErr == nil && existing != nil {
+				eng.duplicateRecoveries.Add(1)
 				return &SettlementOutput{Receipt: existing, RemediationUsed: 0}, nil
 			}
 			return nil, fmt.Errorf("fetch existing receipt after duplicate contract conflict: %w", getErr)
