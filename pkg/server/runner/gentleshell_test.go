@@ -772,6 +772,62 @@ func TestGentleShellRunner_DiffIsIncludedWhenWorktreeChanged(t *testing.T) {
 	}
 }
 
+// TestGentleShellRunner_CapturesUsageInCompletion: pi's final stream event
+// carries the run's usage (input/output/cacheRead/totalTokens + cost) — the
+// F2-3 parallel-vs-serial cost metric. The runner must capture it and expose
+// it in the completion result as a parseable "Usage:" line, not discard it.
+// Zero-usage interim turns (observed in real pi streams) must not override
+// the final total.
+func TestGentleShellRunner_CapturesUsageInCompletion(t *testing.T) {
+	cache, worktreesRoot := seedBareCache(t)
+
+	passBwrap := writePassBwrap(t)
+
+	gsBody := "#!/bin/sh\n" +
+		"printf '%s\\n' 'added' > added.txt\n" +
+		"git -c user.name=test -c user.email=test@example.com add added.txt\n" +
+		"git -c user.name=test -c user.email=test@example.com commit -m 'add added.txt' >/dev/null\n" +
+		"cat <<'PI_EOF'\n" +
+		`{"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"done"}}` + "\n" +
+		// Interim turn: zero usage (observed in real pi streams).
+		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"zero"}],"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}}` + "\n" +
+		// Final turn: the run total (values from a real pi run).
+		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":11628,"output":18,"cacheRead":196,"cacheWrite":0,"totalTokens":11842,"cost":{"input":0.0034884,"output":0.0000216,"cacheRead":0.00001176,"cacheWrite":0,"total":0.00352176},"durationMs":2049}}}` + "\n" +
+		"PI_EOF\n" +
+		"exit 0\n"
+	gsPath := filepath.Join(t.TempDir(), "gs-with-usage")
+	if err := os.WriteFile(gsPath, []byte(gsBody), 0o755); err != nil {
+		t.Fatalf("failed to write gs-with-usage: %v", err)
+	}
+
+	r := runner.NewGentleShellRunner(defaultRunnerOptions(t, runner.GentleShellRunnerOptions{
+		Bwrap:         passBwrap,
+		GentleShell:   gsPath,
+		RepoCache:     cache,
+		WorktreesRoot: worktreesRoot,
+	}))
+
+	sink := newMockSink(context.Background())
+	if err := r.Run(context.Background(), protocol.TaskRequest{
+		TaskID: "task-with-usage",
+		Agent:  "worker",
+		Task:   "produce a small diff with usage",
+	}, sink); err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	var completion protocol.CompletionPayload
+	for _, e := range sink.Events() {
+		if e.Type == protocol.EventCompletion {
+			_ = e.UnmarshalPayload(&completion)
+		}
+	}
+	const wantUsage = "Usage: input=11628 output=18 cacheRead=196 totalTokens=11842 cost=0.00352176"
+	if !strings.Contains(completion.Result, wantUsage) {
+		t.Errorf("expected parseable usage line %q in result, got %q", wantUsage, completion.Result)
+	}
+}
+
 // localExecutionSinkWrapper mirrors pkg/server/runner.localExecutionSink for
 // tests; the production type is unexported.
 type localExecutionSinkWrapper struct {
