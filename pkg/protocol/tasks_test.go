@@ -179,7 +179,7 @@ func TestTaskResponseJSONSerialization(t *testing.T) {
 		t.Fatalf("failed to unmarshal TaskResponse: %v", err)
 	}
 
-	if parsed != resp {
+	if !reflect.DeepEqual(parsed, resp) {
 		t.Errorf("TaskResponse round-trip mismatch:\ngot  %+v\nwant %+v", parsed, resp)
 	}
 }
@@ -314,7 +314,7 @@ func TestTaskResponseSessionIDJSONSerialization(t *testing.T) {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("failed to unmarshal TaskResponse: %v", err)
 	}
-	if parsed != resp {
+	if !reflect.DeepEqual(parsed, resp) {
 		t.Errorf("TaskResponse round-trip mismatch:\ngot  %+v\nwant %+v", parsed, resp)
 	}
 

@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["server", "-addr", ":8080", "-workspace", "/workspace"]
+    command: ["server", "-addr", ":8080", "-allowed-hosts", "coordinator", "-workspace", "/workspace"]
     volumes:
       - .:/workspace:ro
     ports:

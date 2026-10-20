@@ -43,6 +43,7 @@ func (s *Server) registerRoutes(mux *stdhttp.ServeMux) {
 	mux.HandleFunc("GET /v1/workspace/tree", s.handleWorkspaceTree)
 	mux.HandleFunc("GET /v1/workspace/file", s.handleWorkspaceFile)
 	mux.HandleFunc("POST /v1/certs/enroll", s.handleCertsEnroll)
+	mux.HandleFunc("POST /v1/certs/revoke", s.handleCertsRevoke)
 	// Webhook management
 	mux.HandleFunc("POST /v1/webhooks", s.handleCreateWebhook)
 	mux.HandleFunc("GET /v1/webhooks", s.handleListWebhooks)
@@ -146,9 +147,31 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 		return
 	}
 
-	// Validate token
-	_, err := s.tokenStore.UseToken(r.Context(), req.Token)
+	// Everything that does not depend on the token is validated before
+	// consuming it: a request that is going to be rejected must not burn an
+	// enrollment use.
+	nodeID := req.NodeID
+	if nodeID == "" {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "node_id is required"})
+		return
+	}
+
+	// A CSR that cannot be parsed or whose self-signature does not verify can
+	// never be signed, so reject it before UseToken. pki.ValidateCSR is the
+	// same function SignCSR uses, so the 500 keeps exactly the same wording.
+	if _, err := pki.ValidateCSR(req.CSR); err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to sign certificate: %v", err)})
+		return
+	}
+
+	// Validate token. The node id validated above travels with the consume so
+	// the token records who used it.
+	_, err := s.tokenStore.UseToken(r.Context(), req.Token, nodeID)
 	if err != nil {
+		if err.Error() == "token revoked" {
+			writeJSON(w, stdhttp.StatusUnauthorized, map[string]string{"error": "token revoked"})
+			return
+		}
 		if err.Error() == "token not found" {
 			writeJSON(w, stdhttp.StatusUnauthorized, map[string]string{"error": "invalid token"})
 			return
@@ -162,13 +185,6 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 			return
 		}
 		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("token validation failed: %v", err)})
-		return
-	}
-
-	// Use provided NodeID or extract from CSR
-	nodeID := req.NodeID
-	if nodeID == "" {
-		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "node_id is required"})
 		return
 	}
 
@@ -186,6 +202,24 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 		return
 	}
 
+	if s.certStore != nil {
+		certRecord := &store.CertRecord{
+			NodeID:     nodeID,
+			CommonName: cert.Subject.CommonName,
+			Serial:     cert.SerialNumber.String(),
+			CertPEM:    certPEM,
+			IssuedAt:   cert.NotBefore,
+			ExpiresAt:  cert.NotAfter,
+		}
+		if err := s.certStore.IssueCert(r.Context(), certRecord); err != nil {
+			writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to record issued certificate: %v", err)})
+			return
+		}
+		if s.revocationCache != nil {
+			s.revocationCache.Remove(certRecord.Serial)
+		}
+	}
+
 	writeJSON(w, stdhttp.StatusOK, EnrollmentResponse{
 		CertPEM: certPEM,
 		NodeID:  nodeID,
@@ -198,6 +232,16 @@ func (s *Server) handleMeshJoin(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid request payload: %v", err)})
 		return
+	}
+
+	if s.config.RequireMTLS {
+		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 ||
+			r.TLS.VerifiedChains[0][0].Subject.CommonName != req.NodeID {
+			writeJSON(w, stdhttp.StatusForbidden, map[string]string{
+				"error": "client certificate identity does not match node_id",
+			})
+			return
+		}
 	}
 
 	nodeInfo, err := s.registry.RegisterNode(req)
@@ -306,6 +350,15 @@ func (s *Server) handleMeshTerritory(w stdhttp.ResponseWriter, r *stdhttp.Reques
 	writeJSON(w, stdhttp.StatusOK, s.territoryManager.LocalManifest())
 }
 
+// taskWarnings returns the additive advisory notes for an accepted task request. With an empty
+// git_branch it returns nil, so the response stays byte-identical to the pre-warning contract.
+func taskWarnings(req protocol.TaskRequest) []string {
+	if req.GitBranch == "" {
+		return nil
+	}
+	return []string{protocol.GitBranchLockOnlyWarning}
+}
+
 func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	r.Body = stdhttp.MaxBytesReader(w, r.Body, 1<<20)
 	var req protocol.TaskRequest
@@ -339,6 +392,7 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 					Status:    st.Status,
 					EventsURL: "/v1/tasks/" + existingTask.TaskID + "/events",
 					CreatedAt: st.CreatedAt,
+					Warnings: taskWarnings(req),
 				})
 				return
 			}
@@ -394,6 +448,7 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 					Status:    st.Status,
 					EventsURL: "/v1/tasks/" + existingTask.TaskID + "/events",
 					CreatedAt: st.CreatedAt,
+					Warnings: taskWarnings(req),
 				})
 				return
 			}
@@ -425,6 +480,7 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		Status:    t.CurrentStatus(),
 		EventsURL: "/v1/tasks/" + t.TaskID + "/events",
 		CreatedAt: t.CreatedAt,
+		Warnings: taskWarnings(req),
 	})
 }
 
@@ -749,7 +805,76 @@ func (s *Server) handleWorkspaceFile(w stdhttp.ResponseWriter, r *stdhttp.Reques
 	})
 }
 
-// Webhook management handlers
+// CertRevokeRequest represents a certificate revocation request via REST API.
+type CertRevokeRequest struct {
+	NodeID string `json:"node_id"`
+}
+
+// CertRevokeResponse represents the response after revoking a certificate.
+type CertRevokeResponse struct {
+	Status         string `json:"status"`
+	NodeID         string `json:"node_id"`
+	TasksCancelled int    `json:"tasks_cancelled"`
+}
+
+func (s *Server) handleCertsRevoke(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if s.config.BearerToken == "" {
+		writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]string{
+			"error": "certificate revocation API is unavailable: coordinator has no bearer token configured",
+		})
+		return
+	}
+
+	if s.certStore == nil {
+		writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]string{
+			"error": "cert store is not configured",
+		})
+		return
+	}
+
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, 4<<10)
+	var req CertRevokeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	if strings.TrimSpace(req.NodeID) == "" {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "node_id is required"})
+		return
+	}
+
+	nodeID := strings.TrimSpace(req.NodeID)
+
+	rec, err := s.certStore.GetCert(r.Context(), nodeID)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to get certificate: %v", err),
+		})
+		return
+	}
+	if rec == nil {
+		writeJSON(w, stdhttp.StatusNotFound, map[string]string{
+			"error": fmt.Sprintf("certificate for node %q not found", nodeID),
+		})
+		return
+	}
+
+	cancelledCount, err := s.RevokeCertWithCount(r.Context(), nodeID)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to revoke certificate: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, stdhttp.StatusOK, CertRevokeResponse{
+		Status:         "revoked",
+		NodeID:         nodeID,
+		TasksCancelled: cancelledCount,
+	})
+}
+
 
 // CreateWebhookRequest represents a webhook creation request.
 type CreateWebhookRequest struct {

@@ -160,8 +160,8 @@ func TestWorkerServer_ExecuteAndStreamSSE(t *testing.T) {
 
 func TestWorkerServer_Healthz(t *testing.T) {
 	srv := worker.NewServer(worker.ServerConfig{
-		Addr:        "127.0.0.1:0",
-		BearerToken: "my-secret-token",
+		Addr:         "127.0.0.1:0",
+		BearerTokens: []string{"my-secret-token"},
 	})
 
 	if err := srv.Listen(); err != nil {
@@ -336,8 +336,8 @@ func TestWorkerServer_InteractiveReply(t *testing.T) {
 
 func TestWorkerServer_AuthAndValidation(t *testing.T) {
 	srv := worker.NewServer(worker.ServerConfig{
-		Addr:        "127.0.0.1:0",
-		BearerToken: "auth-secret",
+		Addr:         "127.0.0.1:0",
+		BearerTokens: []string{"auth-secret"},
 	})
 
 	if err := srv.Listen(); err != nil {
@@ -399,5 +399,139 @@ func TestWorkerServer_AuthAndValidation(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 for empty query_id in reply, got %d", resp.StatusCode)
+	}
+}
+
+// The worker API must reject a missing or wrong bearer token and accept the
+// configured one (compared in constant time).
+func TestWorkerServer_AuthToken(t *testing.T) {
+	srv := worker.NewServer(worker.ServerConfig{
+		Addr:         "127.0.0.1:0",
+		BearerTokens: []string{"worker-secret"},
+	})
+	if err := srv.Listen(); err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	go func() { _ = srv.Start() }()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}()
+
+	url := "http://" + srv.Addr() + "/v1/execute"
+	body := `{"agent":"worker","task":"auth-test"}`
+
+	tests := []struct {
+		name       string
+		authHeader string
+		wantStatus int
+	}{
+		{"sin cabecera", "", http.StatusUnauthorized},
+		{"token incorrecto", "Bearer wrong-secret", http.StatusUnauthorized},
+		{"token correcto", "Bearer worker-secret", http.StatusOK},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+			if err != nil {
+				t.Fatalf("failed to build request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if tc.authHeader != "" {
+				req.Header.Set("Authorization", tc.authHeader)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			_, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("got status %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+		})
+	}
+}
+
+// The worker API accepts every configured credential: its own and the
+// coordinator's, compared in constant time against the whole list.
+func TestWorkerServer_AcceptsMultipleTokens(t *testing.T) {
+	tests := []struct {
+		name       string
+		tokens     []string
+		authHeader string
+		wantStatus int
+	}{
+		{"token solo: sin cabecera", []string{"coord-secret"}, "", http.StatusUnauthorized},
+		{"token solo: correcto", []string{"coord-secret"}, "Bearer coord-secret", http.StatusOK},
+		{"worker-token solo: sin cabecera", []string{"worker-secret"}, "", http.StatusUnauthorized},
+		{"worker-token solo: correcto", []string{"worker-secret"}, "Bearer worker-secret", http.StatusOK},
+		{"dos credenciales: la primera", []string{"coord-secret", "worker-secret"}, "Bearer coord-secret", http.StatusOK},
+		{"dos credenciales: la segunda", []string{"coord-secret", "worker-secret"}, "Bearer worker-secret", http.StatusOK},
+		{"dos credenciales: una tercera", []string{"coord-secret", "worker-secret"}, "Bearer otra", http.StatusUnauthorized},
+		{"entradas vacias se ignoran", []string{"", "coord-secret"}, "Bearer coord-secret", http.StatusOK},
+		{"sin credenciales: abierto", nil, "", http.StatusOK},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := worker.NewServer(worker.ServerConfig{
+				Addr:         "127.0.0.1:0",
+				BearerTokens: tc.tokens,
+			})
+			if err := srv.Listen(); err != nil {
+				t.Fatalf("failed to listen: %v", err)
+			}
+			go func() { _ = srv.Start() }()
+			defer func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = srv.Shutdown(ctx)
+			}()
+
+			req, err := http.NewRequest(http.MethodPost, "http://"+srv.Addr()+"/v1/execute",
+				strings.NewReader(`{"agent":"worker","task":"multi-token"}`))
+			if err != nil {
+				t.Fatalf("failed to build request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if tc.authHeader != "" {
+				req.Header.Set("Authorization", tc.authHeader)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			_, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("got status %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+		})
+	}
+
+	// /healthz keeps bypassing authentication even with credentials configured.
+	srv := worker.NewServer(worker.ServerConfig{Addr: "127.0.0.1:0", BearerTokens: []string{"coord-secret"}})
+	if err := srv.Listen(); err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	go func() { _ = srv.Start() }()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}()
+	resp, err := http.Get("http://" + srv.Addr() + "/healthz")
+	if err != nil {
+		t.Fatalf("healthz request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /healthz: got %d, want 200", resp.StatusCode)
 	}
 }

@@ -52,6 +52,17 @@ func (m *TaskManager) Store() store.TaskStore {
 	return m.store
 }
 
+const (
+	// OrphanedTaskCode is the error code recorded for a task that was still pending when the
+	// coordinator stopped: whoever was executing it is gone with that process.
+	OrphanedTaskCode = "COORDINATOR_RESTARTED"
+	// OrphanedTaskMessage is the stable cause those tasks are failed with. It covers running,
+	// preparing and queued tasks of a previous run: none of them can be resumed or replayed
+	// faithfully, and the client decides whether to send the work again. The coordinator never
+	// retries or re-queues them on its own, because that could execute the same task twice.
+	OrphanedTaskMessage = "coordinator restarted"
+)
+
 // NewTaskManager creates a new TaskManager storing JSONL logs in tasksDir.
 func NewTaskManager(tasksDir string, taskTTL time.Duration, opts ...TaskManagerOption) (*TaskManager, error) {
 	if err := os.MkdirAll(tasksDir, 0755); err != nil {
@@ -81,6 +92,23 @@ func NewTaskManager(tasksDir string, taskTTL time.Duration, opts ...TaskManagerO
 				continue
 			}
 			m.tasks[rec.TaskID] = m.rehydrateTask(rec)
+		}
+
+		// No pending task of a previous run can be resumed or replayed faithfully. A running
+		// (or preparing) one lost the runner that owned it with the process, and a queued one
+		// cannot be reconstructed: the stored row keeps neither the task text nor the
+		// priority, so re-enqueuing it would run an empty prompt in an arbitrary order. Every
+		// non-terminal task is therefore failed with an explicit cause, and it is never
+		// retried or re-queued, because that could execute the same work twice; the client
+		// decides whether to send it again.
+		for _, t := range m.tasks {
+			if t == nil {
+				continue
+			}
+			switch t.CurrentStatus() {
+			case protocol.TaskStatusRunning, protocol.TaskStatusPreparing, protocol.TaskStatusQueued:
+				_ = m.FailTask(t.TaskID, OrphanedTaskCode, OrphanedTaskMessage)
+			}
 		}
 	}
 
@@ -142,6 +170,7 @@ func (m *TaskManager) CreateTask(req protocol.TaskRequest) (*ManagedTask, error)
 		return nil, fmt.Errorf("failed to initialize task logger: %w", err)
 	}
 
+	req.TaskID = taskID
 	task := NewManagedTask(taskID, req, ctx, cancel, logger)
 
 	if m.store != nil {
@@ -334,6 +363,43 @@ func (m *TaskManager) CancelTask(taskID string, reason string) error {
 	return nil
 }
 
+// FailTask finalizes a task with an explicit cause.
+//
+// It records the error payload, emits an EventError so the cause reaches the SSE stream and
+// the JSONL log (unless the task already carries one, as the pi runner does), and moves the
+// task to failed. The state transition persists status and message through the store.
+func (m *TaskManager) FailTask(taskID, code, message string) error {
+	m.mu.RLock()
+	task, exists := m.tasks[taskID]
+	m.mu.RUnlock()
+	if !exists {
+		return ErrTaskNotFound
+	}
+
+	payload := protocol.ErrorPayload{Code: code, Message: message, Fatal: true}
+
+	task.mu.Lock()
+	if task.isTerminalLocked() {
+		task.mu.Unlock()
+		return ErrTaskAlreadyFinished
+	}
+	alreadyReported := task.Error != nil
+	task.Error = &payload
+	hasLogger := task.logger != nil
+	task.mu.Unlock()
+
+	if !alreadyReported && hasLogger {
+		// Emitting an EventError also records the payload and moves the task to failed.
+		if _, err := task.EmitEvent(protocol.EventError, payload); err != nil {
+			return err
+		}
+	}
+	if task.CurrentStatus() == protocol.TaskStatusFailed {
+		return nil
+	}
+	return task.TransitionTo(protocol.TaskStatusFailed)
+}
+
 // SubmitReply resolves a pending interactive query on a task and acknowledges the response.
 func (m *TaskManager) SubmitReply(taskID string, reply protocol.TaskReplyRequest) error {
 	task, exists := m.GetTask(taskID)
@@ -401,6 +467,38 @@ func (m *TaskManager) CleanupExpired() {
 			}
 		}
 	}
+}
+
+// FailTasksOfNode finalizes as failed NODE_LOST every running task attributed to
+// nodeID, cancelling its context so the runner releases the connection. It respects
+// the first cause (tasks already terminal are skipped). Returns the number of tasks
+// finalized.
+func (m *TaskManager) FailTasksOfNode(nodeID, code, message string) int {
+	if nodeID == "" {
+		return 0
+	}
+	m.mu.RLock()
+	tasks := make([]*ManagedTask, 0, len(m.tasks))
+	for _, t := range m.tasks {
+		if t == nil {
+			continue
+		}
+		t.mu.RLock()
+		match := t.NodeID == nodeID && t.Status == protocol.TaskStatusRunning
+		t.mu.RUnlock()
+		if match {
+			tasks = append(tasks, t)
+		}
+	}
+	m.mu.RUnlock()
+
+	finalized := 0
+	for _, t := range tasks {
+		if err := m.FailTask(t.TaskID, code, message); err == nil {
+			finalized++
+		}
+	}
+	return finalized
 }
 
 // TrackRunner increments the active runner WaitGroup and returns a release func to be deferred by the runner goroutine.
@@ -515,8 +613,18 @@ func (m *TaskManager) rehydrateTask(rec *store.TaskRecord) *ManagedTask {
 	}
 
 	if rec.ResultSummary != "" || rec.Status == protocol.TaskStatusCompleted {
-		task.Completion = &protocol.CompletionPayload{
-			Result: rec.ResultSummary,
+		// #9c: the executed_locally flag is persisted in its own column
+		// (store.TaskRecord.ExecutedLocally) and read back here. We do
+		// #9c: the executed_locally flag is persisted in its own column
+		// (store.TaskRecord.ExecutedLocally) and read back here. We do
+		// NOT touch rec.ResultSummary at all, so a real ResultSummary
+		// that happens to end with the literal string "\n[executed_locally=true]"
+		// stays intact and does not get interpreted as a marker.
+		if rec.ResultSummary != "" || rec.Status == protocol.TaskStatusCompleted {
+			task.Completion = &protocol.CompletionPayload{
+				Result:          rec.ResultSummary,
+				ExecutedLocally: rec.ExecutedLocally,
+			}
 		}
 	}
 
@@ -559,27 +667,34 @@ func (m *TaskManager) syncTaskToStore(t *ManagedTask) {
 		errMsg = t.Error.Message
 	}
 	var summary string
+	var executedLocally bool
 	if t.Completion != nil {
 		summary = t.Completion.Result
+		// #9c: the executed_locally flag is persisted in its own column
+		// (store.TaskRecord.ExecutedLocally). We do NOT touch
+		// t.Completion.Result, so a real ResultSummary that happens to
+		// end with the literal marker string stays intact.
+		executedLocally = t.Completion.ExecutedLocally
 	}
 
 	record := &store.TaskRecord{
-		TaskID:        t.TaskID,
-		Branch:        t.Request.GitBranch,
-		Repository:    t.Request.GitRepo,
-		Domain:        t.Domain,
-		BlastRadius:   t.BlastRadius,
-		Phase:         t.Phase,
-		CurrentAction: t.CurrentAction,
-		Status:        t.Status,
-		WorkerID:      t.NodeID,
-		Tags:          append([]string(nil), t.Request.Tags...),
-		EditSurfaces:  append([]string(nil), t.EditSurfaces...),
-		CreatedAt:     t.CreatedAt,
-		StartedAt:     t.StartedAt,
-		FinishedAt:    t.FinishedAt,
-		ErrorMessage:  errMsg,
-		ResultSummary: summary,
+		TaskID:          t.TaskID,
+		Branch:          t.Request.GitBranch,
+		Repository:      t.Request.GitRepo,
+		Domain:          t.Domain,
+		BlastRadius:     t.BlastRadius,
+		Phase:           t.Phase,
+		CurrentAction:   t.CurrentAction,
+		Status:          t.Status,
+		WorkerID:        t.NodeID,
+		Tags:            append([]string(nil), t.Request.Tags...),
+		EditSurfaces:    append([]string(nil), t.EditSurfaces...),
+		CreatedAt:       t.CreatedAt,
+		StartedAt:       t.StartedAt,
+		FinishedAt:      t.FinishedAt,
+		ErrorMessage:    errMsg,
+		ResultSummary:   summary,
+		ExecutedLocally: executedLocally,
 	}
 	taskID := t.TaskID
 	status := t.Status

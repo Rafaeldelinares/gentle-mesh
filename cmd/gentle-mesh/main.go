@@ -13,9 +13,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -28,6 +30,7 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
+	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/worker"
@@ -90,6 +93,8 @@ func runCLIWithIO(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		return runTokenRevoke(ctx, cmdArgs, stdout, stderr)
 	case "gen-csr":
 		return runGenCSR(ctx, cmdArgs, stdout, stderr)
+	case "apply":
+		return runApply(ctx, cmdArgs, stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return nil
@@ -116,7 +121,86 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  token-list   List enrollment tokens")
 	fmt.Fprintln(w, "  token-revoke Revoke an enrollment token")
 	fmt.Fprintln(w, "  gen-csr      Generate a CSR locally for enrollment (no CA needed)")
+	fmt.Fprintln(w, "  apply        Materialize a proposal/<task_id> branch from the worker cache into a local merge branch (no push, no merge to main)")
 	fmt.Fprintln(w, "  help      Show help for gentle-mesh")
+}
+
+// resolveDBPath returns the effective SQLite path for the coordinator.
+// An empty flag value means "<tasks-dir>/gentle-mesh.db"; "none" disables persistence.
+func resolveDBPath(dbPath, tasksDir string) string {
+	if dbPath != "" {
+		return dbPath
+	}
+	return filepath.Join(tasksDir, "gentle-mesh.db")
+}
+
+// requireTLSStorage rejects a configuration in which the enrollment tokens and the
+// webhooks cannot be persisted. Both TLS paths refuse it with the same message.
+func requireTLSStorage(dbPath string) error {
+	if dbPath == "none" {
+		return errors.New("-tls requires a SQLite database for enrollment tokens and webhooks; remove -db-path none")
+	}
+	return nil
+}
+
+// pruneInterval returns how often the coordinator retires nodes whose heartbeats stopped:
+// a third of the heartbeat timeout, never less than one second.
+func pruneInterval(heartbeatTimeout time.Duration) time.Duration {
+	interval := heartbeatTimeout / 3
+	if interval < time.Second {
+		interval = time.Second
+	}
+	return interval
+}
+
+// configureCoordinatorTLS loads (or generates) the coordinator TLS material and
+// wires the enrollment token store and the webhook store. The explicit -tls path
+// and the -addr :8443 auto-enable path both call it, so the stores cannot be
+// armed in one path and missing in the other. The caller must have validated the
+// path with requireTLSStorage first.
+func configureCoordinatorTLS(cfg *meshhttp.ServerConfig, tlsDirPath, dbPath string, extraHostnames, extraIPs []string) (*pki.MeshCA, *pki.ServerCert, bool, error) {
+	// Loopback and localhost always stay; -tls-san only adds.
+	hostnames := append(append([]string{}, extraHostnames...), "localhost", "127.0.0.1")
+	ca, _, err := pki.EnsureMeshTLSWithIPs(tlsDirPath, "Gentle Mesh", "mesh-coordinator", hostnames, extraIPs, false)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("failed to load TLS certificates: %w", err)
+	}
+
+	// A certificate generated before -tls-san existed may not cover the requested
+	// SANs: cover them now, regenerating only the server certificate (never the CA).
+	serverCert, regenerated, err := pki.EnsureServerCertSANs(tlsDirPath, ca, hostnames, extraIPs)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("failed to ensure the server certificate SANs: %w", err)
+	}
+	cfg.TLSEnabled = true
+	cfg.TLSCertFile = filepath.Join(tlsDirPath, pki.CertPemFile)
+	cfg.TLSKeyFile = filepath.Join(tlsDirPath, pki.CertKeyFile)
+	cfg.MeshCA = ca
+	cfg.MeshCAPemFile = filepath.Join(tlsDirPath, pki.CAPemFile)
+
+	// Initialize token store for enrollment
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("failed to open database: %w", err)
+	}
+	if err := store.InitTokenSchema(db); err != nil {
+		return nil, nil, false, fmt.Errorf("failed to init token schema: %w", err)
+	}
+	cfg.TokenStore = store.NewSQLiteTokenStore(db)
+
+	// Initialize webhook store and dispatcher
+	if err := store.InitWebhookSchema(db); err != nil {
+		return nil, nil, false, fmt.Errorf("failed to init webhook schema: %w", err)
+	}
+	cfg.WebhookStore = store.NewSQLiteWebhookStore(db)
+
+	// Initialize cert store for node certificates and revocation
+	if err := store.InitCertSchema(db); err != nil {
+		return nil, nil, false, fmt.Errorf("failed to init cert schema: %w", err)
+	}
+	cfg.CertStore = store.NewSQLiteCertStore(db)
+
+	return ca, serverCert, regenerated, nil
 }
 
 // runServer starts the coordinator HTTPS/HTTP REST and SSE server.
@@ -124,25 +208,44 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	addr := fs.String("addr", ":8080", "Coordinator listen address (e.g. :8443 for HTTPS, :8080 for HTTP)")
+	addr := fs.String("addr", "127.0.0.1:8080", "Coordinator listen address (e.g. 127.0.0.1:8443 for HTTPS, 127.0.0.1:8080 for HTTP)")
 	tasksDir := fs.String("tasks-dir", "/tmp/gentle-mesh/tasks", "Directory for task logs and state")
-	dbPath := fs.String("db-path", "", "Path to SQLite database for task persistence (defaults to <tasks-dir>/gentle-mesh.db, 'none' to disable)")
+	dbPath := fs.String("db-path", "", "Path to SQLite database for task persistence (defaults to <tasks-dir>/gentle-mesh.db, 'none' to disable; 'none' is not allowed with -tls)")
 	heartbeatTimeout := fs.Duration("heartbeat-timeout", 30*time.Second, "Heartbeat timeout for registered nodes")
 	token := fs.String("token", "", "Optional bearer authentication token")
+	dispatchToken := fs.String("dispatch-token", "", "Optional bearer authentication token used when dispatching tasks to mesh workers (falls back to -token)")
+	nodeToken := fs.String("node-token", "", "Optional bearer authentication token scoped strictly to node join and heartbeat (POST /v1/mesh/join, POST /v1/mesh/heartbeat)")
 	taskTTL := fs.Duration("task-ttl", 24*time.Hour, "Task TTL before pruning")
 	territoryMode := fs.String("territory-mode", string(protocol.TerritoryModeQueue), "Territory conflict scheduling mode (queue, warn, strict, disabled)")
 	workspace := fs.String("workspace", ".", "Base directory for remote workspace file exploration")
-	runnerName := fs.String("runner", "mesh", "Task execution runner: mesh (registry routing with local simulation), simulated (local only), or pi (spawn the local Pi CLI)")
+	runnerName := fs.String("runner", "mesh", "Task execution runner: mesh (registry routing with local simulation), simulated (local only), pi (spawn the local Pi CLI), or gentle-shell (bwrap-isolated worktree runner); only the 'mesh' runner is affected by -local-fallback")
+	gentleShellBin := fs.String("gentle-shell-bin", "gentle-shell", "Path to the gentle-shell executable (only used when -runner=gentle-shell)")
+	bwrapBin := fs.String("bwrap-bin", "bwrap", "Path to the bwrap executable (only used when -runner=gentle-shell)")
+	gentleShellRepoCache := fs.String("gentle-shell-repo-cache", "", "Path to a local bare git repository without remotes that serves as the worktree base (required when -runner=gentle-shell)")
+	gentleShellWorktrees := fs.String("gentle-shell-worktrees", "", "Parent directory for ephemeral worktrees (required when -runner=gentle-shell)")
+	gentleShellBaseRef := fs.String("gentle-shell-base-ref", "main", "Base ref used to create the proposal branch (only when -runner=gentle-shell)")
+	gentleShellTotalTimeout := fs.Duration("gentle-shell-total-timeout", 15*time.Minute, "Total wall-clock budget per gentle-shell task (only when -runner=gentle-shell)")
+	gentleShellIdleTimeout := fs.Duration("gentle-shell-idle-timeout", 5*time.Minute, "Idle timeout: terminate a gentle-shell task that produces no output for this duration")
+	gentleShellMaxToolCalls := fs.Int("gentle-shell-max-tool-calls", 15, "Maximum number of tool_call events a gentle-shell task may emit before being terminated")
+	gentleShellThinking := fs.String("gentle-shell-thinking", "minimal", "Pi --thinking level forwarded to gentle-shell (off|minimal|low|medium|high|xhigh|max)")
+	localFallback := fs.Bool("local-fallback", true, "When -runner=mesh and no node is eligible, run the task in a local SIMULATED runner (true, default) or fail it with DISPATCH_FAILED (false). With -runner=simulated or -runner=pi the flag has no effect.")
 	tlsEnable := fs.Bool("tls", false, "Enable TLS/HTTPS with generated certificates (generates CA if not exists)")
 	tlsDir := fs.String("tls-dir", "", "Directory for TLS certificates and CA (defaults to <tasks-dir>/tls)")
 	tlsInit := fs.Bool("tls-init", false, "Initialize TLS: generate new CA and server certificates (overwrites existing)")
+	tlsSANs := fs.String("tls-san", "", "Comma-separated extra SANs for the server certificate (IP addresses or hostnames); loopback and localhost are always included")
 	requireMTLS := fs.Bool("require-mtls", false, "Require mTLS client certificates for all connections (implies -tls)")
 	rateLimitRequests := fs.Int("rate-limit", 0, "Rate limit: requests per window (0 = disabled)")
 	rateLimitWindow := fs.Duration("rate-limit-window", 1*time.Minute, "Rate limit window duration")
 	rateLimitBurst := fs.Int("rate-limit-burst", 10, "Rate limit max burst size")
+	corsOrigins := fs.String("cors-origins", "", "Comma-separated list of additional allowed CORS origins")
+	allowedHosts := fs.String("allowed-hosts", "", "Comma-separated list of additional allowed host names")
+	insecureNoAuth := fs.Bool("insecure-no-auth", false, "Allow binding coordinator to a non-loopback address without authentication (-token or -require-mtls)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if localFallback != nil && !*localFallback && *runnerName != "mesh" {
+		fmt.Fprintf(os.Stderr, "-local-fallback has no effect with -runner %s (it only applies to the 'mesh' runner)\n", *runnerName)
 	}
 
 	// TLS directory defaults to tasks-dir/tls
@@ -151,10 +254,21 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		tlsDirPath = filepath.Join(*tasksDir, "tls")
 	}
 
+	// SQLite path defaults to <tasks-dir>/gentle-mesh.db. "none" disables persistence.
+	// Resolved once here so the task store, the enrollment token store and the webhook
+	// store all open the exact same database file.
+	dbPathResolved := resolveDBPath(*dbPath, *tasksDir)
+
+	// Extra SANs for the server certificate: loopback and localhost always stay.
+	tlsSANHostnames, tlsSANIPs, err := parseTLSSANs(*tlsSANs)
+	if err != nil {
+		return err
+	}
+
 	// Handle TLS initialization
 	if *tlsInit {
 		fmt.Fprintf(stdout, "Initializing TLS in %s...\n", tlsDirPath)
-		if err := pki.InitMeshTLS(tlsDirPath, "Gentle Mesh", "mesh-coordinator", []string{}); err != nil {
+		if err := pki.InitMeshTLS(tlsDirPath, "Gentle Mesh", "mesh-coordinator", tlsSANHostnames, tlsSANIPs); err != nil {
 			return fmt.Errorf("failed to initialize TLS: %w", err)
 		}
 		fmt.Fprintf(stdout, "TLS initialized in %s\n", tlsDirPath)
@@ -172,60 +286,66 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		return fmt.Errorf("invalid -territory-mode %q: must be one of queue, warn, strict, disabled", *territoryMode)
 	}
 
-	selectedRunner, err := buildRunner(*runnerName, *workspace)
+	selectedRunner, err := buildRunner(runnerBuildOptions{
+		Name:          *runnerName,
+		Workspace:     *workspace,
+		GentleShell:   *gentleShellBin,
+		Bwrap:         *bwrapBin,
+		RepoCache:     *gentleShellRepoCache,
+		WorktreesRoot: *gentleShellWorktrees,
+		BaseRef:       *gentleShellBaseRef,
+		TotalTimeout:  *gentleShellTotalTimeout,
+		IdleTimeout:   *gentleShellIdleTimeout,
+		MaxToolCalls:  *gentleShellMaxToolCalls,
+		ThinkingLevel: *gentleShellThinking,
+	})
 	if err != nil {
 		return err
 	}
 
+	// One registry for the coordinator: the pruning ticker below and the HTTP server
+	// share the same instance.
+	nodeRegistry := registry.NewRegistry(*heartbeatTimeout)
+
 	serverConfig := meshhttp.ServerConfig{
-		Addr:             *addr,
-		TasksDir:         *tasksDir,
-		DBPath:           *dbPath,
-		HeartbeatTimeout: *heartbeatTimeout,
-		TaskTTL:          *taskTTL,
-		BearerToken:      *token,
-		TerritoryMode:    mode,
-		WorkspaceRoot:    *workspace,
-		Runner:           selectedRunner,
+		Addr:              *addr,
+		TasksDir:          *tasksDir,
+		DBPath:            dbPathResolved,
+		HeartbeatTimeout:  *heartbeatTimeout,
+		TaskTTL:           *taskTTL,
+		BearerToken:       *token,
+		DispatchToken:     *dispatchToken,
+		NodeToken:         *nodeToken,
+		TerritoryMode:     mode,
+		WorkspaceRoot:     *workspace,
+		Runner:            selectedRunner,
+		Registry:          nodeRegistry,
 		RateLimitRequests: *rateLimitRequests,
 		RateLimitWindow:   *rateLimitWindow,
 		RateLimitBurst:    *rateLimitBurst,
+		CORSOrigins:       parseCommaSeparated(*corsOrigins),
+		AllowedHosts:      parseCommaSeparated(*allowedHosts),
+		InsecureNoAuth:    *insecureNoAuth,
+		LocalFallback:     localFallback,
 	}
 
 	// Configure TLS if enabled
 	if *tlsEnable {
-		fmt.Fprintf(stdout, "TLS enabled, loading certificates from %s...\n", tlsDirPath)
-		// Include localhost and 127.0.0.1 in server cert for local development
-		hostnames := []string{"localhost", "127.0.0.1"}
-		ca, serverCert, err := pki.EnsureMeshTLS(tlsDirPath, "Gentle Mesh", "mesh-coordinator", hostnames, false)
-		if err != nil {
-			return fmt.Errorf("failed to load TLS certificates: %w", err)
+		if err := requireTLSStorage(dbPathResolved); err != nil {
+			return err
 		}
-		serverConfig.TLSEnabled = true
-		serverConfig.TLSCertFile = filepath.Join(tlsDirPath, pki.CertPemFile)
-		serverConfig.TLSKeyFile = filepath.Join(tlsDirPath, pki.CertKeyFile)
-		serverConfig.MeshCA = ca
-		serverConfig.MeshCAPemFile = filepath.Join(tlsDirPath, pki.CAPemFile)
+		fmt.Fprintf(stdout, "TLS enabled, loading certificates from %s...\n", tlsDirPath)
+		ca, serverCert, regenerated, err := configureCoordinatorTLS(&serverConfig, tlsDirPath, dbPathResolved, tlsSANHostnames, tlsSANIPs)
+		if err != nil {
+			return err
+		}
+		if regenerated {
+			fmt.Fprintf(stdout, "Server certificate regenerated to cover the requested SANs\n")
+		}
 		fmt.Fprintf(stdout, "TLS ready: CA=%s\n", ca.Cert.Subject.CommonName)
 		fmt.Fprintf(stdout, "  CA fingerprint: %s\n", pki.CertFingerprint(ca.Cert))
 		fmt.Fprintf(stdout, "Server cert expires: %s\n", serverCert.Cert.NotAfter.Format("2006-01-02"))
-
-		// Initialize token store for enrollment
-		db, err := sql.Open("sqlite", *dbPath)
-		if err != nil {
-			return fmt.Errorf("failed to open database: %w", err)
-		}
-		if err := store.InitTokenSchema(db); err != nil {
-			return fmt.Errorf("failed to init token schema: %w", err)
-		}
-		serverConfig.TokenStore = store.NewSQLiteTokenStore(db)
 		fmt.Fprintf(stdout, "Enrollment tokens enabled\n")
-
-		// Initialize webhook store and dispatcher
-		if err := store.InitWebhookSchema(db); err != nil {
-			return fmt.Errorf("failed to init webhook schema: %w", err)
-		}
-		serverConfig.WebhookStore = store.NewSQLiteWebhookStore(db)
 		fmt.Fprintf(stdout, "Webhooks enabled\n")
 	}
 
@@ -235,21 +355,21 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			return errors.New("-require-mtls requires -tls to be enabled")
 		}
 		serverConfig.RequireMTLS = true
-		fmt.Fprintf(stdout, "mTLS required: all connections must present valid client certificates\n")
-	} else if *addr == ":8443" || strings.HasPrefix(*addr, ":8443") {
-		// Auto-enable TLS if using common HTTPS port without -tls flag
-		fmt.Fprintf(stdout, "Auto-enabling TLS on port 8443...\n")
-		hostnames := []string{"localhost", "127.0.0.1"}
-		ca, serverCert, err := pki.EnsureMeshTLS(tlsDirPath, "Gentle Mesh", "mesh-coordinator", hostnames, false)
-		if err != nil {
-			return fmt.Errorf("failed to load TLS certificates: %w", err)
+	} else if *addr == ":8443" || strings.HasPrefix(*addr, ":8443") || strings.HasSuffix(*addr, ":8443") {
+		// Auto-enable TLS if using common HTTPS port without -tls flag. The
+		// enrollment tokens and the webhooks need the database, so this path
+		// arms the same stores as -tls instead of starting without them.
+		if err := requireTLSStorage(dbPathResolved); err != nil {
+			return err
 		}
-		serverConfig.TLSEnabled = true
-		serverConfig.TLSCertFile = filepath.Join(tlsDirPath, pki.CertPemFile)
-		serverConfig.TLSKeyFile = filepath.Join(tlsDirPath, pki.CertKeyFile)
-		serverConfig.MeshCA = ca
-		serverConfig.MeshCAPemFile = filepath.Join(tlsDirPath, pki.CAPemFile)
-		_ = serverCert // used for info above
+		fmt.Fprintf(stdout, "Auto-enabling TLS on port 8443...\n")
+		_, _, regenerated, err := configureCoordinatorTLS(&serverConfig, tlsDirPath, dbPathResolved, tlsSANHostnames, tlsSANIPs)
+		if err != nil {
+			return err
+		}
+		if regenerated {
+			fmt.Fprintf(stdout, "Server certificate regenerated to cover the requested SANs\n")
+		}
 	}
 
 	srv, err := meshhttp.NewServer(serverConfig)
@@ -267,6 +387,12 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 	fmt.Fprintf(stdout, "Gentle Mesh coordinator starting on %s (%s, tasks dir: %s, territory mode: %s, runner: %s)\n",
 		*addr, tlsStatus, *tasksDir, mode, *runnerName)
+	if *dispatchToken == "" {
+		fmt.Fprintf(stdout, "WARNING: coordinator starting without -dispatch-token (worker dispatch will use -token)\n")
+	}
+	if *nodeToken == "" {
+		fmt.Fprintf(stdout, "WARNING: coordinator starting without -node-token (node registration will use -token)\n")
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -274,6 +400,25 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			errCh <- err
 		}
 		close(errCh)
+	}()
+
+	// Retire nodes whose heartbeats stopped. Without this loop PruneStaleNodes is dead
+	// code: a worker killed without saying goodbye stays Online forever and the router
+	// keeps picking it, so every task sent to it fails.
+	pruneTicker := time.NewTicker(pruneInterval(*heartbeatTimeout))
+	defer pruneTicker.Stop()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-pruneTicker.C:
+				nodeRegistry.PruneStaleNodes()
+				if n := srv.FailTasksOfOfflineNodes(); n > 0 {
+					fmt.Fprintf(stdout, "Failed %d running task(s) of offline nodes with NODE_LOST\n", n)
+				}
+			}
+		}
 	}()
 
 	select {
@@ -294,24 +439,121 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 }
 
+// runnerBuildOptions carries the resolved CLI flags that buildRunner needs
+// to materialize a concrete runner.Runner.
+type runnerBuildOptions struct {
+	Name          string
+	Workspace     string
+	GentleShell   string
+	Bwrap         string
+	RepoCache     string
+	WorktreesRoot string
+	BaseRef       string
+	TotalTimeout  time.Duration
+	IdleTimeout   time.Duration
+	MaxToolCalls  int
+	ThinkingLevel string
+}
+
 // buildRunner resolves the -runner flag into a task execution runner. A nil
 // runner leaves selection to the server default, which routes to mesh nodes and
 // falls back to local simulation.
-func buildRunner(name, workspace string) (runner.Runner, error) {
-	switch name {
+func buildRunner(opts runnerBuildOptions) (runner.Runner, error) {
+	switch opts.Name {
 	case "mesh":
 		return nil, nil
 	case "simulated":
 		return runner.NewSimulatedRunner(runner.SimulatedOptions{}), nil
 	case "pi":
-		workspaceRoot, err := filepath.Abs(workspace)
+		workspaceRoot, err := filepath.Abs(opts.Workspace)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve workspace root for the pi runner: %w", err)
 		}
-		return runner.NewPiRunner(runner.PiRunnerOptions{WorkspaceRoot: workspaceRoot}), nil
+		// #43: the pi runner runs the Pi CLI on the coordinator itself, not
+		// on a mesh worker. The MeshRunner already wraps the sink in
+		// localExecutionSink when its simulated fallback runs; the pi
+		// runner must do the same so GET /v1/tasks/<id> shows
+		// executed_locally=true and the operator can distinguish local
+		// from worker execution.
+		return piRunnerWithLocalSink{
+			inner: runner.NewPiRunner(runner.PiRunnerOptions{WorkspaceRoot: workspaceRoot}),
+		}, nil
+	case "gentle-shell":
+		if opts.RepoCache == "" {
+			return nil, errors.New("-gentle-shell-repo-cache is required when -runner=gentle-shell")
+		}
+		if opts.WorktreesRoot == "" {
+			return nil, errors.New("-gentle-shell-worktrees is required when -runner=gentle-shell")
+		}
+		return runner.NewGentleShellRunner(runner.GentleShellRunnerOptions{
+			Bwrap:         opts.Bwrap,
+			GentleShell:   opts.GentleShell,
+			RepoCache:     opts.RepoCache,
+			WorktreesRoot: opts.WorktreesRoot,
+			BaseRef:       opts.BaseRef,
+			TotalTimeout:  opts.TotalTimeout,
+			IdleTimeout:   opts.IdleTimeout,
+			MaxToolCalls:  opts.MaxToolCalls,
+			ThinkingLevel: opts.ThinkingLevel,
+			TasksDir:      "", // coordinator-level tasks dir; workers will set their own
+		}), nil
 	default:
-		return nil, fmt.Errorf("invalid -runner %q: must be one of mesh, simulated, pi", name)
+		return nil, fmt.Errorf("invalid -runner %q: must be one of mesh, simulated, pi, gentle-shell", opts.Name)
 	}
+}
+
+// parseTLSSANs validates the comma-separated -tls-san value and splits it into
+// hostnames and IP addresses. An empty flag value means no extra SANs; empty entries,
+// wildcards, schemes and ports are rejected so a typo cannot silently produce a
+// useless SAN list.
+func parseTLSSANs(raw string) (hostnames, ipAddresses []string, err error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil, nil
+	}
+	for _, entry := range strings.Split(raw, ",") {
+		value := strings.TrimSpace(entry)
+		if value == "" {
+			return nil, nil, fmt.Errorf("invalid -tls-san %q: empty entry", raw)
+		}
+		if strings.Contains(value, "://") {
+			return nil, nil, fmt.Errorf("invalid -tls-san %q: use a bare IP address or hostname, without a scheme", value)
+		}
+		if strings.Contains(value, "*") {
+			return nil, nil, fmt.Errorf("invalid -tls-san %q: wildcards are not supported", value)
+		}
+		if _, _, splitErr := net.SplitHostPort(value); splitErr == nil {
+			return nil, nil, fmt.Errorf("invalid -tls-san %q: use a bare IP address or hostname, without a port", value)
+		}
+		if ip := net.ParseIP(strings.Trim(value, "[]")); ip != nil {
+			ipAddresses = append(ipAddresses, value)
+			continue
+		}
+		if !validTLSSANHostname(value) {
+			return nil, nil, fmt.Errorf("invalid -tls-san %q: not a valid IP address or hostname", value)
+		}
+		hostnames = append(hostnames, value)
+	}
+	return hostnames, ipAddresses, nil
+}
+
+// validTLSSANHostname accepts only plain DNS names: dotted labels of letters, digits,
+// hyphens and underscores, at most 253 characters, with no empty labels.
+func validTLSSANHostname(value string) bool {
+	if value == "" || len(value) > 253 || strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".") {
+		return false
+	}
+	for _, label := range strings.Split(value, ".") {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			valid := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_'
+			if !valid {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // getNodeConfigDir returns the node-specific configuration directory (~/.config/gentle-mesh/nodes/<id>)
@@ -343,8 +585,15 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	agentsFlag := fs.String("agents", "worker", "Comma-separated agent capabilities (e.g. worker,explore)")
 	tagsFlag := fs.String("tags", "", "Comma-separated tags (e.g. go,fast)")
 	concurrency := fs.Int("concurrency", 2, "Maximum task concurrency")
+	queueSize := fs.Int("queue-size", 0, "Maximum queued tasks waiting for execution (default: same as -concurrency)")
+	queueTimeout := fs.Duration("queue-timeout", 30*time.Second, "Maximum wait time in queue before timeout")
+	taskDelay := fs.Duration("task-delay", 0, "Artificial delay for simulated task execution (for load testing)")
 	heartbeatInterval := fs.Duration("heartbeat-interval", 10*time.Second, "Heartbeat ping interval")
-	token := fs.String("token", "", "Optional bearer authentication token")
+	token := fs.String("token", "", "Optional bearer authentication token for the coordinator API; it is also accepted as an inbound credential of the worker HTTP server")
+	workerToken := fs.String("worker-token", "", "Bearer token that protects the worker HTTP server, accepted in addition to -token (required on a non-loopback address unless -insecure-no-auth)")
+	nodeToken := fs.String("node-token", "", "Optional bearer authentication token for the coordinator API (join and heartbeat); falls back to -token")
+	acceptCoordinatorToken := fs.Bool("accept-coordinator-token", true, "Accept coordinator admin -token as an inbound credential on /v1/execute")
+	insecureNoAuth := fs.Bool("insecure-no-auth", false, "Allow the worker HTTP server on a non-loopback address without -worker-token")
 	addr := fs.String("addr", "", "Listen address for worker HTTP server (default: port from endpoint or :8081)")
 	caCert := fs.String("ca", "", "Path to mesh CA certificate for TLS verification")
 	caCertHash := fs.String("ca-cert-hash", "", "Expected SHA-256 fingerprint of the CA certificate (format: sha256:<hex>)")
@@ -352,6 +601,19 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	clientCert := fs.String("cert", "", "Path to client certificate for mTLS authentication (requires -key)")
 	clientKey := fs.String("key", "", "Path to client private key for mTLS authentication (requires -cert)")
 	joinToken := fs.String("join-token", "", "Enrollment token for automatic certificate issuance (uses CSR-based enrollment)")
+	workerRunnerName := fs.String("runner", "simulated", "Task execution runner used by this worker: simulated (default), or gentle-shell (bwrap-isolated worktree runner)")
+	bwrapBin := fs.String("bwrap-bin", "bwrap", "Path to the bwrap executable (only when -runner=gentle-shell)")
+	gentleShellBin := fs.String("gentle-shell-bin", "gentle-shell", "Path to the gentle-shell executable (only when -runner=gentle-shell)")
+	gentleShellRepoCache := fs.String("gentle-shell-repo-cache", "", "Path to a local bare git repository without remotes (required when -runner=gentle-shell)")
+	gentleShellWorktrees := fs.String("gentle-shell-worktrees", "", "Parent directory for ephemeral worktrees (required when -runner=gentle-shell)")
+	gentleShellBaseRef := fs.String("gentle-shell-base-ref", "main", "Base ref used to create the proposal branch")
+	gentleShellTotalTimeout := fs.Duration("gentle-shell-total-timeout", 15*time.Minute, "Total wall-clock budget per gentle-shell task")
+	gentleShellIdleTimeout := fs.Duration("gentle-shell-idle-timeout", 5*time.Minute, "Idle timeout for gentle-shell: terminate a task that produces no output for this duration")
+	gentleShellMaxToolCalls := fs.Int("gentle-shell-max-tool-calls", 15, "Maximum number of tool_call events a gentle-shell task may emit")
+	gentleShellThinking := fs.String("gentle-shell-thinking", "minimal", "Pi --thinking level forwarded to gentle-shell (off|minimal|low|medium|high|xhigh|max)")
+	gentleShellTasksDir := fs.String("gentle-shell-tasks-dir", "", "Directory for oversized diffs and patch bundles (defaults to -tasks-dir)")
+	gentleShellProvider := fs.String("gentle-shell-provider", "", "Pi --provider forwarded to gentle-shell (e.g. minimax, opencode-go, openai). When empty, gentle-shell uses its built-in default.")
+	gentleShellModel := fs.String("gentle-shell-model", "", "Pi --model forwarded to gentle-shell (e.g. MiniMax-M3, claude-sonnet-4-6). When empty, gentle-shell uses its built-in default.")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -565,9 +827,74 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		listenAddr = extractPortFromEndpoint(*endpoint)
 	}
 
+	// The worker API accepts both credentials: its own and the coordinator's
+	// (unless -accept-coordinator-token=false).
+	inboundTokens := make([]string, 0, 2)
+	if *workerToken != "" {
+		inboundTokens = append(inboundTokens, *workerToken)
+	}
+	if *token != "" && *acceptCoordinatorToken {
+		inboundTokens = append(inboundTokens, *token)
+	}
+
+	// The worker API runs tasks, so it must not be reachable from the network
+	// without any credential.
+	if !isLoopbackListen(listenAddr) {
+		if len(inboundTokens) == 0 && !*insecureNoAuth {
+			return fmt.Errorf("refusing to serve the worker API on non-loopback address %q without authentication: set -worker-token or -token, or pass -insecure-no-auth", listenAddr)
+		}
+		if len(inboundTokens) == 0 {
+			fmt.Fprintf(stdout, "WARNING: worker API on %s has no authentication (-insecure-no-auth): anyone who can reach it can run tasks\n", listenAddr)
+		}
+	}
+
+	qSize := *queueSize
+	if qSize <= 0 {
+		qSize = *concurrency
+	}
+
+	var workerRunner runner.Runner
+	switch *workerRunnerName {
+	case "simulated":
+		if *taskDelay > 0 {
+			workerRunner = runner.NewSimulatedRunner(runner.SimulatedOptions{
+				ToolCalls: []runner.SimulatedToolCall{
+					{Delay: *taskDelay},
+				},
+			})
+		}
+	case "gentle-shell":
+		if *gentleShellRepoCache == "" {
+			return errors.New("-gentle-shell-repo-cache is required when -runner=gentle-shell")
+		}
+		if *gentleShellWorktrees == "" {
+			return errors.New("-gentle-shell-worktrees is required when -runner=gentle-shell")
+		}
+		workerRunner = runner.NewGentleShellRunner(runner.GentleShellRunnerOptions{
+			Bwrap:         *bwrapBin,
+			GentleShell:   *gentleShellBin,
+			RepoCache:     *gentleShellRepoCache,
+			WorktreesRoot: *gentleShellWorktrees,
+			BaseRef:       *gentleShellBaseRef,
+			TotalTimeout:  *gentleShellTotalTimeout,
+			IdleTimeout:   *gentleShellIdleTimeout,
+			MaxToolCalls:  *gentleShellMaxToolCalls,
+			ThinkingLevel: *gentleShellThinking,
+			TasksDir:      *gentleShellTasksDir,
+			Provider:      *gentleShellProvider,
+			Model:         *gentleShellModel,
+		})
+	default:
+		return fmt.Errorf("invalid -runner %q: must be one of simulated, gentle-shell", *workerRunnerName)
+	}
+
 	workerSrv := worker.NewServer(worker.ServerConfig{
-		Addr:        listenAddr,
-		BearerToken: *token,
+		Addr:         listenAddr,
+		BearerTokens: inboundTokens,
+		Concurrency:  *concurrency,
+		QueueSize:    qSize,
+		QueueTimeout: *queueTimeout,
+		Runner:       workerRunner,
 	})
 
 	if err := workerSrv.Listen(); err != nil {
@@ -589,13 +916,18 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}()
 
 	// 1. Initial join request
+	coordToken := *token
+	if *nodeToken != "" {
+		coordToken = *nodeToken
+	}
+
 	hReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinURL, bytes.NewReader(joinBytes))
 	if err != nil {
 		return fmt.Errorf("failed to build join request: %w", err)
 	}
 	hReq.Header.Set("Content-Type", "application/json")
-	if *token != "" {
-		hReq.Header.Set("Authorization", "Bearer "+*token)
+	if coordToken != "" {
+		hReq.Header.Set("Authorization", "Bearer "+coordToken)
 	}
 
 	resp, err := httpClient.Do(hReq)
@@ -627,6 +959,7 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 				NodeID:      id,
 				ActiveTasks: workerSrv.ActiveTasks(),
 				Timestamp:   time.Now().Unix(),
+				QueuedTasks: workerSrv.QueuedTasks(),
 			}
 			hbBytes, _ := json.Marshal(hbReq)
 
@@ -636,8 +969,8 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 				continue
 			}
 			hbHTTPReq.Header.Set("Content-Type", "application/json")
-			if *token != "" {
-				hbHTTPReq.Header.Set("Authorization", "Bearer "+*token)
+			if coordToken != "" {
+				hbHTTPReq.Header.Set("Authorization", "Bearer "+coordToken)
 			}
 
 			hbResp, err := httpClient.Do(hbHTTPReq)
@@ -655,8 +988,8 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 				reJoinReq, err := http.NewRequestWithContext(ctx, http.MethodPost, joinURL, bytes.NewReader(joinBytes))
 				if err == nil {
 					reJoinReq.Header.Set("Content-Type", "application/json")
-					if *token != "" {
-						reJoinReq.Header.Set("Authorization", "Bearer "+*token)
+					if coordToken != "" {
+						reJoinReq.Header.Set("Authorization", "Bearer "+coordToken)
 					}
 					if rResp, err := httpClient.Do(reJoinReq); err == nil {
 						rResp.Body.Close()
@@ -911,11 +1244,11 @@ func runRPC(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	}
 
 	bridge := client.NewBridge(client.Config{
-		CoordinatorURL:         *coordinator,
-		Token:                  *token,
-		Agent:                  *agent,
-		CACertFile:             *caCert,
-		InsecureSkipTLSVerify:  *insecureSkipTLS,
+		CoordinatorURL:        *coordinator,
+		Token:                 *token,
+		Agent:                 *agent,
+		CACertFile:            *caCert,
+		InsecureSkipTLSVerify: *insecureSkipTLS,
 	})
 
 	return bridge.Serve(ctx, stdin, stdout)
@@ -1049,7 +1382,7 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	agent := fs.String("agent", "worker", "Target subagent name")
 	taskFlag := fs.String("task", "", "Subagent task prompt (required)")
 	repo := fs.String("repo", "", "Optional Git repository URL")
-	branch := fs.String("branch", "", "Optional Git branch")
+	branch := fs.String("branch", "", "Git branch this task is booked on: the key of the exclusive branch lock, not a checkout (no runner runs git)")
 	idempotencyKey := fs.String("idempotency-key", "", "Optional idempotency deduplication key")
 	domain := fs.String("domain", "", "Architectural domain (e.g. auth, database, ui)")
 	blastRadius := fs.String("blast-radius", "isolated-branch", "Blast radius scope (e.g. isolated-branch, read-only, shared-schema, breaking-change)")
@@ -1293,6 +1626,23 @@ func parseCommaSeparated(s string) []string {
 	return result
 }
 
+// isLoopbackListen reports whether a worker listen address only accepts loopback
+// traffic. An empty host (":8080"), 0.0.0.0, :: and any other non-loopback IP or
+// hostname count as reachable from the network.
+func isLoopbackListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return strings.EqualFold(host, "localhost")
+}
+
 // extractPortFromEndpoint extracts the port from a worker endpoint URL (e.g. "http://worker-alpha:8081" -> ":8081"),
 // falling back to ":8081" if absent or invalid.
 func extractPortFromEndpoint(endpoint string) string {
@@ -1423,14 +1773,98 @@ func runCertRevoke(ctx context.Context, args []string, stdout, stderr io.Writer)
 	fs := flag.NewFlagSet("cert-revoke", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	fs.String("tls-dir", "", "TLS directory with CA (required)")
-	fs.String("node-id", "", "Node identifier to revoke (required)")
+	nodeID := fs.String("node-id", "", "Node identifier to revoke (required)")
+	dbPath := fs.String("db-path", "", "Path to SQLite database (for direct DB revocation)")
+	coordinator := fs.String("coordinator", "", "Coordinator base URL (for remote revocation via REST API)")
+	token := fs.String("token", "", "Bearer token for coordinator API authentication")
 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	return errors.New("la revocación de certificados no está implementada en esta versión; ver issue #25")
+	if *nodeID == "" {
+		return errors.New("-node-id is required")
+	}
+
+	// Mode 1: Remote revocation via Coordinator REST API
+	if *coordinator != "" {
+		coordURL := strings.TrimRight(*coordinator, "/") + "/v1/certs/revoke"
+		reqBody, err := json.Marshal(map[string]string{
+			"node_id": *nodeID,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to encode revoke payload: %w", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, coordURL, bytes.NewReader(reqBody))
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if *token != "" {
+			req.Header.Set("Authorization", "Bearer "+*token)
+		}
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to contact coordinator at %s: %w", coordURL, err)
+		}
+		defer resp.Body.Close()
+
+		respBytes, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("coordinator rejected certificate revocation (status %d): %s", resp.StatusCode, strings.TrimSpace(string(respBytes)))
+		}
+
+		var result struct {
+			Status         string `json:"status"`
+			NodeID         string `json:"node_id"`
+			TasksCancelled int    `json:"tasks_cancelled"`
+		}
+		if err := json.Unmarshal(respBytes, &result); err == nil && result.Status != "" {
+			fmt.Fprintf(stdout, "✅ Certificate for node %s successfully revoked via coordinator\n", *nodeID)
+			fmt.Fprintf(stdout, "  Active tasks cancelled: %d\n", result.TasksCancelled)
+		} else {
+			fmt.Fprintf(stdout, "✅ Certificate for node %s successfully revoked via coordinator\n", *nodeID)
+		}
+		return nil
+	}
+
+	// Mode 2: Direct SQLite DB revocation (offline / local maintenance)
+	if *dbPath == "" || *dbPath == "none" {
+		return errors.New("either -coordinator or -db-path is required for certificate revocation")
+	}
+
+	db, err := sql.Open("sqlite", *dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to open database: %w", err)
+	}
+	defer db.Close()
+
+	if err := store.InitCertSchema(db); err != nil {
+		return fmt.Errorf("failed to initialize cert schema: %w", err)
+	}
+
+	certStore := store.NewSQLiteCertStore(db)
+	defer certStore.Close()
+
+	rec, err := certStore.GetCert(ctx, *nodeID)
+	if err != nil {
+		return fmt.Errorf("failed to query certificate: %w", err)
+	}
+	if rec == nil {
+		return fmt.Errorf("certificate for node %q not found in database", *nodeID)
+	}
+
+	if err := certStore.RevokeCert(ctx, *nodeID); err != nil {
+		return fmt.Errorf("failed to revoke certificate: %w", err)
+	}
+
+	fmt.Fprintf(stdout, "✅ Certificate for node %s revoked in database (serial: %s)\n", *nodeID, rec.Serial)
+	fmt.Fprintln(stdout, "⚠️  WARNING: Direct database revocation does not update the in-memory cache of a running coordinator.")
+	fmt.Fprintln(stdout, "   It has no immediate effect if the coordinator is still running. For immediate revocation, use -coordinator.")
+	return nil
 }
 
 // runCertList lists all issued certificates.
@@ -1620,7 +2054,9 @@ func runTokenList(ctx context.Context, args []string, stdout, stderr io.Writer) 
 
 	for _, t := range tokens {
 		status := "active"
-		if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {
+		if t.RevokedAt != nil {
+			status = "revoked"
+		} else if t.ExpiresAt != nil && time.Now().After(*t.ExpiresAt) {
 			status = "expired"
 		} else if t.Uses >= t.MaxUses && t.MaxUses > 0 {
 			status = "used"
@@ -1635,6 +2071,12 @@ func runTokenList(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		if t.UsedAt != nil {
 			fmt.Fprintf(stdout, "    Last used: %s\n", t.UsedAt.Format("2006-01-02 15:04"))
 		}
+		if t.UsedBy != nil {
+			fmt.Fprintf(stdout, "    Used by: %s\n", *t.UsedBy)
+		}
+		if t.RevokedAt != nil {
+			fmt.Fprintf(stdout, "    Revoked: %s\n", t.RevokedAt.Format("2006-01-02 15:04"))
+		}
 		fmt.Fprintln(stdout, "")
 	}
 
@@ -1648,7 +2090,6 @@ func runTokenRevoke(ctx context.Context, args []string, stdout, stderr io.Writer
 
 	dbPath := fs.String("db-path", "", "Path to SQLite database (required)")
 	tokenValue := fs.String("token", "", "Token to revoke (required)")
-
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1670,8 +2111,18 @@ func runTokenRevoke(ctx context.Context, args []string, stdout, stderr io.Writer
 
 	tokenStore := store.NewSQLiteTokenStore(db)
 
-	// Mark as used (effectively revokes by setting uses = max)
-	t, err := tokenStore.UseToken(ctx, *tokenValue)
+	// Revoking marks the row instead of deleting it and instead of the old
+	// "consume a use" trick: the token stops working, no use is spent and the
+	// usage trail (used_by, used_at) stays for audit.
+	before, err := tokenStore.GetToken(ctx, *tokenValue)
+	if err != nil {
+		return fmt.Errorf("failed to read token: %w", err)
+	}
+	if before == nil {
+		return fmt.Errorf("token not found: %s", *tokenValue)
+	}
+
+	t, err := tokenStore.RevokeToken(ctx, *tokenValue)
 	if err != nil {
 		if err.Error() == "token not found" {
 			return fmt.Errorf("token not found: %s", *tokenValue)
@@ -1679,11 +2130,57 @@ func runTokenRevoke(ctx context.Context, args []string, stdout, stderr io.Writer
 		return fmt.Errorf("failed to revoke token: %w", err)
 	}
 
+	if before.RevokedAt != nil {
+		fmt.Fprintf(stdout, "ℹ️  Token was already revoked: %s\n", *tokenValue)
+		fmt.Fprintf(stdout, "  Revoked at: %s\n", before.RevokedAt.Format("2006-01-02 15:04"))
+		return nil
+	}
+
 	fmt.Fprintf(stdout, "✅ Token revoked: %s\n", *tokenValue)
-	fmt.Fprintf(stdout, "  Total uses: %d\n", t.Uses)
-	_ = t // suppress unused
+	if t.RevokedAt != nil {
+		fmt.Fprintf(stdout, "  Revoked at: %s\n", t.RevokedAt.Format("2006-01-02 15:04"))
+	}
+	fmt.Fprintf(stdout, "  Uses: %d/%d\n", t.Uses, t.MaxUses)
+	if t.UsedBy != nil {
+		fmt.Fprintf(stdout, "  Used by: %s\n", *t.UsedBy)
+	}
 
 	return nil
+}
+
+// piRunnerWithLocalSink wraps a PiRunner so the completion payload is
+// marked executed_locally=true on the way out. Trivial: no-op marker. This is the runner-side
+// counterpart of the MeshRunner's local-fallback localExecutionSink
+// wrapping; the goal is the same (#43): a client that receives
+// completed can tell apart "the mesh worker ran it" from "the coordinator
+// ran it locally via the pi runner or the simulated fallback".
+type piRunnerWithLocalSink struct {
+	inner runner.Runner
+}
+
+// Run delegates to the wrapped pi runner after wrapping the sink in a
+// local-execution marker. The marker only fires for completion events;
+// all other events pass through untouched.
+func (w piRunnerWithLocalSink) Run(ctx context.Context, req protocol.TaskRequest, sink runner.EventSink) error {
+	return w.inner.Run(ctx, req, localPiRunnerSink{EventSink: sink})
+}
+
+// localPiRunnerSink sets ExecutedLocally=true on the completion payload.
+// Mirrors the runner.localExecutionSink type that the MeshRunner uses
+// for its simulated fallback (kept in sync; see also runner_test.go in
+// the runner package for the unit test).
+type localPiRunnerSink struct {
+	runner.EventSink
+}
+
+func (s localPiRunnerSink) EmitEvent(eventType protocol.EventType, payload any) (protocol.Event, error) {
+	if eventType == protocol.EventCompletion {
+		if completion, ok := payload.(protocol.CompletionPayload); ok {
+			completion.ExecutedLocally = true
+			payload = completion
+		}
+	}
+	return s.EventSink.EmitEvent(eventType, payload)
 }
 
 // generateSecureToken generates a cryptographically secure random token.
@@ -1711,4 +2208,228 @@ func generateSecureToken() string {
 	}
 
 	return string(result)
+}
+
+// runApply materialises a `proposal/<task_id>` branch from the worker cache
+// into a LOCAL merge branch in the target repo. It never pushes, never
+// merges into main, and never touches a remote. The result is always a
+// local branch the operator can inspect with `git log` / `git diff` before
+// deciding the next step.
+//
+// The flow:
+//  1. Add the worker cache as a TEMPORARY remote of the target repo
+//     (named apply-cache-<task_id>, removed on exit, even on error).
+//  2. Fetch only the proposal/<task_id> refspec.
+//  3. Verify the proposal ref actually exists and has at least one commit
+//     ahead of the base (otherwise the runner reported NO_COMMIT_PRODUCED
+//     and there is nothing to apply).
+//  4. Verify the working tree is clean (git status --porcelain).
+//  5. Create a new branch `proposal-merge/<task_id>` from --base and
+//     merge the proposal with --no-ff so the merge commit is explicit
+//     and the proposal commits stay grouped.
+func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	taskID := fs.String("task", "", "Task ID whose proposal/<task_id> branch to apply (required)")
+	cache := fs.String("cache", "/home/rafael/a2a-golang/cache.git", "Path to the worker bare cache (RepoCache)")
+	repo := fs.String("repo", "", "Target repo to apply the proposal into (default: cwd)")
+	base := fs.String("base", "main", "Base ref to create the merge branch from")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *taskID == "" {
+		return errors.New("-task is required (the proposal/<task_id> branch to apply)")
+	}
+	if *repo == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("cannot determine cwd for -repo default: %w", err)
+		}
+		*repo = cwd
+	}
+
+	remoteName := fmt.Sprintf("apply-cache-%s", *taskID)
+	targetBranch := fmt.Sprintf("proposal-merge/%s", *taskID)
+	proposalRef := fmt.Sprintf("proposal/%s", *taskID)
+	// applyTmpRef is the local ref where we stage the fetched proposal so
+	// we never write to refs/heads/proposal/<task_id> directly: that branch
+	// name belongs to the runner's namespace and an operator may already
+	// have a local proposal/<task_id> branch they care about. The ref lives
+	// under refs/apply-tmp/ (clearly owned by this subcommand) and is
+	// deleted in the same cleanup that removes the temporary remote.
+	applyTmpRef := fmt.Sprintf("refs/apply-tmp/proposal/%s", *taskID)
+
+	// runGit runs a git command in dir and returns trimmed stdout. The caller
+	// decides what to do with non-zero exits; this helper does not silently
+	// swallow errors.
+	runGit := func(dir string, args ...string) (string, error) {
+		fullArgs := append([]string{"-C", dir}, args...)
+		cmd := exec.CommandContext(ctx, "git", fullArgs...)
+		var out, errOut bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &errOut
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("git %s in %s: %w (%s)", strings.Join(args, " "), dir, err, strings.TrimSpace(errOut.String()))
+		}
+		return strings.TrimRight(out.String(), "\n"), nil
+	}
+
+	// 1. Validate the cache is a bare repo with the proposal branch.
+	if _, err := runGit(*cache, "rev-parse", "--git-dir"); err != nil {
+		return fmt.Errorf("cache %q is not a git repo: %w", *cache, err)
+	}
+	if _, err := runGit(*cache, "show-ref", "--verify", "--quiet", "refs/heads/"+proposalRef); err != nil {
+		return fmt.Errorf("proposal branch %q not found in cache %q: %w (the runner may have reported NO_COMMIT_PRODUCED, or the task is still running)", proposalRef, *cache, err)
+	}
+
+	// 2. Validate the target repo.
+	if _, err := runGit(*repo, "rev-parse", "--git-dir"); err != nil {
+		return fmt.Errorf("target repo %q is not a git repo: %w", *repo, err)
+	}
+	if *repo == "" {
+		// safety net (defensive: should not be reachable because of the cwd default above)
+		return errors.New("target repo path is empty")
+	}
+
+	// 2b. Resolve the git toplevel of the target repo and surface it to
+	// the operator BEFORE any mutation. This catches two foot-guns:
+	//   - the cwd default can resolve to a subdirectory of a repo the
+	//     operator did not intend (git rev-parse --show-toplevel walks up
+	//     to the enclosing repo, and apply then operates there);
+	//   - the operator passed -repo pointing at a subdir on purpose
+	//     (e.g. /home/rafael/proyectos/gentle-mesh/cmd/gentle-mesh) and
+	//     may not have noticed the effective repo is the parent.
+	// We do not block: a subdir target may be intentional. We just make
+	// it impossible to miss.
+	toplevel, err := runGit(*repo, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return fmt.Errorf("failed to resolve git toplevel of %q: %w", *repo, err)
+	}
+	toplevelResolved, err := filepath.Abs(toplevel)
+	if err != nil {
+		return fmt.Errorf("failed to make toplevel path absolute: %w", err)
+	}
+	repoAbs, err := filepath.Abs(*repo)
+	if err != nil {
+		return fmt.Errorf("failed to make -repo path absolute: %w", err)
+	}
+	fmt.Fprintf(stdout, "[apply] -repo=%s\n[apply] resolved toplevel=%s\n", *repo, toplevelResolved)
+	if toplevelResolved != repoAbs {
+		fmt.Fprintf(stdout, "[apply] WARNING: -repo %q is not the toplevel of its git repo (toplevel=%q). The apply will operate on the toplevel, not on the subdir you passed. If this is intentional, no action needed; if not, pass the toplevel path to -repo.\n", *repo, toplevelResolved)
+	}
+
+	// 3. Check the working tree is clean. We will not checkout a new branch
+	// over uncommitted local work; bail out and let the operator commit or
+	// stash first.
+	porcelain, err := runGit(*repo, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("failed to read working tree status: %w", err)
+	}
+	if porcelain != "" {
+		return fmt.Errorf("target repo %q has uncommitted changes:\n%s\ncommit or stash them before applying", *repo, porcelain)
+	}
+
+	// 4. Resolve the base ref to a SHA so the merge works even if the
+	// branch name is ambiguous locally.
+	baseSHA, err := runGit(*repo, "rev-parse", "--verify", "--quiet", *base)
+	if err != nil {
+		return fmt.Errorf("base ref %q not found in %q: %w", *base, *repo, err)
+	}
+
+	// 5. Add the temporary remote (idempotently), fetch ONLY the proposal
+	// refspec, and remember to clean it up.
+	cleanupRemote := true
+	defer func() {
+		if !cleanupRemote {
+			return
+		}
+		if _, err := runGit(*repo, "remote", "remove", remoteName); err != nil {
+			fmt.Fprintf(stderr, "warning: failed to remove temporary remote %q: %v\n", remoteName, err)
+		}
+		if _, err := runGit(*repo, "update-ref", "-d", applyTmpRef); err != nil {
+			fmt.Fprintf(stderr, "warning: failed to remove temporary ref %q: %v\n", applyTmpRef, err)
+		}
+	}()
+	if _, err := runGit(*repo, "remote", "add", remoteName, *cache); err != nil {
+		// `git remote add` fails if the name already exists; treat that as
+		// recoverable (it could be a leftover from a previous interrupted
+		// run) and keep the existing remote.
+		if _, errRem := runGit(*repo, "remote", "set-url", remoteName, *cache); errRem != nil {
+			return fmt.Errorf("failed to add or set-url temporary remote %q -> %q: add: %v / set-url: %v", remoteName, *cache, err, errRem)
+		}
+	}
+	if _, err := runGit(*repo, "fetch", "--no-tags", remoteName, "+"+proposalRef+":"+applyTmpRef); err != nil {
+		return fmt.Errorf("fetch of %s from %s failed: %w", proposalRef, remoteName, err)
+	}
+
+	// 6. Confirm the proposal has at least one commit ahead of the base.
+	ahead, err := runGit(*repo, "rev-list", "--count", baseSHA+".."+applyTmpRef)
+	if err != nil {
+		return fmt.Errorf("failed to count commits ahead of %s: %w", baseSHA[:8], err)
+	}
+	if ahead == "0" {
+		return fmt.Errorf("proposal %s has no commits ahead of %s (NO_COMMIT_PRODUCED?)", proposalRef, *base)
+	}
+
+	// 7. Create the local merge branch from the base SHA, then merge the
+	// fetched proposal with --no-ff so the merge commit is explicit and
+	// the proposal commits stay grouped together.
+	//
+	// First, check the target branch does not already exist: a previous
+	// apply on the same task_id leaves it behind on purpose (it is the
+	// operator's local artifact). Re-running apply with the same task_id
+	// must NOT silently overwrite or check it out — we surface a clear
+	// message that tells the operator how to discard the previous apply
+	// before retrying.
+	if _, err := runGit(*repo, "show-ref", "--verify", "--quiet", "refs/heads/"+targetBranch); err == nil {
+		return fmt.Errorf("branch %s already exists from a previous apply; run 'git branch -D %s' to discard it, then retry", targetBranch, targetBranch)
+	}
+	if _, err := runGit(*repo, "checkout", "-b", targetBranch, baseSHA); err != nil {
+		return fmt.Errorf("failed to create branch %q from %s: %w", targetBranch, baseSHA[:8], err)
+	}
+	mergeOut, err := runGit(*repo, "merge", "--no-ff", "-m",
+		fmt.Sprintf("apply proposal/%s\n\nBranch created by `gentle-mesh apply` (no push, no merge to main).\nLocal-only artifact for the operator to inspect before deciding the next step.", *taskID),
+		applyTmpRef)
+	if err != nil {
+		// Best-effort: try to roll back the new branch so the repo
+		// does not stay in an unexpected state.
+		fmt.Fprintf(stderr, "merge failed: %v\nattempting rollback (checkout %s; branch -D %s)\n", err, *base, targetBranch)
+		if _, rbErr := runGit(*repo, "checkout", *base); rbErr != nil {
+			fmt.Fprintf(stderr, "rollback failed: %v\n", rbErr)
+		}
+		if _, rbErr := runGit(*repo, "branch", "-D", targetBranch); rbErr != nil {
+			fmt.Fprintf(stderr, "rollback failed: %v\n", rbErr)
+		}
+		return fmt.Errorf("merge of %s into %s failed: %w (repo rolled back to %s)", applyTmpRef, targetBranch, err, *base)
+	}
+
+	// 8. Final state: remove the temporary remote AND the temporary ref
+	// (we own the namespace refs/apply-tmp/, never refs/heads/proposal/),
+	// leave the local branch checked out. Report a summary so the operator
+	// knows exactly what to do next.
+	cleanupRemote = false
+	if _, err := runGit(*repo, "remote", "remove", remoteName); err != nil {
+		fmt.Fprintf(stderr, "warning: failed to remove temporary remote %q: %v\n", remoteName, err)
+	}
+	if _, err := runGit(*repo, "update-ref", "-d", applyTmpRef); err != nil {
+		fmt.Fprintf(stderr, "warning: failed to remove temporary ref %q: %v\n", applyTmpRef, err)
+	}
+
+	fmt.Fprintf(stdout, "Applied proposal/%s to %s as a LOCAL branch.\n\n", *taskID, targetBranch)
+	fmt.Fprintf(stdout, "  task_id      : %s\n", *taskID)
+	fmt.Fprintf(stdout, "  cache         : %s\n", *cache)
+	fmt.Fprintf(stdout, "  target repo   : %s\n", *repo)
+	fmt.Fprintf(stdout, "  base          : %s (%s)\n", *base, baseSHA[:8])
+	fmt.Fprintf(stdout, "  new branch    : %s (currently checked out)\n", targetBranch)
+	fmt.Fprintf(stdout, "  commits ahead : %s\n", ahead)
+	if mergeOut != "" {
+		fmt.Fprintf(stdout, "\nmerge summary:\n%s\n", mergeOut)
+	}
+	fmt.Fprintf(stdout, "\nNext steps (manual, no push performed):\n")
+	fmt.Fprintf(stdout, "  cd %s\n", *repo)
+	fmt.Fprintf(stdout, "  git log %s --stat\n", targetBranch)
+	fmt.Fprintf(stdout, "  git diff %s..%s   # inspect the diff before any push\n", baseSHA[:8], targetBranch)
+	fmt.Fprintf(stdout, "  # once you are happy, decide what to do (push, PR, etc.).\n")
+	fmt.Fprintf(stdout, "  # if you want to discard the apply: git checkout %s && git branch -D %s\n", *base, targetBranch)
+	return nil
 }
