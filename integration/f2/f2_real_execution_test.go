@@ -59,8 +59,10 @@ func f2KillAll() {
 	f2Procs = nil
 }
 
-// f2Start launches a long-lived process with its output in a log file.
-func f2Start(t *testing.T, work, name string, args ...string) {
+// f2Start launches a long-lived process with its output in a log file and
+// registers it for bulk cleanup. Returns the command for granular control
+// (e.g. killing a single worker mid-run).
+func f2Start(t *testing.T, work, name string, args ...string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = work
@@ -77,6 +79,7 @@ func f2Start(t *testing.T, work, name string, args ...string) {
 	}
 	f2Procs = append(f2Procs, cmd)
 	t.Logf("[%s] pid=%d log=%s", name, cmd.Process.Pid, logPath)
+	return cmd
 }
 
 // f2CoordHTTP performs an authorized request against the coordinator
@@ -169,21 +172,12 @@ func TestF2_A2ARealExecution(t *testing.T) {
 	// ── Build both binaries from the current tree ──
 	meshBin := filepath.Join(work, "gentle-mesh")
 	harnessBin := filepath.Join(work, "test-harness")
-	buildFrom := func(dst, pkg string, extra ...string) {
-		args := append([]string{"build"}, extra...)
-		args = append(args, "-o", dst, pkg)
-		cmd := exec.Command("go", args...)
-		cmd.Dir = repo // relative package paths resolve from the repo root
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("build %s: %v: %s", pkg, err, out)
-		}
-	}
-	buildFrom(meshBin, "./cmd/gentle-mesh")
-	buildFrom(harnessBin, "./cmd/test-harness", "-tags", "testharness")
+	f2Build(t, repo, meshBin, "./cmd/gentle-mesh")
+	f2Build(t, repo, harnessBin, "./cmd/test-harness", "-tags", "testharness")
 	t.Log("ok: binaries built (gentle-mesh + test-harness)")
 
 	// ── Bare repo cache with a seeded main branch ──
-	repoCache := filepath.Join(work, "repo-cache")
+	repoCache := f2SeedBareRepo(t, work)
 	worktrees := filepath.Join(work, "worktrees")
 	if out, err := exec.Command("git", "init", "--bare", "-b", "main", repoCache).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare: %v: %s", err, out)
@@ -445,4 +439,55 @@ func repoRoot(t *testing.T) string {
 		t.Fatalf("find repo root: %v", err)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// f2Build builds one binary from the repo root (relative package paths need it).
+func f2Build(t *testing.T, repo, dst, pkg string, extra ...string) {
+	t.Helper()
+	args := append([]string{"build"}, extra...)
+	args = append(args, "-o", dst, pkg)
+	cmd := exec.Command("go", args...)
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build %s: %v: %s", pkg, err, out)
+	}
+}
+
+// f2SeedBareRepo creates a bare repo cache with a seeded main branch and
+// returns its path.
+func f2SeedBareRepo(t *testing.T, work string) string {
+	t.Helper()
+	repoCache := filepath.Join(work, "repo-cache")
+	if out, err := exec.Command("git", "init", "--bare", "-b", "main", repoCache).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v: %s", err, out)
+	}
+	seed := filepath.Join(work, "seed")
+	if out, err := exec.Command("git", "clone", repoCache, seed).CombinedOutput(); err != nil {
+		t.Fatalf("git clone (seed): %v: %s", err, out)
+	}
+	run := func(args ...string) (string, error) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = seed
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	if _, err := run("git", "-C", seed, "config", "user.email", "f2@test.local"); err != nil {
+		t.Fatalf("git config: %v", err)
+	}
+	if _, err := run("git", "-C", seed, "config", "user.name", "F2 Test"); err != nil {
+		t.Fatalf("git config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(seed, "BASE.md"), []byte("F2 seed\n"), 0o644); err != nil {
+		t.Fatalf("write BASE.md: %v", err)
+	}
+	if _, err := run("git", "-C", seed, "add", "."); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	if _, err := run("git", "-C", seed, "commit", "-m", "seed"); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+	if _, err := run("git", "-C", seed, "push", "origin", "main"); err != nil {
+		t.Fatalf("git push seed: %v", err)
+	}
+	return repoCache
 }
