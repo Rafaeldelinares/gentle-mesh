@@ -1,10 +1,13 @@
 package http
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"log"
+	"net"
 	stdhttp "net/http"
+	"net/url"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -107,21 +110,84 @@ func RateLimitMiddleware(limiter *RateLimiter) func(stdhttp.Handler) stdhttp.Han
 	}
 }
 
-// CORSMiddleware adds Cross-Origin Resource Sharing headers to every response and short-circuits
-// preflight OPTIONS requests with HTTP 204 No Content. When the request carries an Origin header
-// that origin is echoed and marked as varying; otherwise wildcard access is advertised.
-func CORSMiddleware(next stdhttp.Handler) stdhttp.Handler {
+var tailscaleCIDR = func() *net.IPNet {
+	_, cidr, _ := net.ParseCIDR("100.64.0.0/10")
+	return cidr
+}()
+
+// originAllowed reports whether origin matches default mesh CORS rules or extra allowed origins.
+func originAllowed(origin string, extra []string) bool {
+	if origin == "tauri://localhost" {
+		return true
+	}
+
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
+	}
+
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Host)
+	hostname := strings.ToLower(u.Hostname())
+	normOrigin := scheme + "://" + host
+
+	for _, e := range extra {
+		if origin == e {
+			return true
+		}
+		eu, err := url.Parse(e)
+		if err == nil && eu.Scheme != "" && eu.Host != "" {
+			normE := strings.ToLower(eu.Scheme) + "://" + strings.ToLower(eu.Host)
+			if normOrigin == normE {
+				return true
+			}
+		}
+	}
+
+	if scheme == "http" && (hostname == "localhost" || hostname == "127.0.0.1") {
+		return true
+	}
+
+	if scheme == "http" || scheme == "https" {
+		ip := net.ParseIP(hostname)
+		if ip != nil && tailscaleCIDR.Contains(ip) {
+			return true
+		}
+		if strings.HasSuffix(hostname, ".ts.net") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// CORSMiddlewareWithOrigins adds Cross-Origin Resource Sharing headers with origin validation.
+// When an Origin header is present and allowed, it is echoed with Vary: Origin.
+// If disallowed, Access-Control-Allow-Origin is omitted and OPTIONS requests receive 403 Forbidden.
+// When no Origin is present, wildcard access ("*") is advertised.
+func CORSMiddlewareWithOrigins(extra []string, next stdhttp.Handler) stdhttp.Handler {
 	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		header := w.Header()
-		if origin := r.Header.Get("Origin"); origin != "" {
-			header.Set("Access-Control-Allow-Origin", origin)
-			header.Add("Vary", "Origin")
-		} else {
-			header.Set("Access-Control-Allow-Origin", "*")
-		}
 		header.Set("Access-Control-Allow-Methods", corsAllowMethods)
 		header.Set("Access-Control-Allow-Headers", corsAllowHeaders)
 		header.Set("Access-Control-Expose-Headers", corsExposeHeaders)
+
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			if originAllowed(origin, extra) {
+				header.Set("Access-Control-Allow-Origin", origin)
+				header.Add("Vary", "Origin")
+			} else {
+				if r.Method == stdhttp.MethodOptions {
+					header.Set("Content-Type", "application/json")
+					w.WriteHeader(stdhttp.StatusForbidden)
+					_ = json.NewEncoder(w).Encode(map[string]string{"error": "origin not allowed"})
+					return
+				}
+			}
+		} else {
+			header.Set("Access-Control-Allow-Origin", "*")
+		}
 
 		if r.Method == stdhttp.MethodOptions {
 			w.WriteHeader(stdhttp.StatusNoContent)
@@ -132,16 +198,103 @@ func CORSMiddleware(next stdhttp.Handler) stdhttp.Handler {
 	})
 }
 
+// CORSMiddleware adds Cross-Origin Resource Sharing headers to every response and short-circuits
+// preflight OPTIONS requests with HTTP 204 No Content. When the request carries an Origin header
+// that origin is echoed and marked as varying; otherwise wildcard access is advertised.
+func CORSMiddleware(next stdhttp.Handler) stdhttp.Handler {
+	return CORSMiddlewareWithOrigins(nil, next)
+}
+
+// HostMiddleware validates incoming requests against an allowed host list,
+// Tailscale CGNAT IPs (100.64.0.0/10), and MagicDNS hosts (*.ts.net).
+// Disallowed hosts receive HTTP 421 Misdirected Request.
+func HostMiddleware(allowed []string, next stdhttp.Handler) stdhttp.Handler {
+	allowedMap := make(map[string]struct{}, len(allowed))
+	for _, a := range allowed {
+		h := strings.TrimSpace(a)
+		if stripped, _, err := net.SplitHostPort(h); err == nil {
+			h = stripped
+		}
+		if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
+			h = h[1 : len(h)-1]
+		}
+		h = strings.ToLower(strings.TrimSpace(h))
+		if h != "" {
+			allowedMap[h] = struct{}{}
+		}
+	}
+
+	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		rawHost := r.Host
+		host := rawHost
+		if h, _, err := net.SplitHostPort(rawHost); err == nil {
+			host = h
+		}
+		host = strings.TrimSpace(host)
+		if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			host = host[1 : len(host)-1]
+		}
+		host = strings.ToLower(host)
+
+		allowedHost := false
+		if _, ok := allowedMap[host]; ok {
+			allowedHost = true
+		} else {
+			ip := net.ParseIP(host)
+			if ip != nil && tailscaleCIDR.Contains(ip) {
+				allowedHost = true
+			} else if strings.HasSuffix(host, ".ts.net") {
+				allowedHost = true
+			}
+		}
+
+		if !allowedHost {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(stdhttp.StatusMisdirectedRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid host"})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// AuthConfig holds credentials for the coordinator authentication middleware.
+type AuthConfig struct {
+	AdminToken string
+	NodeToken  string
+}
+
 // AuthMiddleware validates incoming HTTP requests using a Bearer token.
 // If token is empty, the middleware is a no-op and returns next.
-// Requests to /healthz (and /healthz/) bypass authentication.
+// Requests to /healthz (and /healthz/) bypass authentication, and so does the
+// POST /v1/certs/enroll bootstrap route, whose only credential is the enrollment
+// token validated by its handler (MTLSMiddleware already exempts it).
 // CORS preflight OPTIONS requests bypass authentication so browsers can negotiate the request.
 // Missing or invalid tokens result in HTTP 401 Unauthorized with {"error":"unauthorized"}.
 func AuthMiddleware(token string, next stdhttp.Handler) stdhttp.Handler {
-	if token == "" {
+	return AuthMiddlewareWithConfig(AuthConfig{AdminToken: token}, next)
+}
+
+// AuthMiddlewareWithConfig validates incoming requests against the admin token or node-scoped token.
+// The admin token is valid across all routes. The node-scoped token is strictly restricted to
+// node registration and heartbeat (POST /v1/mesh/join, POST /v1/mesh/heartbeat); any other route
+// with the node token returns HTTP 403 Forbidden with {"error":"forbidden"}.
+// Requests without a valid token return HTTP 401 Unauthorized with {"error":"unauthorized"}.
+func AuthMiddlewareWithConfig(cfg AuthConfig, next stdhttp.Handler) stdhttp.Handler {
+	if cfg.AdminToken == "" && cfg.NodeToken == "" {
 		return next
 	}
-	expectedAuth := "Bearer " + token
+
+	expectedAdminAuth := ""
+	if cfg.AdminToken != "" {
+		expectedAdminAuth = "Bearer " + cfg.AdminToken
+	}
+	expectedNodeAuth := ""
+	if cfg.NodeToken != "" {
+		expectedNodeAuth = "Bearer " + cfg.NodeToken
+	}
+
 	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		if r.Method == stdhttp.MethodOptions {
 			next.ServeHTTP(w, r)
@@ -153,12 +306,99 @@ func AuthMiddleware(token string, next stdhttp.Handler) stdhttp.Handler {
 			return
 		}
 
+		// Certificate enrollment is a bootstrap route: a node has no bearer
+		// token yet, so the enrollment token in the body is its only credential.
+		// Only this exact method and path are exempt; other methods and
+		// neighbouring routes keep requiring the bearer.
+		if r.Method == stdhttp.MethodPost && r.URL.Path == "/v1/certs/enroll" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		authHeader := r.Header.Get("Authorization")
-		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedAuth)) != 1 {
+
+		// Constant-time check for admin token
+		adminMatched := 0
+		if expectedAdminAuth != "" {
+			adminMatched = subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedAdminAuth))
+		}
+		if adminMatched == 1 {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Constant-time check for node-scoped token
+		nodeMatched := 0
+		if expectedNodeAuth != "" {
+			nodeMatched = subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedNodeAuth))
+		}
+		if nodeMatched == 1 {
+			if r.Method == stdhttp.MethodPost && (r.URL.Path == "/v1/mesh/join" || r.URL.Path == "/v1/mesh/join/" ||
+				r.URL.Path == "/v1/mesh/heartbeat" || r.URL.Path == "/v1/mesh/heartbeat/") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(stdhttp.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(stdhttp.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+	})
+}
+
+// CertRevocationChecker checks whether a certificate serial is revoked.
+type CertRevocationChecker interface {
+	IsCertRevoked(ctx context.Context, serial string) (bool, error)
+}
+
+// MTLSMiddleware validates that incoming HTTPS requests present a verified client certificate.
+// The bootstrap routes ("/healthz", "/healthz/", "/v1/mesh/ca", "/v1/certs/enroll", "/v1/certs/revoke") bypass this check.
+// If no verified client certificate is present, it responds with HTTP 401 and {"error":"client certificate required"}.
+func MTLSMiddleware(next stdhttp.Handler) stdhttp.Handler {
+	return MTLSMiddlewareWithRevocation(nil, next)
+}
+
+// MTLSMiddlewareWithRevocation validates that incoming HTTPS requests present a verified client certificate
+// and checks revocation status against the provided checker (e.g. in-memory revocation cache + cert store).
+// If the certificate is revoked, it responds with HTTP 403 Forbidden, sets Connection: close to tear down
+// any reused keep-alive TCP connections, and responds with {"error":"certificate revoked"}.
+func MTLSMiddlewareWithRevocation(checker CertRevocationChecker, next stdhttp.Handler) stdhttp.Handler {
+	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/healthz/" ||
+			r.URL.Path == "/v1/mesh/ca" || r.URL.Path == "/v1/certs/enroll" ||
+			r.URL.Path == "/v1/certs/revoke" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(stdhttp.StatusUnauthorized)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "client certificate required"})
 			return
+		}
+
+		if checker != nil {
+			clientCert := r.TLS.VerifiedChains[0][0]
+			serial := clientCert.SerialNumber.String()
+			revoked, err := checker.IsCertRevoked(r.Context(), serial)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(stdhttp.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to verify certificate status"})
+				return
+			}
+			if revoked {
+				w.Header().Set("Connection", "close")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(stdhttp.StatusForbidden)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "certificate revoked"})
+				return
+			}
 		}
 
 		next.ServeHTTP(w, r)

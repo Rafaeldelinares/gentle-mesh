@@ -12,22 +12,29 @@ var ErrTaskNotFound = errors.New("task not found")
 
 // TaskRecord represents a persistent subagent task record in gentle-mesh.
 type TaskRecord struct {
-	TaskID        string               `json:"task_id"`
-	Branch        string               `json:"branch"`
-	Repository    string               `json:"repository"`
-	Domain        string               `json:"domain"`
-	BlastRadius   protocol.BlastRadius `json:"blast_radius"`
-	Phase         protocol.AgentPhase  `json:"phase"`
-	CurrentAction string               `json:"current_action"`
-	Status        protocol.TaskStatus  `json:"status"`
-	WorkerID      string               `json:"worker_id"`
-	Tags          []string             `json:"tags"`
-	EditSurfaces  []string             `json:"edit_surfaces"`
-	CreatedAt     int64                `json:"created_at"`
-	StartedAt     int64                `json:"started_at"`
-	FinishedAt    int64                `json:"finished_at"`
-	ErrorMessage  string               `json:"error_message"`
-	ResultSummary string               `json:"result_summary"`
+	TaskID          string               `json:"task_id"`
+	Branch          string               `json:"branch"`
+	Repository      string               `json:"repository"`
+	Domain          string               `json:"domain"`
+	BlastRadius     protocol.BlastRadius `json:"blast_radius"`
+	Phase           protocol.AgentPhase  `json:"phase"`
+	CurrentAction   string               `json:"current_action"`
+	Status          protocol.TaskStatus  `json:"status"`
+	WorkerID        string               `json:"worker_id"`
+	Tags            []string             `json:"tags"`
+	EditSurfaces    []string             `json:"edit_surfaces"`
+	CreatedAt       int64                `json:"created_at"`
+	StartedAt       int64                `json:"started_at"`
+	FinishedAt      int64                `json:"finished_at"`
+	ErrorMessage    string               `json:"error_message"`
+	ResultSummary   string               `json:"result_summary"`
+	// ExecutedLocally records whether the coordinator's own local fallback
+	// (simulated or pi runner) ran this task end-to-end, as opposed to a
+	// mesh worker. Persisted as a dedicated column so the operator-facing
+	// ResultSummary stays untouched (no embedded markers) and the
+	// signal survives any text-level collision with a real ResultSummary
+	// that happens to end with the marker text.
+	ExecutedLocally bool                 `json:"executed_locally"`
 }
 
 // Clone returns a deep copy of the TaskRecord.

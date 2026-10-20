@@ -1,9 +1,10 @@
-# AGENTS.md — Convenciones y Misión de RFC-002: Red Cognitiva de Agentes
+# AGENTS.md — Convenciones y Competencias de Gentle Mesh
 
-> **Proyecto:** `rfc002` / Red Cognitiva de Agentes (Gentle Mesh Evolution)  
-> **Ubicación:** `/home/rafael/proyectos/rfc002`  
-> **Propósito:** Especificación técnica e implementación de la Red Cognitiva de Agentes: TaskEnvelope, Pre-flight Handshake de Recursos y Task Settlement Determinista.  
-> **Relación con RFC-001:** Este proyecto es la capa semántica y cognitiva que se monta sobre el transporte distribuido base de Gentle Mesh v1 (RFC-001).  
+> **Proyecto:** `gentle-mesh`  
+> **Ubicación:** `<ruta-del-proyecto>`  
+> **Propósito:** Transporte distribuido federado y ejecución de subagentes remotos para el ecosistema Pi & Gentle AI.  
+> **Lenguaje:** Go 1.26.9+  
+> **Relación con RFC-002:** este repo implementa el settlement determinista (receipts Ed25519 + hash chain) y el ciclo de leases del protocolo RFC-002 — la capa semántica y cognitiva que se monta sobre el transporte base.  
 > **Destino Comunitario:** Propuesta RFC oficial para la comunidad de Gentleman Programming.  
 
 ---

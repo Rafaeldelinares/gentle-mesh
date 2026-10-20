@@ -59,6 +59,18 @@ Proponemos introducir un **Transporte Enchufable (Pluggable Transport)** dentro 
 
 ---
 
+## 3b. Relación con las sesiones remotas de pi
+
+Gentle Mesh y las sesiones remotas de pi resuelven problemas distintos y pueden complementarse en el futuro, pero no son intercambiables.
+
+**pi** (`@earendil-works/pi-protocol` 1.0.4, `@earendil-works/pi-client` 1.0.4, `@earendil-works/pi-server` 1.0.4 y `@earendil-works/pi-coding-agent` 1.0.4) proporciona sesiones remotas de agentes. `pi-protocol` implementa un protocolo con codificación CBOR y byte-stream framing sobre el protocolo Pi experimental (versión 8; el README de `pi-protocol` indica que "The protocol is experimental and has no compatibility guarantees"); `pi-client` es un cliente que trabaja sobre cualquier transporte de bytes ordenado mediante la interfaz `ByteTransport` (`dist/transport.d.ts`: `export interface ByteTransport`; npm: "Transport-neutral client for the experimental Pi service protocol"); `pi-server` es experimental (npm: "experimental server package for pi") y se aloja en la aplicación que lo usa. El subcomando `rpc` de gentle-mesh puentea el modo RPC de pi por stdin/stdout. Gentle Mesh no implementa el protocolo de sesiones remotas de pi-protocol.
+
+**Gentle Mesh** ataca la coordinación entre varios agentes y nodos sobre el mismo proyecto: territorios y colisiones, reparto de tareas entre nodos compatibles por carga, y seguridad de la malla con PKI y mTLS. No ofrece transporte de sesiones remotas de pi.
+
+**Relación futura.** Una integración en la que Gentle Mesh despache tareas a nodos que a su vez usan pi para ejecutar sesiones remotas es una posibilidad abierta. Este camino no está planificado ni desarrollado; depende del feedback de la comunidad.
+
+---
+
 ## 4. Contrato de la API REST Mínima (v1)
 
 ### `POST /v1/tasks` (Despachar Misión)
@@ -171,7 +183,7 @@ Para eliminar esa fricción, el cliente CLI incorpora el subcomando `gentle-mesh
 El puente se lanza con la **misma forma de argumentos** que un binario Pi local para poder sustituirlo sin cambiar la configuración del frontend:
 
 ```bash
-gentle-mesh rpc -coordinator https://100.107.67.35:8443
+gentle-mesh rpc -coordinator https://<coordinator-ip>:8443
 gentle-mesh rpc --mode rpc --approve --session /tmp/pi-session.json -coordinator https://localhost:8443
 ```
 
@@ -200,7 +212,7 @@ Para operar como una verdadera malla federada (Mesh), los nodos remotos anuncian
   ```json
   {
     "node_id": "vps-la-fabrica-gpu",
-    "endpoint": "https://100.64.0.15:8443",
+    "endpoint": "https://<coordinator-ip>:8443",
     "hardware": {
       "cpus": 32,
       "ram_gb": 64,

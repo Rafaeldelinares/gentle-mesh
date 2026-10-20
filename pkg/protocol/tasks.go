@@ -14,6 +14,7 @@ const (
 
 // TaskRequest defines the payload for creating and dispatching a new remote subagent task.
 type TaskRequest struct {
+	TaskID         string      `json:"task_id,omitempty"`
 	IdempotencyKey string      `json:"idempotency_key,omitempty"`
 	SessionID      string      `json:"session_id,omitempty"`
 	Agent          string      `json:"agent"`
@@ -22,6 +23,10 @@ type TaskRequest struct {
 	Context        string      `json:"context,omitempty"`
 	WorkspaceRoot  string      `json:"workspace_root,omitempty"`
 	GitRepo        string      `json:"git_repo,omitempty"`
+	// GitBranch is the branch this task is booked on: it is the key of the coordinator's
+	// exclusive branch lock (and part of the task territory), not a checkout. No runner runs
+	// git, so the branch is never created, switched to or checked for existence. Accepted
+	// responses carry GitBranchLockOnlyWarning so clients are told this on the wire.
 	GitBranch      string      `json:"git_branch,omitempty"`
 	Domain         string      `json:"domain,omitempty"`
 	BlastRadius    BlastRadius `json:"blast_radius,omitempty"`
@@ -40,6 +45,10 @@ type TaskRequest struct {
 	CheckpointInterval int           `json:"checkpoint_interval_secs"` // Seconds between checkpoints
 }
 
+// GitBranchLockOnlyWarning is the stable advisory text shipped in TaskResponse.Warnings when a
+// task request carries a non-empty git_branch.
+const GitBranchLockOnlyWarning = "git_branch is only a mutual exclusion key: no runner checks the branch out, and a branch that does not exist is not an error"
+
 // TaskResponse represents the initial acknowledgement returned when a task is accepted.
 type TaskResponse struct {
 	TaskID    string     `json:"task_id"`
@@ -47,6 +56,9 @@ type TaskResponse struct {
 	Status    TaskStatus `json:"status"`
 	EventsURL string     `json:"events_url"`
 	CreatedAt int64      `json:"created_at"`
+	// Warnings carries additive advisory notes about the accepted request. It is omitempty, so
+	// a response without warnings keeps the exact JSON shape of the pre-warning contract.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // TaskState represents a full point-in-time snapshot of a task lifecycle.
@@ -60,6 +72,10 @@ type TaskState struct {
 	FinishedAt int64              `json:"finished_at,omitempty"`
 	Completion *CompletionPayload `json:"completion,omitempty"`
 	Error      *ErrorPayload      `json:"error,omitempty"`
+	// WorkerID is the mesh node that accepted this task. Additive and optional: a task that was
+	// never attributed (for example a run answered by the coordinator's local fallback) keeps
+	// producing exactly the same JSON as before.
+	WorkerID string `json:"worker_id,omitempty"`
 	// Checkpoint for resume
 	Checkpoint *CheckpointPayload  `json:"checkpoint,omitempty"`
 }
