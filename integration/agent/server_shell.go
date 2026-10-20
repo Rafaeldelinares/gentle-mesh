@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -322,7 +323,7 @@ func (s *ShellServer) executeLocal(ctx context.Context, assertions []envelope.As
 
 	// Append through the shared helper: it reloads the chain head, assigns a fresh
 	// crypto/rand receipt_id, signs and saves, retrying only transient contention.
-	contractID := fmt.Sprintf("contract-%d", signedAt.UnixNano())
+	contractID := newContractID(signedAt)
 	rec, err := receipt.SignAndSaveReceipt(ctx, s.chainStore, receipt.AppendConfig{
 		EmitterAgentID:  agentID,
 		ExecutorAgentID: agentID,
@@ -343,6 +344,15 @@ func (s *ShellServer) executeLocal(ctx context.Context, assertions []envelope.As
 	}
 
 	return rec, nil
+}
+
+// newContractID returns a timestamped, collision-resistant contract identifier.
+func newContractID(t time.Time) string {
+	b := make([]byte, 8)
+	if _, err := crand.Read(b); err != nil {
+		return fmt.Sprintf("contract-%d", t.UnixNano())
+	}
+	return fmt.Sprintf("contract-%d-%s", t.UnixNano(), hex.EncodeToString(b))
 }
 
 // ─────────────────────────────────────────────────────────────────

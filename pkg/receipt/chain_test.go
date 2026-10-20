@@ -580,6 +580,7 @@ func TestCount(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		r := validReceipt()
 		r.ReceiptID = "count-" + string(rune('0'+i))
+		r.ContractID = "count-contract-" + string(rune('0'+i))
 		if i == 0 {
 			r.PreviousReceiptHash = ""
 		} else {

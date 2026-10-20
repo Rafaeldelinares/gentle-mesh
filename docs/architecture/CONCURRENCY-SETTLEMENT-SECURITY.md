@@ -297,6 +297,10 @@ The mutex serializes all writes, which limits throughput to ~1 settlement per mu
 
 A production path would replace the mutex with a lightweight sequence service (Redis INCR, ZooKeeper ephemeral node, or a custom coordinator) that provides monotonically increasing sequence numbers. The receipt's `prev_hash` would be `SHA256(executor_signature || sequence_number)` instead of `SHA256(executor_signature)`.
 
+**Scope of the serialization**: `db.SetMaxOpenConns(1)` (production: `integration/agent/server.go:107`, `pkg/shell/shell.go:79`, `integration/agent/server_shell.go:63`) serializes *reads and writes* alike through a single pooled connection — the mutex above only serializes the write path. Under concurrent settlement load this is a real throughput ceiling, accepted deliberately for RFC-002 v1: per-node settlement volume is low (interactive contracts, not batch), and chain integrity outranks throughput. A deployment that outgrows it can apply the sequence-service table above unchanged.
+
+**Observing the idempotency race (RFC-002 R1)**: `Engine.Settle` counts how many calls lost the concurrent INSERT race against the UNIQUE (contract_id) index and recovered the winner's receipt — `Engine.DuplicateRecoveries()`. A non-zero rate under contention is normal and correct (both callers get 200 OK with the same receipt); a sustained zero on a busy node means the pre-check short-circuit is absorbing all re-settles. The recovery branch is exercised deterministically by `TestSettle_DuplicateContractRecovery_PathTaken` (race window imposed in code, scheduler-independent) and end-to-end by `TestR1_ConcurrentSettlement_ReturnsSameReceipt`.
+
 ### 3.8 WAL Mode: Why It Matters
 
 SQLite WAL (Write-Ahead Logging) mode is set on every chain database:

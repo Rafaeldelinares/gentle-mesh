@@ -279,6 +279,34 @@ func TestMigration_MidChainFork_Rejected(t *testing.T) {
 	assertDatabaseIntact(t, db, 3)
 }
 
+// TestMigration_DuplicateContractID_Rejected verifies that legacy data containing
+// duplicate contract_id values causes InitSchema to fail explicitly (rather than
+// silently corrupting the index or ignoring the uniqueness violation) and rolls back cleanly.
+func TestMigration_DuplicateContractID_Rejected(t *testing.T) {
+	db, _ := setupOldSchemaDB(t)
+	defer db.Close()
+
+	_, signer := makeTestSigners(t)
+
+	// Two receipts with DIFFERENT receipt IDs and valid chain links, but the SAME contract_id
+	r1 := makeSignedReceipt(t, "agent-a", "agent-b", "", "contract-dup-1", signer)
+	insertOldReceipt(t, db, r1)
+	h := sha256.Sum256([]byte(r1.ExecutorSignature))
+	prevHash := hex.EncodeToString(h[:])
+
+	r2 := makeSignedReceipt(t, "agent-a", "agent-b", prevHash, "contract-dup-1", signer)
+	insertOldReceipt(t, db, r2)
+
+	cs := NewChainStore(db)
+
+	err := cs.InitSchema(context.Background())
+	if err == nil {
+		t.Fatal("expected InitSchema to fail on pre-existing duplicate contract_id, got nil")
+	}
+
+	assertDatabaseIntact(t, db, 2)
+}
+
 // TestMigration_BrokenChain_Rejected verifies that a broken hash chain
 // (missing link / invalid previous_receipt_hash) fails migration with an explicit error
 // and rolls back cleanly leaving the database intact.
@@ -471,5 +499,3 @@ func TestMigration_SignatureVerification_OldChain_3Receipts(t *testing.T) {
 		}
 	}
 }
-
-
