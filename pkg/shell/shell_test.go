@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -382,6 +383,96 @@ func TestShell_PreconditionCommandExitCode_CommandInjectionRejected(t *testing.T
 	if _, err := os.Stat(injectedMarker); err == nil {
 		t.Errorf("CRITICAL SECURITY VULNERABILITY #35: command chaining succeeded, marker file %s was created", injectedMarker)
 		_ = os.Remove(injectedMarker)
+	}
+}
+
+// TestShell_PreconditionCommandExitCode_ArbitraryBinaryExecution_RED tests Issue #130:
+// PreconditionCommandExitCode must NOT execute arbitrary binaries (such as touch, rm, curl)
+// with host worker privileges. Only an explicit allowlist of read-only diagnostic tools is permitted.
+func TestShell_PreconditionCommandExitCode_ArbitraryBinaryExecution_RED(t *testing.T) {
+	workspace := t.TempDir()
+	chainDB := filepath.Join(t.TempDir(), "chain.db")
+	injectedMarker := filepath.Join(t.TempDir(), "unauthorized_exec.marker")
+
+	s, err := New(Config{
+		MeshID:       "mesh-test",
+		AgentID:      "test-agent",
+		WorkspaceDir: workspace,
+		ChainDBPath:  chainDB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// A binary outside the read-only diagnostic allowlist
+	destructiveCmd := fmt.Sprintf("touch %s", injectedMarker)
+	report, err := s.Check(context.Background(), []envelope.Precondition{
+		{Type: envelope.PreconditionCommandExitCode, Params: map[string]string{"command": destructiveCmd}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Vulnerable behavior: touch executes on host, creates the marker, and reports Passed: true.
+	// We assert that the marker is NOT created and that the report is rejected with an explicit reason.
+	if _, err := os.Stat(injectedMarker); err == nil {
+		_ = os.Remove(injectedMarker)
+		t.Errorf("SECURITY VULNERABILITY #130: arbitrary binary executed on host, created %s", injectedMarker)
+	}
+	if report.Passed {
+		t.Errorf("SECURITY VULNERABILITY #130: arbitrary binary execution reported Passed=true")
+	}
+	if !strings.Contains(report.RejectionReason, "not permitted") && !strings.Contains(report.RejectionReason, "rejected") {
+		t.Errorf("expected explicit rejection reason, got %q", report.RejectionReason)
+	}
+}
+
+// TestShell_PreconditionCommandExitCode_AllowedAndDisallowedCommands tests both allowed
+// and disallowed commands to verify deterministic permit/reject behavior.
+func TestShell_PreconditionCommandExitCode_AllowedAndDisallowedCommands(t *testing.T) {
+	workspace := t.TempDir()
+	chainDB := filepath.Join(t.TempDir(), "chain.db")
+
+	s, err := New(Config{
+		MeshID:       "mesh-test",
+		AgentID:      "test-agent",
+		WorkspaceDir: workspace,
+		ChainDBPath:  chainDB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// 1. Permitted: true
+	repTrue, err := s.Check(context.Background(), []envelope.Precondition{
+		{Type: envelope.PreconditionCommandExitCode, Params: map[string]string{"command": "true"}},
+	})
+	if err != nil || !repTrue.Passed {
+		t.Fatalf("expected 'true' to pass, got err=%v report=%+v", err, repTrue)
+	}
+
+	// 2. Permitted: test directory
+	repTest, err := s.Check(context.Background(), []envelope.Precondition{
+		{Type: envelope.PreconditionCommandExitCode, Params: map[string]string{"command": fmt.Sprintf("test -d %s", workspace)}},
+	})
+	if err != nil || !repTest.Passed {
+		t.Fatalf("expected 'test -d' to pass, got err=%v report=%+v", err, repTest)
+	}
+
+	// 3. Disallowed: python3 -c code injection
+	repPy, err := s.Check(context.Background(), []envelope.Precondition{
+		{Type: envelope.PreconditionCommandExitCode, Params: map[string]string{"command": "python3 -c 'print(1)'"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repPy.Passed {
+		t.Errorf("expected python3 -c to be rejected")
+	}
+	if !strings.Contains(repPy.RejectionReason, "not permitted") {
+		t.Errorf("expected rejection reason for python3 -c, got %q", repPy.RejectionReason)
 	}
 }
 

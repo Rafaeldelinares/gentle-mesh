@@ -177,19 +177,16 @@ func (s *Shell) evalPrecondition(ctx context.Context, p envelope.Precondition) e
 			result.Message = "command parameter missing"
 			return result
 		}
-		parts, err := settlement.SplitCommand(cmdStr)
-		if err != nil || len(parts) == 0 {
+		// S6 / Issue #130: Direct execution with tokenized arguments without subshell invocation,
+		// gated by strict allowlist of read-only diagnostic tools to prevent arbitrary execution on host.
+		parts, err := settlement.ValidatePreconditionCommand(cmdStr)
+		if err != nil {
 			result.Passed = false
-			result.Message = fmt.Sprintf("invalid command syntax: %v", err)
+			result.Message = fmt.Sprintf("command not permitted: %v", err)
 			return result
 		}
 		ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		// S6: Direct execution with tokenized arguments without subshell invocation.
-		// SECURITY NOTE: While direct execution prevents shell metacharacter injection
-		// (pipes, semicolons, redirects), executing arbitrary binaries declared in an envelope
-		// still runs with host worker privileges. This is safe only when the envelope source
-		// is verified (mTLS S1 + Ed25519 S2) or when running under sandbox isolation (bwrap).
 		cmd := exec.CommandContext(ctx2, parts[0], parts[1:]...)
 		if s.config.WorkspaceDir != "" {
 			cmd.Dir = s.config.WorkspaceDir
