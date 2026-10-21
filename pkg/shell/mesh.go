@@ -111,31 +111,20 @@ type RemoteNodeInfo struct {
 	PublicKey string // hex-encoded Ed25519 public key
 }
 
-// Check is a helper that runs pre-flight checks on the remote executor
-// via the remote executor's health + pre-flight endpoint.
-// For now, this is a placeholder — real implementation would POST to /preflight.
+// Check runs pre-flight checks on the remote executor via POST /preflight (RFC-002 A2).
+// It delegates evaluation of preconditions to the remote executor and returns
+// a ReadinessReport with the actual remote execution results.
 func (m *MeshClient) Check(ctx context.Context, preconditions []envelope.Precondition) (*ReadinessReport, error) {
-	// For remote checks, we delegate to the remote executor's /preflight endpoint.
-	// This is a basic implementation: assume all checks pass if executor is healthy.
-	health, err := m.httpClient.Health(ctx)
+	resp, err := m.httpClient.Preflight(ctx, &agent.PreflightRequest{
+		Preconditions: preconditions,
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("remote preflight check: %w", err)
 	}
-	_ = health // AgentID confirmed via health endpoint.
 
-	// Conservative: assume executor's pre-flight will handle actual checks.
-	// Real implementation would POST to /preflight and parse the response.
-	results := make([]envelope.PreconditionResult, len(preconditions))
-	for i, p := range preconditions {
-		results[i] = envelope.PreconditionResult{
-			PreconditionIndex: i,
-			Type:              string(p.Type),
-			Passed:            true,
-			Message:           "pre-flight delegated to remote executor",
-		}
-	}
 	return &ReadinessReport{
-		Passed:  true,
-		Results: results,
+		Passed:          resp.Passed,
+		Results:         resp.Results,
+		RejectionReason: resp.RejectionReason,
 	}, nil
 }

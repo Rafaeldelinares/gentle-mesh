@@ -104,6 +104,7 @@ func (s *ShellServer) Close() error {
 // These supplement (not replace) the existing agent server handlers.
 func (s *ShellServer) RegisterHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /check", s.handleCheck)
+	mux.HandleFunc("POST /preflight", s.handleCheck)
 	mux.HandleFunc("POST /execute-local", s.handleExecuteLocal)
 	mux.HandleFunc("POST /dispatch", s.handleDispatch)
 	mux.HandleFunc("GET /chain/", s.handleGetChainByPair)

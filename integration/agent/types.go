@@ -62,6 +62,19 @@ type Signer interface {
 // HTTP API types
 // ─────────────────────────────────────────────────────────────────
 
+// PreflightRequest is the POST /preflight request body (RFC-002 A2).
+type PreflightRequest struct {
+	Preconditions []envelope.Precondition `json:"preconditions"`
+}
+
+// PreflightResponse is the POST /preflight response body (RFC-002 A2).
+type PreflightResponse struct {
+	Passed          bool                          `json:"passed"`
+	RejectionReason string                        `json:"rejection_reason,omitempty"`
+	Results         []envelope.PreconditionResult `json:"results"`
+	Error           string                        `json:"error,omitempty"`
+}
+
 // EnvelopeRequest is the POST /envelopes request body.
 type EnvelopeRequest struct {
 	EnvelopeJSON []byte `json:"envelope_json"`
@@ -247,6 +260,9 @@ type ExecuteResponse struct {
 
 // Client allows a test harness to interact with an agent.
 type Client interface {
+	// Preflight evaluates preconditions on the remote executor (RFC-002 A2).
+	Preflight(ctx context.Context, req *PreflightRequest) (*PreflightResponse, error)
+
 	// SubmitEnvelope sends a CognitiveTaskEnvelope to an executor and
 	// waits for the lease response.
 	SubmitEnvelope(ctx context.Context, envelopeJSON []byte) (*EnvelopeResponse, error)

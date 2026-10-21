@@ -128,19 +128,87 @@ func TestMeshClient_SubmitEnvelope(t *testing.T) {
 	}
 }
 
-// TestMeshClient_Check delegates pre-flight checks to remote executor.
-func TestMeshClient_Check(t *testing.T) {
+// TestMeshClient_Check_RemoteEvaluation_ToolMissing tests RFC-002 A2 (Issue #37):
+// Check() queries the remote executor via POST /preflight. When preconditions are not met,
+// Check() returns Passed: false with the remote rejection reason and detailed results.
+func TestMeshClient_Check_RemoteEvaluation_ToolMissing(t *testing.T) {
 	_, privKey, _ := ed25519.GenerateKey(nil)
 	signer, _ := signing.NewBasicSigner(privKey, "test-agent")
 
-	healthCalled := false
+	preflightCalled := false
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		healthCalled = true
-		json.NewEncoder(w).Encode(agent.HealthResponse{
-			Status:    "ok",
-			AgentID:   "remote-agent",
-			PublicKey: hex.EncodeToString(ed25519.NewKeyFromSeed(make([]byte, 32))),
-		})
+		if r.URL.Path == "/preflight" {
+			preflightCalled = true
+			var req agent.PreflightRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			json.NewEncoder(w).Encode(agent.PreflightResponse{
+				Passed:          false,
+				RejectionReason: `tool "nonexistent-tool-xyz-12345" available=false`,
+				Results: []envelope.PreconditionResult{
+					{
+						PreconditionIndex: 0,
+						Type:              string(envelope.PreconditionToolAvailable),
+						Passed:            false,
+						Message:           `tool "nonexistent-tool-xyz-12345" available=false`,
+					},
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client, err := NewMeshClient(srv.URL, signer, testTLSOption(t, srv))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := client.Check(context.Background(), []envelope.Precondition{
+		{Type: envelope.PreconditionToolAvailable, Params: map[string]string{"tool": "nonexistent-tool-xyz-12345"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected Check error: %v", err)
+	}
+	if !preflightCalled {
+		t.Error("POST /preflight should have been called on remote executor")
+	}
+	if report.Passed {
+		t.Errorf("expected report.Passed = false for missing tool, got true (fail-open regression)")
+	}
+	if len(report.Results) != 1 || report.Results[0].Passed {
+		t.Errorf("expected 1 failing result, got: %+v", report.Results)
+	}
+	if report.RejectionReason == "" {
+		t.Error("expected non-empty RejectionReason")
+	}
+}
+
+// TestMeshClient_Check_RemoteEvaluation_Success tests that Check() returns Passed: true
+// when the remote executor verifies all preconditions.
+func TestMeshClient_Check_RemoteEvaluation_Success(t *testing.T) {
+	_, privKey, _ := ed25519.GenerateKey(nil)
+	signer, _ := signing.NewBasicSigner(privKey, "test-agent")
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/preflight" {
+			json.NewEncoder(w).Encode(agent.PreflightResponse{
+				Passed: true,
+				Results: []envelope.PreconditionResult{
+					{
+						PreconditionIndex: 0,
+						Type:              string(envelope.PreconditionToolAvailable),
+						Passed:            true,
+						Message:           `tool "go" available=true`,
+					},
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
 
@@ -153,16 +221,96 @@ func TestMeshClient_Check(t *testing.T) {
 		{Type: envelope.PreconditionToolAvailable, Params: map[string]string{"tool": "go"}},
 	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("unexpected Check error: %v", err)
 	}
-	if !healthCalled {
-		t.Error("health endpoint should have been called")
-	}
-	// Conservative: check passes when remote executor is reachable.
 	if !report.Passed {
-		t.Errorf("Check() should pass for reachable executor, got reason: %s", report.RejectionReason)
+		t.Errorf("expected report.Passed = true, got false with reason: %s", report.RejectionReason)
 	}
 }
+
+// TestMeshClient_Check_RemoteEvaluation_MultiplePreconditions tests that if any precondition fails,
+// Check() returns Passed: false and preserves the individual results.
+func TestMeshClient_Check_RemoteEvaluation_MultiplePreconditions(t *testing.T) {
+	_, privKey, _ := ed25519.GenerateKey(nil)
+	signer, _ := signing.NewBasicSigner(privKey, "test-agent")
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/preflight" {
+			json.NewEncoder(w).Encode(agent.PreflightResponse{
+				Passed:          false,
+				RejectionReason: `command "false" exit=1`,
+				Results: []envelope.PreconditionResult{
+					{
+						PreconditionIndex: 0,
+						Type:              string(envelope.PreconditionToolAvailable),
+						Passed:            true,
+						Message:           `tool "go" available=true`,
+					},
+					{
+						PreconditionIndex: 1,
+						Type:              string(envelope.PreconditionCommandExitCode),
+						Passed:            false,
+						Message:           `command "false" exit=1`,
+					},
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client, err := NewMeshClient(srv.URL, signer, testTLSOption(t, srv))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := client.Check(context.Background(), []envelope.Precondition{
+		{Type: envelope.PreconditionToolAvailable, Params: map[string]string{"tool": "go"}},
+		{Type: envelope.PreconditionCommandExitCode, Params: map[string]string{"command": "false"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected Check error: %v", err)
+	}
+	if report.Passed {
+		t.Errorf("expected report.Passed = false, got true")
+	}
+	if len(report.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(report.Results))
+	}
+	if !report.Results[0].Passed || report.Results[1].Passed {
+		t.Errorf("unexpected results state: %+v", report.Results)
+	}
+	if report.RejectionReason == "" {
+		t.Errorf("expected non-empty RejectionReason")
+	}
+}
+
+// TestMeshClient_Check_EndpointNotFound_ReturnsError verifies that if the remote executor
+// does not implement /preflight (returns 404), Check() fails with an explicit error instead
+// of failing open.
+func TestMeshClient_Check_EndpointNotFound_ReturnsError(t *testing.T) {
+	_, privKey, _ := ed25519.GenerateKey(nil)
+	signer, _ := signing.NewBasicSigner(privKey, "test-agent")
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client, err := NewMeshClient(srv.URL, signer, testTLSOption(t, srv))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = client.Check(context.Background(), []envelope.Precondition{
+		{Type: envelope.PreconditionToolAvailable, Params: map[string]string{"tool": "go"}},
+	})
+	if err == nil {
+		t.Fatal("expected error when /preflight returns 404, got nil")
+	}
+}
+
 
 // TestMeshClient_CheckUnreachable returns error when executor is unreachable.
 func TestMeshClient_CheckUnreachable(t *testing.T) {
