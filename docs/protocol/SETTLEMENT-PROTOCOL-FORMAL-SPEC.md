@@ -48,10 +48,13 @@ Envelope        ::= "{"
                     '"max_remediations"' ":" NonNegativeInt ","
                     '"no_subdelegation"' ":" Bool ","
                     '"created_at"' ":" ISODateTime ","
+                    (' "capabilities" ' ":" "[" CapabilityList "]" ",")?
                     '"version"' ":" '"1.0"' ","
                     '"emitter_signature"' ":" Base64URLString ","
                     '"envelope_hash"' ":" Hex64String
                     "}"
+
+CapabilityList  ::= "" | NonEmptyString ("," NonEmptyString)*
 
 Territory       ::= "{" '"repository"' ":" NonEmptyString ","
                        '"branch"' ":" NonEmptyString ","
@@ -107,6 +110,7 @@ StringList      ::= "" | NonEmptyString ("," NonEmptyString)*
 | `max_remediations` | `int` | **Sí** | Reparaciones permitidas. ≥ 0. |
 | `no_subdelegation` | `bool` | **Sí** | Siempre `true` en v1. |
 | `created_at` | `string (ISO 8601)` | **Sí** | Época de creación. |
+| `capabilities` | `[]string` | No (`omitempty`) | Capacidades declaradas (RFC-002 S3). Si se omite o está vacío, ejecuta bajo perfil mínimo (S3/A1). Cualquier capacidad no concedida por el ejecutor genera `REJECTED_CAPABILITY`. |
 | `version` | `string` | **Sí** | Valor `"1.0"`. |
 | `emitter_signature` | `string` | **Sí\*** | Firma Ed25519 de A (ver §5). |
 | `envelope_hash` | `string` | **Sí\*** | Hash JCS de A (ver §5). |

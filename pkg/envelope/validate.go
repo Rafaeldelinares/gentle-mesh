@@ -82,6 +82,18 @@ func Validate(env *CognitiveTaskEnvelope) error {
 		seenIDs[env.Assertions[i].ID] = true
 	}
 
+	// Capabilities (S3)
+	seenCaps := make(map[Capability]bool)
+	for i, cap := range env.Capabilities {
+		if strings.TrimSpace(string(cap)) == "" {
+			return fmt.Errorf("capability[%d]: must be non-empty", i)
+		}
+		if seenCaps[cap] {
+			return fmt.Errorf("capability: duplicate %q", cap)
+		}
+		seenCaps[cap] = true
+	}
+
 	// Constraints
 	if env.TimeoutSeconds <= 0 {
 		return ErrNegativeTimeout
@@ -301,6 +313,7 @@ func ComputeEnvelopeHash(env *CognitiveTaskEnvelope) (string, error) {
 		MaxRemediations: env.MaxRemediations,
 		NoSubdelegation: env.NoSubdelegation,
 		CreatedAt:       env.CreatedAt,
+		Capabilities:    env.Capabilities,
 		// Signature fields intentionally omitted (defaults to "").
 	}
 
