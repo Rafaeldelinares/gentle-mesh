@@ -258,6 +258,7 @@ func TestGentleShellRunner_HappyPathTranslatesEvents(t *testing.T) {
 		"--symlink", "usr/lib64", "/lib64",
 		"--symlink", "usr/sbin", "/sbin",
 		"--ro-bind", "/etc", "/etc",
+		"--ro-bind-try", "/run/systemd/resolve",
 		"--dev", "/dev",
 		"--proc", "/proc",
 		"--tmpfs", "/tmp",
