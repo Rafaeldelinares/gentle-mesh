@@ -227,6 +227,7 @@ const (
 	ContractStatusDisputed         ContractStatus = "DISPUTED"
 	ContractStatusAbandoned        ContractStatus = "ABANDONED"
 	ContractStatusSettlementTimeout ContractStatus = "SETTLEMENT_TIMEOUT"
+	ContractStatusResolved          ContractStatus = "RESOLVED"
 )
 
 // IsTerminal returns true if the status is a final state.
@@ -235,7 +236,7 @@ func (s ContractStatus) IsTerminal() bool {
 	case ContractStatusSettled, ContractStatusAcceptedFinal,
 		ContractStatusRejected, ContractStatusExpired,
 		ContractStatusSettlementFailed, ContractStatusAbandoned,
-		ContractStatusSettlementTimeout:
+		ContractStatusSettlementTimeout, ContractStatusResolved:
 		return true
 	default:
 		return false

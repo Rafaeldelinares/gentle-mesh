@@ -462,6 +462,7 @@ func TestContractStatus_IsTerminal(t *testing.T) {
 		{ContractStatusDisputed, false},
 		{ContractStatusAbandoned, true},
 		{ContractStatusSettlementTimeout, true},
+		{ContractStatusResolved, true},
 	}
 
 	for _, tt := range tests {
