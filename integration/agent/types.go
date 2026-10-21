@@ -39,6 +39,12 @@ type Config struct {
 	// a valid client certificate signed by this CA.
 	ClientCAFile string
 
+	// GrantedCapabilities is the set of non-minimal capabilities the executor grants.
+	// Deny-by-default (S3): if a capability is requested in an envelope and not present
+	// in GrantedCapabilities, the envelope/lease is rejected with REJECTED_CAPABILITY.
+	// If nil or empty, only the minimal profile (no capabilities) is accepted.
+	GrantedCapabilities []envelope.Capability
+
 	// LeaseReaperInterval controls the lease expiration monitor (RFC-002 R2).
 	// When > 0, a background reaper purges expired leases and emits a
 	// SETTLEMENT_TIMEOUT receipt for each, autonomously (no incoming request
@@ -65,6 +71,7 @@ type Signer interface {
 // PreflightRequest is the POST /preflight request body (RFC-002 A2).
 type PreflightRequest struct {
 	Preconditions []envelope.Precondition `json:"preconditions"`
+	Capabilities  []envelope.Capability   `json:"capabilities,omitempty"`
 }
 
 // PreflightResponse is the POST /preflight response body (RFC-002 A2).

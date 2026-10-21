@@ -57,6 +57,11 @@ type CognitiveTaskEnvelope struct {
 	// CreatedAt is the epoch timestamp when the envelope was created.
 	CreatedAt time.Time `json:"created_at"`
 
+	// Capabilities declares the non-minimal permissions requested for this task (S3).
+	// When empty or omitted, the task executes under the minimal profile (A1/S3).
+	// Any capability not explicitly granted by the executor produces REJECTED_CAPABILITY.
+	Capabilities []Capability `json:"capabilities,omitempty"`
+
 	// EmitterSignature is the Ed25519 signature over the JCS canonical
 	// hash of this envelope (with this field set to "").
 	// Populated by the emitter before transmission.
@@ -142,6 +147,32 @@ func (p Precondition) PortParams() (port int, ok bool) {
 	}
 	return 0, true // parsed separately
 }
+
+// ─────────────────────────────────────────────────────────────────
+// Capabilities (RFC-002 S3 & A1)
+// ─────────────────────────────────────────────────────────────────
+
+// Capability represents an execution permission or resource requested by an envelope.
+// Under RFC-002 S3 (Deny-by-default), any capability not explicitly granted by the executor
+// causes the contract to be rejected with REJECTED_CAPABILITY.
+// An envelope with no declared capabilities runs under the minimal profile
+// (no network, no process execution, read-only workspace) per S3 and A1.
+type Capability string
+
+const (
+	// CapabilityNet authorizes outbound network access.
+	CapabilityNet Capability = "net"
+	// CapabilityExec authorizes execution of arbitrary host commands.
+	CapabilityExec Capability = "exec"
+	// CapabilityWorkspaceWrite authorizes write access to the workspace.
+	CapabilityWorkspaceWrite Capability = "workspace:write"
+)
+
+const (
+	// RejectionReasonRejectedCapability is returned when an envelope requests capabilities
+	// that are not granted by the executor under deny-by-default (RFC-002 S3).
+	RejectionReasonRejectedCapability = "REJECTED_CAPABILITY"
+)
 
 // ─────────────────────────────────────────────────────────────────
 // Assertions (settlement DSL — closed set)

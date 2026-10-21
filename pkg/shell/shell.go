@@ -31,8 +31,9 @@ type Config struct {
 	WorkspaceDir    string        // Working directory for command execution
 	ChainDBPath     string        // Path to SQLite receipt chain database
 	EvalTimeout     time.Duration // Maximum time for a single assertion evaluation
-	MaxRemediations int           // Maximum number of remediation loops
-	RemoteURL       string        // Remote executor URL (empty = local mode)
+	MaxRemediations     int           // Maximum number of remediation loops
+	RemoteURL           string        // Remote executor URL (empty = local mode)
+	GrantedCapabilities []envelope.Capability // Granted capabilities under S3 (deny-by-default)
 }
 
 // Shell is a contract-aware shell execution layer.
@@ -95,6 +96,24 @@ func New(cfg Config) (*Shell, error) {
 		chainStore: chainStore,
 		db:         db,
 	}, nil
+}
+
+// CheckCapabilities evaluates requested capabilities against GrantedCapabilities under S3.
+// An empty slice represents the minimal profile (A1/S3) and passes.
+func (s *Shell) CheckCapabilities(requested []envelope.Capability) (bool, string) {
+	if len(requested) == 0 {
+		return true, "" // minimal profile (S3, A1)
+	}
+	granted := make(map[envelope.Capability]bool, len(s.config.GrantedCapabilities))
+	for _, cap := range s.config.GrantedCapabilities {
+		granted[cap] = true
+	}
+	for _, req := range requested {
+		if !granted[req] {
+			return false, fmt.Sprintf("%s: capability %q not granted", envelope.RejectionReasonRejectedCapability, req)
+		}
+	}
+	return true, ""
 }
 
 // ReadinessReport is the result of a pre-flight check.

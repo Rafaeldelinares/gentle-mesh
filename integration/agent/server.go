@@ -627,6 +627,25 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// checkCapabilities checks requested envelope capabilities against the executor's
+// GrantedCapabilities under RFC-002 S3 (Deny-by-default).
+// An empty requested capabilities slice represents the minimal profile (S3, A1) and always passes.
+func (s *Server) checkCapabilities(requested []envelope.Capability) (bool, string) {
+	if len(requested) == 0 {
+		return true, "" // minimal profile (S3, A1)
+	}
+	granted := make(map[envelope.Capability]bool, len(s.config.GrantedCapabilities))
+	for _, cap := range s.config.GrantedCapabilities {
+		granted[cap] = true
+	}
+	for _, req := range requested {
+		if !granted[req] {
+			return false, fmt.Sprintf("%s: capability %q not granted", envelope.RejectionReasonRejectedCapability, req)
+		}
+	}
+	return true, ""
+}
+
 // handleSubmitEnvelope handles POST /envelopes.
 // Called by A to submit a contract to B.
 func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
@@ -672,14 +691,26 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// S3: Deny-by-default capabilities check.
+	capOK, capReason := s.checkCapabilities(env.Capabilities)
+
 	// Pre-flight: check preconditions synchronously.
 	precondResults := s.runPreconditions(env.Preconditions)
-	allPassed := true
-	for _, r := range precondResults {
-		if !r.Passed {
-			allPassed = false
-			break
+	allPassed := capOK
+	if capOK {
+		for _, r := range precondResults {
+			if !r.Passed {
+				allPassed = false
+				break
+			}
 		}
+	}
+
+	var rejectionReason string
+	if !capOK {
+		rejectionReason = capReason
+	} else if !allPassed {
+		rejectionReason = "preconditions not met"
 	}
 
 	meshID := s.config.MeshID
@@ -692,6 +723,7 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 		ExecutorAgentID:     s.config.AgentID,
 		Accepted:            allPassed,
 		PreconditionResults: precondResults,
+		RejectionReason:     rejectionReason,
 		ExpiresAt:           time.Now().Add(time.Duration(env.TimeoutSeconds) * time.Second),
 	}
 
@@ -712,7 +744,7 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 
 	resp := &EnvelopeResponse{Accepted: lease.Accepted, LeaseID: lease.LeaseID}
 	if !lease.Accepted {
-		resp.Error = "preconditions not met"
+		resp.Error = lease.RejectionReason
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -731,9 +763,13 @@ func (s *Server) handlePreflight(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	capOK, capReason := s.checkCapabilities(req.Capabilities)
 	results := s.runPreconditions(req.Preconditions)
-	allPassed := true
+	allPassed := capOK
 	var reason string
+	if !capOK {
+		reason = capReason
+	}
 	for _, res := range results {
 		if !res.Passed {
 			allPassed = false
@@ -792,13 +828,25 @@ func (s *Server) handleCreateLease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// S3: Deny-by-default capabilities check.
+	capOK, capReason := s.checkCapabilities(env.Capabilities)
+
 	precondResults := s.runPreconditions(env.Preconditions)
-	allPassed := true
-	for _, r := range precondResults {
-		if !r.Passed {
-			allPassed = false
-			break
+	allPassed := capOK
+	if capOK {
+		for _, r := range precondResults {
+			if !r.Passed {
+				allPassed = false
+				break
+			}
 		}
+	}
+
+	var rejectionReason string
+	if !capOK {
+		rejectionReason = capReason
+	} else if !allPassed {
+		rejectionReason = "preconditions not met"
 	}
 
 	meshID := s.config.MeshID
@@ -811,6 +859,7 @@ func (s *Server) handleCreateLease(w http.ResponseWriter, r *http.Request) {
 		ExecutorAgentID:     s.config.AgentID,
 		Accepted:            allPassed,
 		PreconditionResults: precondResults,
+		RejectionReason:     rejectionReason,
 		ExpiresAt:           time.Now().Add(time.Duration(env.TimeoutSeconds) * time.Second),
 	}
 
@@ -871,26 +920,36 @@ func (s *Server) handleSettle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// R2: reactive lease-expiration check. A settle whose lease already
-	// expired aborts without executing and emits a SETTLEMENT_TIMEOUT receipt
-	// (idempotent: an already-settled contract keeps its receipt, R1).
+	// S3: Deny-by-default capability check.
+	if capOK, capReason := s.checkCapabilities(env.Capabilities); !capOK {
+		writeError(w, http.StatusForbidden, capReason)
+		return
+	}
+
+	// R2: reactive lease-expiration and validity check.
 	if req.LeaseID != "" {
-		if l, ok := s.GetLease(req.LeaseID); ok && l.EnvelopeID == env.EnvelopeID && !l.ExpiresAt.After(time.Now()) {
-			timeoutRec, emitErr := s.emitSettlementTimeout(env)
-			if emitErr != nil {
-				log.Printf("[%s] emit SETTLEMENT_TIMEOUT for expired lease %s: %v", s.config.AgentID, req.LeaseID, emitErr)
-				writeError(w, http.StatusInternalServerError, "emit timeout receipt: "+emitErr.Error())
+		if l, ok := s.GetLease(req.LeaseID); ok {
+			if !l.Accepted {
+				writeError(w, http.StatusPreconditionFailed, "cannot settle unaccepted lease: "+l.RejectionReason)
 				return
 			}
-			receiptJSON, err := json.Marshal(timeoutRec)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+			if l.EnvelopeID == env.EnvelopeID && !l.ExpiresAt.After(time.Now()) {
+				timeoutRec, emitErr := s.emitSettlementTimeout(env)
+				if emitErr != nil {
+					log.Printf("[%s] emit SETTLEMENT_TIMEOUT for expired lease %s: %v", s.config.AgentID, req.LeaseID, emitErr)
+					writeError(w, http.StatusInternalServerError, "emit timeout receipt: "+emitErr.Error())
+					return
+				}
+				receiptJSON, err := json.Marshal(timeoutRec)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+				log.Printf("[%s] lease %s expired: SETTLEMENT_TIMEOUT receipt=%s",
+					s.config.AgentID, req.LeaseID, timeoutRec.ReceiptID)
+				writeJSON(w, http.StatusOK, &SettleResponse{ReceiptJSON: receiptJSON, ReceiptID: timeoutRec.ReceiptID})
 				return
 			}
-			log.Printf("[%s] lease %s expired: SETTLEMENT_TIMEOUT receipt=%s",
-				s.config.AgentID, req.LeaseID, timeoutRec.ReceiptID)
-			writeJSON(w, http.StatusOK, &SettleResponse{ReceiptJSON: receiptJSON, ReceiptID: timeoutRec.ReceiptID})
-			return
 		}
 	}
 

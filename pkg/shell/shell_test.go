@@ -476,6 +476,54 @@ func TestShell_PreconditionCommandExitCode_AllowedAndDisallowedCommands(t *testi
 	}
 }
 
+func TestS3_Shell_Capabilities(t *testing.T) {
+	workspace := t.TempDir()
+	chainDB := filepath.Join(t.TempDir(), "chain.db")
+
+	// Shell with no granted capabilities (deny-by-default)
+	sDefault, err := New(Config{
+		MeshID:       "mesh-test",
+		AgentID:      "test-agent",
+		WorkspaceDir: workspace,
+		ChainDBPath:  chainDB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sDefault.Close()
+
+	// Minimal profile passes
+	ok, reason := sDefault.CheckCapabilities(nil)
+	if !ok || reason != "" {
+		t.Errorf("minimal profile should pass, got ok=%v, reason=%s", ok, reason)
+	}
+
+	// Ungranted capability rejected
+	ok, reason = sDefault.CheckCapabilities([]envelope.Capability{envelope.CapabilityNet})
+	if ok || !strings.Contains(reason, envelope.RejectionReasonRejectedCapability) {
+		t.Errorf("expected rejection with REJECTED_CAPABILITY, got ok=%v reason=%s", ok, reason)
+	}
+
+	// Shell with granted capability
+	chainDB2 := filepath.Join(t.TempDir(), "chain2.db")
+	sGranted, err := New(Config{
+		MeshID:              "mesh-test",
+		AgentID:             "test-agent",
+		WorkspaceDir:        workspace,
+		ChainDBPath:         chainDB2,
+		GrantedCapabilities: []envelope.Capability{envelope.CapabilityNet},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sGranted.Close()
+
+	ok, reason = sGranted.CheckCapabilities([]envelope.Capability{envelope.CapabilityNet})
+	if !ok || reason != "" {
+		t.Errorf("granted capability should pass, got ok=%v reason=%s", ok, reason)
+	}
+}
+
 // runCmd is a test helper that runs a command and ignores its output.
 func runCmd(name string, args ...string) {
 	cmd := exec.Command(name, args...)
