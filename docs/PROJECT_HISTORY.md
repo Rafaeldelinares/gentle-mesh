@@ -26,7 +26,7 @@ Ninguno de esos hallazgos tenía superficie de ataque activa en producción en e
 
 ## El horizonte
 
-Con el perfil mínimo de la RFC-002 cerrado de verdad (12/12), el proyecto abre dos frentes:
+Con el perfil mínimo de la RFC-002 cerrado de verdad (12/12), el proyecto abre dos frentes concretos, de corto plazo:
 
 **Validación con agentes reales**: un worker físico ya está en marcha, probado con una tarea sintética no trivial (una caché LRU+TTL concurrente) con verificación cruzada independiente fuera del sandbox del agente. El siguiente paso es trabajo real de producción, no solo pruebas de validación.
 
@@ -37,4 +37,4 @@ Con el perfil mínimo de la RFC-002 cerrado de verdad (12/12), el proyecto abre 
 
 Como candidato de alcance adicional: un modelo de capacidades en dos capas separadas — la capa AGENTE (modelo, skills, presupuestos de ejecución) y la capa NODO/WORKER (hardware, sandbox, toolchains, red, identidad) — para que las fallas de un worker por carencia de algo (una herramienta no instalada, por ejemplo) se reporten con su causa real en vez de perderse como un error genérico.
 
-A cinco años: identidad criptográfica por agente, autorización por capacidades (no por roles), estado compartido por eventos firmados, y una capa económica de recibos firmados y medición de gasto cuando un agente subcontrata trabajo a otros — sin esto no hay mercado de agentes, solo demos. El humano, en este horizonte, define política y tiene veto — no es un router en medio de cada mensaje.
+Ninguno de estos dos frentes es un plazo ni un compromiso — son los próximos pasos razonables dado lo que ya está construido, no una promesa de cuándo estará terminado.
