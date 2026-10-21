@@ -35,7 +35,7 @@
 - No sustituye a las sesiones remotas de pi: pi te conecta a un agente en otra máquina; Gentle Mesh coordina a varios.
 - La parte de recibos firmados (RFC-002) es experimental y no está en el binario.
 
-**RFC-002 (experimental).** El protocolo de liquidación entre agentes con recibos Ed25519 firmados y cadena SHA-256 es una extensión separada. No está integrada en el binario actual. A fecha de hoy, ningún nodo del repositorio cumple el perfil mínimo conforme (solo 2 de los 12 requisitos están demostrados por tests automatizados). El estado de conformidad vive en la rama [`feat/rfc-002-settlement`](https://github.com/Rafaeldelinares/gentle-mesh/tree/feat/rfc-002-settlement) y en el issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70).
+**RFC-002.** El protocolo de liquidación entre agentes con recibos Ed25519 firmados y cadena SHA-256 está implementado y probado en `main`, cumpliendo el 100% (12/12) de los requisitos del perfil mínimo conforme respaldado por tests automatizados y cerrado bajo el issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70). Ver la matriz completa en [`docs/rfcs/002-objectives-and-non-goals.md`](docs/rfcs/002-objectives-and-non-goals.md).
 
 ---
 
@@ -61,7 +61,7 @@
 
 **Nota sobre plazos:** este proyecto es impulsado por la comunidad; no se ofrecen fechas de entrega.
 
-**Sobre RFC-002:** el protocolo de recibos firmados es experimental, no está integrado en el binario y ningún nodo cumple hoy el perfil mínimo conforme (solo 2 de los 12 requisitos están demostrados por tests automatizados). Ver el estado de conformidad en la rama `feat/rfc-002-settlement` y en el issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70).
+**Sobre RFC-002:** el protocolo de recibos firmados y liquidación contractual entre agentes cumple el 100% (12/12) de los requisitos del perfil mínimo conforme en `main`, verificado con tests automatizados continuos. Ver la matriz de conformidad en [docs/rfcs/002-objectives-and-non-goals.md](docs/rfcs/002-objectives-and-non-goals.md) y el histórico en el issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70).
 
 **Roadmap completo y lo que no haremos:** [ROADMAP.md](ROADMAP.md).
 
