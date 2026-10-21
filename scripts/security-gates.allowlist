@@ -14,9 +14,5 @@
 pkg/tlsutil/:InsecureSkipVerify                  || permanent || centralized dev-insecure TLS configuration
 
 # ── Phase F2: exec sh -c (eliminated in F2 by direct exec.Command) ─────────────
-# All sh -c calls are replaced with direct exec.Command in Phase F2.
-# Phase 0b resolves this for test infrastructure by adding //go:build testharness,
-# but the sh -c pattern remains in source until F2 replaces it.
-pkg/shell/:exec.Command.*"sh".*"-c"               || F2 || stub package, direct exec in Phase 2
-integration/agent/server.go:exec.Command.*"sh".*"-c" || F2 || handleExecute + assertion evaluation
+# Test infrastructure uses docker exec and fixture setup in tests.
 integration/testscenario/:exec.Command.*"sh".*"-c"  || F2 || docker exec and fixture setup in tests

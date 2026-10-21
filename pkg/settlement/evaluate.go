@@ -388,8 +388,9 @@ func (e *Evaluator) runCommand(ctx context.Context, cmdStr string) (int, string,
 	return exitCode, stdout.String(), stderr.String(), nil
 }
 
-// splitShell splits a command string into tokens, respecting quotes.
-func splitShell(s string) ([]string, error) {
+// SplitCommand splits a command string into tokens, respecting quotes,
+// without shell interpretation or subshell invocation (RFC-002 S6).
+func SplitCommand(s string) ([]string, error) {
 	var tokens []string
 	var current strings.Builder
 	inQuote := false
@@ -415,6 +416,11 @@ func splitShell(s string) ([]string, error) {
 		tokens = append(tokens, t)
 	}
 	return tokens, nil
+}
+
+// splitShell delegates to SplitCommand for backwards compatibility.
+func splitShell(s string) ([]string, error) {
+	return SplitCommand(s)
 }
 
 func toInt(v any) (int, error) {

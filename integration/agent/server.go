@@ -1368,9 +1368,12 @@ func (s *Server) runPreconditions(preconds []envelope.Precondition) []envelope.P
 			}
 
 		case envelope.PreconditionGitCleanWorktree:
-			exitCode := runCheckCommand("git status --porcelain", s.config.WorkspaceDir)
-			result.Passed = exitCode == 0
-			result.Message = "git worktree clean=" + fmt.Sprint(result.Passed)
+			ctxGit, cancelGit := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancelGit()
+			cmd := exec.CommandContext(ctxGit, "git", "-C", s.config.WorkspaceDir, "status", "--porcelain")
+			out, err := cmd.Output()
+			result.Passed = (err == nil && strings.TrimSpace(string(out)) == "")
+			result.Message = fmt.Sprintf("git worktree clean=%v", result.Passed)
 
 		case envelope.PreconditionPortAvailable:
 			if pPort, ok := p.PortParams(); ok && pPort > 0 {
@@ -1387,19 +1390,25 @@ func (s *Server) runPreconditions(preconds []envelope.Precondition) []envelope.P
 	return results
 }
 
-// checkToolAvailable checks if a binary is in PATH.
+// checkToolAvailable checks if a binary is in PATH using exec.LookPath (RFC-002 S6).
 func checkToolAvailable(tool string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf("command -v %s", tool))
-	return cmd.Run() == nil
+	_, err := exec.LookPath(tool)
+	return err == nil
 }
 
-// runCheckCommand runs a command and returns the exit code.
+// runCheckCommand executes a command directly with tokenized arguments (RFC-002 S6).
+// S6: Direct execution without "sh -c" prevents shell metacharacter injection.
+// NOTE: While tokenized execution prevents shell injection, executing arbitrary
+// binaries from an envelope still executes with host privileges. This is safe only
+// when the envelope source is authenticated (mTLS S1 + Ed25519 S2) or sandboxed.
 func runCheckCommand(cmdStr, dir string) int {
+	parts, err := settlement.SplitCommand(cmdStr)
+	if err != nil || len(parts) == 0 {
+		return -1
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
+	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
