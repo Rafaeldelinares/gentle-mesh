@@ -109,6 +109,36 @@ func (c *HTTPClient) BaseURL() string {
 	return c.baseURL
 }
 
+// Preflight evaluates preconditions on the remote executor via POST /preflight (RFC-002 A2).
+func (c *HTTPClient) Preflight(ctx context.Context, req *PreflightRequest) (*PreflightResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/preflight", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.readError(resp)
+	}
+
+	var result PreflightResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return &result, nil
+}
+
 // SubmitEnvelope sends a CognitiveTaskEnvelope to the executor and waits for the lease.
 func (c *HTTPClient) SubmitEnvelope(ctx context.Context, envelopeJSON []byte) (*EnvelopeResponse, error) {
 	body, err := json.Marshal(&EnvelopeRequest{EnvelopeJSON: envelopeJSON})

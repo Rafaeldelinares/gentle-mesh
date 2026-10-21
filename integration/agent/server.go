@@ -368,6 +368,7 @@ func (s *Server) registerHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /verify", s.handleVerifyReceipt)
 
 	// Agent B endpoints (executor).
+	mux.HandleFunc("POST /preflight", s.handlePreflight)
 	mux.HandleFunc("POST /leases", s.handleCreateLease)
 	mux.HandleFunc("POST /settle", s.handleSettle)
 	mux.HandleFunc("POST /accept", s.handleAccept)
@@ -712,6 +713,39 @@ func (s *Server) handleSubmitEnvelope(w http.ResponseWriter, r *http.Request) {
 		resp.Error = "preconditions not met"
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handlePreflight handles POST /preflight — evaluates preconditions without creating a lease (RFC-002 A2).
+func (s *Server) handlePreflight(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	defer r.Body.Close()
+
+	var req PreflightRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	results := s.runPreconditions(req.Preconditions)
+	allPassed := true
+	var reason string
+	for _, res := range results {
+		if !res.Passed {
+			allPassed = false
+			if reason == "" {
+				reason = res.Message
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, &PreflightResponse{
+		Passed:          allPassed,
+		RejectionReason: reason,
+		Results:         results,
+	})
 }
 
 // handleCreateLease handles POST /leases.
