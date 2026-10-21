@@ -862,4 +862,6 @@ Cuando un worker muere durante la ejecución de una tarea (validado por el E2E d
 
 ---
 
-Código abierto bajo licencia MIT; ver [LICENSE](LICENSE). Si el proyecto se integra en la organización Gentleman-Programming, cualquier cambio de licencia se acordaría con sus mantenedores.
+## Licencia
+
+Código abierto bajo licencia MIT; ver [LICENSE](LICENSE).
