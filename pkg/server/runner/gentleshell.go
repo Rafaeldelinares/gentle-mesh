@@ -212,6 +212,12 @@ func defaultSystemMounts() []string {
 		"--symlink", "usr/lib64", "/lib64",
 		"--symlink", "usr/sbin", "/sbin",
 		"--ro-bind", "/etc", "/etc",
+		// Allow resolution of /etc/resolv.conf when it is a symlink to
+		// systemd-resolved's stub (/run/systemd/resolve/stub-resolv.conf) or
+		// resolvconf (/run/resolvconf), common on modern Debian/Ubuntu systems.
+		// Ignored if not present on the host.
+		"--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve",
+		"--ro-bind-try", "/run/resolvconf", "/run/resolvconf",
 		// Devices, /proc and a writable /tmp.
 		"--dev", "/dev",
 		"--proc", "/proc",
