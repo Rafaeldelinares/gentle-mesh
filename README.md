@@ -61,7 +61,26 @@
 
 **Nota sobre plazos:** este proyecto es impulsado por la comunidad; no se ofrecen fechas de entrega.
 
-**Sobre RFC-002:** el protocolo de recibos firmados y liquidación contractual entre agentes cumple el 100% (12/12) de los requisitos del perfil mínimo conforme en `main`, verificado con tests automatizados continuos. Ver la matriz de conformidad en [docs/rfcs/002-objectives-and-non-goals.md](docs/rfcs/002-objectives-and-non-goals.md) y el histórico en el issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70).
+**Sobre RFC-002:** el protocolo de recibos firmados y liquidación contractual entre agentes cumple el 100% (12/12) de los requisitos del perfil mínimo conforme en `main`, verificado con tests automatizados continuos.
+
+#### Conformidad del Perfil Mínimo RFC-002 (12/12)
+
+| Requisito | Qué significa | Estado | Test representativo |
+|-----------|---------------|--------|---------------------|
+| **S1** — Identidad fuerte mTLS ligada a agent_id | Cada agente se autentica con un certificado criptográfico propio, no con una contraseña o token que se pueda copiar fácilmente. El certificado está atado a su identidad, así que nadie puede hacerse pasar por otro agente. | cumplido | `integration/agent/s1_mtls_identity_test.go:44` |
+| **S2** — Verificación de firma Ed25519 antes de mutar | Antes de que un agente pueda cambiar algo en el sistema, se comprueba que la orden viene firmada con su clave privada. Si la firma no cuadra, la operación se rechaza — evita que alguien inyecte comandos falsos. | cumplido | `integration/agent/s2_signature_verification_test.go:42` |
+| **S3** — Capacidades deny-by-default y perfil mínimo | Por defecto un agente no puede hacer nada; solo tiene permiso para las acciones concretas que se le han habilitado explícitamente. Es el principio de "mínimo privilegio" aplicado estrictamente. | cumplido | `integration/agent/s3_capabilities_test.go:40` |
+| **S6** — Cero subshells y sandbox allowlist en precondiciones | El sistema no ejecuta comandos de shell arbitrarios (que podrían usarse para escapar del sandbox), y solo permite las operaciones que están en una lista blanca explícita. | cumplido | `integration/agent/s6_preconditions_test.go:20` |
+| **S7** — Cadena inviolable y contrafirmas con dominio separado | Los recibos/eventos se encadenan criptográficamente (como un mini-blockchain) y cada contraparte firma con su propia clave en un "dominio" separado, para que nadie pueda falsificar o reordenar el historial. | cumplido | `pkg/receipt/chain_adversarial_test.go:30` |
+| **S9** — Estricto protocolo v2 sin downgrade | El sistema rechaza intentos de usar una versión antigua del protocolo (que podría tener vulnerabilidades ya corregidas) para forzar un comportamiento menos seguro. | cumplido | `pkg/envelope/version_test.go:11` |
+| **R1** — Idempotencia determinista por envelope_id | Si la misma petición llega duplicada (por un reintento de red, por ejemplo), el sistema la reconoce y no la ejecuta dos veces. | cumplido | `integration/agent/r1_idempotence_test.go:44` |
+| **R2** — Leases con expiración y reaper autónomo | Cuando un agente "reserva" una tarea, esa reserva caduca sola si el agente se cuelga o desconecta, y un proceso de limpieza automático ("reaper") libera esas tareas abandonadas. | cumplido | `integration/agent/r2_lease_expiration_test.go:35` |
+| **R5** — Estados terminales claros y absorción CAS (RESOLVED) | Una tarea, una vez resuelta, queda en un estado final e inmutable; el mecanismo que la marca como resuelta evita condiciones de carrera (dos procesos intentando resolverla a la vez). | cumplido | `pkg/envelope/contract_state_test.go:15` |
+| **R7** — Firmas deterministas (1000 iteraciones SQLite) | Firmar el mismo dato siempre produce la misma firma, sin aleatoriedad — se probó 1000 veces contra la base SQLite para asegurar que no hay variabilidad que rompa la verificación. | cumplido | `pkg/envelope/signer_test.go:241` |
+| **A1** — Seguro por defecto sin configurar (minimal profile) | Si no configuras nada, el sistema arranca ya en modo seguro (sin permisos abiertos), no al revés. | cumplido | `integration/agent/a1_zero_config_test.go:57` |
+| **A2** — Descubrimiento por intento vía /preflight estructurado | Un agente puede preguntar de antemano, mediante un endpoint /preflight, si una acción que quiere hacer sería aceptada o no — sin tener que intentarla a ciegas. | cumplido | `integration/agent/a2_preflight_test.go:51` |
+
+Ver la matriz completa de todos los objetivos en [docs/rfcs/002-objectives-and-non-goals.md](docs/rfcs/002-objectives-and-non-goals.md) y el histórico en el issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70).
 
 **Roadmap completo y lo que no haremos:** [ROADMAP.md](ROADMAP.md).
 
