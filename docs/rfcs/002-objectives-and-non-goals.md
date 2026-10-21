@@ -118,8 +118,7 @@ Cuando dos objetivos entren en conflicto, se aplica este orden:
 
 ## 7. Estado de conformidad
 
-Verificación sobre el commit `9a849a855087e144cdc02b4cb4eb24457b459d22` (rama
-`feat/rfc-002-settlement`), a fecha 2026-10-06. «Cumplido» significa que existe un test
+Verificación sobre el commit `f029a1c1d0f523c9ff4c2ae77bbd289ba11fb627` (rama `main`), a fecha 2026-10-21. «Cumplido» significa que existe un test
 automatizado que demuestra el criterio medible.
 
 | Objetivo | Perfil mínimo | Estado | Test relacionado | Qué falta | Incidencia |
@@ -150,7 +149,7 @@ automatizado que demuestra el criterio medible.
 
 «(débil)» marca un test que existe pero no demuestra el criterio: pasaría aunque se quitara la lógica que debería comprobar.
 
-Los objetivos sin issue propio se siguen como casillas en el paraguas [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70).
+Los objetivos sin issue propio se siguieron como casillas en el paraguas [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70), formalmente cerrado tras verificar y demostrar el 100% de los requisitos del perfil mínimo (12/12).
 
 **Lectura de conformidad del perfil mínimo:** Los 12 requisitos del perfil mínimo conforme
 (S1, S2, S3, S6, S7, S9, R1, R2, R5, R7, A1, A2) están completamente implementados y respaldados

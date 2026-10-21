@@ -15,13 +15,20 @@ Roadmap público de Gentle Mesh. Este documento refleja el **estado real y verif
 - **Hub de Arquitectura y Puertas de Verificación:** Creación de los portales interactivos y diagramas SVG/HTML autónomos (Archify) con el mapeo de compuertas técnicas (G1 a G5).
 - **Radar de Ámbitos y Control Territorial:** Detección de colisiones a nivel de superficies (`edit_surfaces`) y cerrojos exclusivos de rama (`git_branch`) con cuatro modos de conflicto (`queue`, `warn`, `strict`, `disabled`).
 
-### Avances en Conformidad RFC-002 (Liquidación entre Agentes)
-Implementación y endurecimiento de los objetivos del perfil mínimo (integrados a `main` en PR #116 y PR #129; el umbrella issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70) permanece reabierto dando seguimiento a los requisitos pendientes del perfil de 12):
-- **S1 (mTLS Identity):** Validación de identidad criptográfica ligada al certificado de transporte (PR #113).
-- **S2 (Firma de Emisor):** Registro y verificación de la firma del emisor protegida contra carreras (PR #112).
-- **S6 (Sin ejecución de datos / No code-as-data):** Eliminación de subshells `sh -c` en precondiciones mediante `exec.LookPath` y tokenización léxica directa `settlement.SplitCommand` con 0 excepciones en security gates (PR #129 / issue #35).
-- **R1 (Idempotencia en Settlement):** Procesamiento único de liquidaciones con mitigación de colisiones de timestamps UUIDv7 bajo RFC 9562 (PR #114).
-- **R2 (Expiración de Leases):** Monitor de expiración con emisión determinista de recibos `SETTLEMENT_TIMEOUT` (PR #115).
+### Conformidad Total del Perfil Mínimo RFC-002 (Liquidación entre Agentes)
+Implementación y endurecimiento de los 12 objetivos del perfil mínimo conforme integrados y demostrados por tests automatizados en `main` (el umbrella issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70) queda formalmente cerrado con el 100% de los requisitos del perfil de 12 cumplidos):
+- **S1 (mTLS Identity):** Validación de identidad criptográfica ligada al certificado de transporte (PR #112 & PR #113 / issue #66).
+- **S2 (Firma de Emisor):** Registro y verificación de la firma del emisor previa a la mutación (PR #114 / issue #67).
+- **S3 (Capacidades Deny-by-Default):** Validación estricta con `REJECTED_CAPABILITY` ante capacidades no concedidas y soporte de perfil mínimo sin capacidades (PR #136).
+- **S6 (Sin ejecución de datos / Cero subshell):** Eliminación total de `sh -c` en precondiciones mediante `exec.LookPath`, tokenización léxica y allowlist binaria estricta con 0 excepciones en security gates (PR #121, PR #129, PR #130, PR #133 / issues #35, #130).
+- **S7 (Integridad de la historia y contrafirmas):** Preservación de `previous_receipt_hash` en el recibo y contrafirma del emisor bajo dominio criptográfico separado (`ComputeEmitterReceiptHash`) (PR #135 / issues #43, #48).
+- **S9 (Sin downgrade):** Cumplimiento estricto del protocolo v2 y rechazo de versiones incompatibles.
+- **R1 (Idempotencia en Settlement):** Procesamiento único de liquidaciones con mitigación de colisiones de timestamps UUIDv7 bajo RFC 9562 (PR #115 / issue #68).
+- **R2 (Expiración de Leases):** Monitor de expiración con reaper autónomo y emisión determinista de recibos `SETTLEMENT_TIMEOUT` (PR #116 / issue #69).
+- **R5 (Estados terminales claros):** Inclusión del estado absorbente `RESOLVED` para disputas y máquina de estados formal validada por CAS (PR #134).
+- **R7 (Firmas deterministas):** Verificación de firma determinista en 1000 iteraciones sobre SQLite.
+- **A1 (Seguro por defecto, sin configurar):** Encargo y liquidación de tareas de bajo riesgo sin declarar capacidades ni requerir configuración previa en el nodo ejecutor (PR #137).
+- **A2 (Descubrimiento por intento):** Inspección de precondiciones y capacidades estructuradas sin efectos secundarios mediante `POST /preflight` (PR #132 / issue #37).
 
 ### Fase 2 — Validación con Agentes y Hardware Real
 Demostración empírica de las dos preguntas centrales del protocolo A2A mediante ejecución real:
@@ -39,7 +46,6 @@ Demostración empírica de las dos preguntas centrales del protocolo A2A mediant
 
 Durante la validación en hardware real se identificaron brechas concretas, registradas en issues para su resolución:
 
-- **[#70 / #37 / #130] Conformidad RFC-002 incompleta y riesgos residuales:** El paraguas de conformidad [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70) fue reabierto tras constatar que el cierre fue impreciso. De los 12 requisitos del perfil mínimo, 5 siguen abiertos o sin resolver: S3 (deny-by-default sin código), S7 (integridad de historia parcial: #43, #48, #41), R5 (estados terminales claros), A1 (seguro por defecto) y A2 (descubrimiento por intento: issue [#37](https://github.com/Rafaeldelinares/gentle-mesh/issues/37) abierto por precondiciones fail-open). Además, se hace seguimiento en el issue [#130](https://github.com/Rafaeldelinares/gentle-mesh/issues/130) del confinamiento sandbox en `bwrap` o allowlist para `PreconditionCommandExitCode`.
 - **[#117] Documentación de seguridad desactualizada:** `SECURITY.md` afirma en sus limitaciones conocidas que no existe revocación de certificados, cuando los PRs #110 y #111 ya la implementaron en `main`.
 - **[#120] Recolección de residuos (GC de worktrees y ramas):** Falta de mecanismo automático para limpiar directorios de trabajo efímeros y ramas de propuesta huérfanas tras intentos fallidos o caídas de workers.
 - **[#122] Sobrecarga de contexto en sandbox:** Medición e instrumentación del overhead de ~14k tokens de contexto base que la directiva `--isolated` de `gentle-shell` introduce sobre el suelo de Pi.
