@@ -205,10 +205,12 @@ func (s *ShellServer) evalPrecondition(ctx context.Context, p envelope.Precondit
 			result.Message = "command parameter missing"
 			return result
 		}
-		parts := strings.Fields(cmdStr)
-		if len(parts) == 0 {
+		// S6 / Issue #130: Direct execution with tokenized arguments without subshell invocation,
+		// gated by strict allowlist of read-only diagnostic tools.
+		parts, err := settlement.ValidatePreconditionCommand(cmdStr)
+		if err != nil {
 			result.Passed = false
-			result.Message = "command parameter empty"
+			result.Message = fmt.Sprintf("command not permitted: %v", err)
 			return result
 		}
 		cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)

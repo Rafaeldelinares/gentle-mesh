@@ -1394,9 +1394,15 @@ func (s *Server) runPreconditions(preconds []envelope.Precondition) []envelope.P
 		case envelope.PreconditionCommandExitCode:
 			cmd, ok := p.CommandParams()
 			if ok && cmd != "" {
-				exitCode := runCheckCommand(cmd, s.config.WorkspaceDir)
-				result.Passed = exitCode == 0
-				result.Message = fmt.Sprintf("command %q exit=%d", cmd, exitCode)
+				parts, err := settlement.ValidatePreconditionCommand(cmd)
+				if err != nil {
+					result.Passed = false
+					result.Message = fmt.Sprintf("command %q rejected: %v", cmd, err)
+				} else {
+					exitCode := runCheckCommand(parts, s.config.WorkspaceDir)
+					result.Passed = exitCode == 0
+					result.Message = fmt.Sprintf("command %q exit=%d", cmd, exitCode)
+				}
 			} else {
 				result.Message = "command param missing"
 			}
@@ -1430,14 +1436,11 @@ func checkToolAvailable(tool string) bool {
 	return err == nil
 }
 
-// runCheckCommand executes a command directly with tokenized arguments (RFC-002 S6).
-// S6: Direct execution without "sh -c" prevents shell metacharacter injection.
-// NOTE: While tokenized execution prevents shell injection, executing arbitrary
-// binaries from an envelope still executes with host privileges. This is safe only
-// when the envelope source is authenticated (mTLS S1 + Ed25519 S2) or sandboxed.
-func runCheckCommand(cmdStr, dir string) int {
-	parts, err := settlement.SplitCommand(cmdStr)
-	if err != nil || len(parts) == 0 {
+// runCheckCommand executes a validated command directly with tokenized arguments (RFC-002 S6 / Issue #130).
+// Direct execution without "sh -c" prevents shell metacharacter injection.
+// Binaries and arguments are strictly validated by settlement.ValidatePreconditionCommand before execution.
+func runCheckCommand(parts []string, dir string) int {
+	if len(parts) == 0 {
 		return -1
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

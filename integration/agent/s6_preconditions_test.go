@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
@@ -64,3 +65,38 @@ func TestPreconditions_CommandExitCode_CommandInjectionRejected(t *testing.T) {
 		_ = os.Remove(injectedMarker)
 	}
 }
+
+// TestPreconditions_CommandExitCode_ArbitraryBinaryExecution_RED tests Issue #130 on Server:
+// Executing arbitrary binaries like touch/rm without an allowlist executes directly on host.
+func TestPreconditions_CommandExitCode_ArbitraryBinaryExecution_RED(t *testing.T) {
+	injectedMarker := filepath.Join(t.TempDir(), "server_unauthorized_exec.marker")
+	destructiveCmd := fmt.Sprintf("touch %s", injectedMarker)
+
+	srv := &Server{
+		config: Config{
+			WorkspaceDir: t.TempDir(),
+		},
+	}
+
+	results := srv.runPreconditions([]envelope.Precondition{
+		{
+			Type:   envelope.PreconditionCommandExitCode,
+			Params: map[string]string{"command": destructiveCmd},
+		},
+	})
+
+	if _, err := os.Stat(injectedMarker); err == nil {
+		_ = os.Remove(injectedMarker)
+		t.Errorf("SECURITY VULNERABILITY #130: arbitrary binary executed on server host, created %s", injectedMarker)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Passed {
+		t.Errorf("SECURITY VULNERABILITY #130: arbitrary binary execution reported Passed=true")
+	}
+	if !strings.Contains(results[0].Message, "rejected") && !strings.Contains(results[0].Message, "not permitted") {
+		t.Errorf("expected explicit rejection message, got %q", results[0].Message)
+	}
+}
+
