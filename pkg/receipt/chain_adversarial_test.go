@@ -73,23 +73,29 @@ func seedValidChain5(t *testing.T, signer signing.Signer) (*ChainStore, *sql.DB,
 	return cs, db, chain
 }
 
-// assertForgeryRejected fails the test unless verification detects every forged
-// receipt (Valid=false and ExecutorSignatureValid=false).
-func assertForgeryRejected(t *testing.T, label string, chain []*SettlementReceipt, executorPub []byte) {
+// assertForgedIndicesRejected fails the test unless verification detects that the
+// rewritten receipts have invalid executor signatures and are marked invalid.
+func assertForgedIndicesRejected(t *testing.T, label string, chain []*SettlementReceipt, executorPub []byte, forgedIndices []int) {
 	t.Helper()
 	results, err := VerifyChainIntegrity(chain, executorPub, nil)
 	if err != nil {
 		t.Fatalf("[%s] VerifyChainIntegrity returned error: %v", label, err)
 	}
+	forgedMap := make(map[int]bool)
+	for _, idx := range forgedIndices {
+		forgedMap[idx] = true
+	}
 	for i, res := range results {
 		t.Logf("[%s] idx=%d id=%s seq=%d Valid=%v SeqValid=%v PrevHashValid=%v ExecSigValid=%v err=%q",
 			label, res.Index, res.ReceiptID, res.SequenceNumber, res.Valid,
 			res.SequenceValid, res.PreviousHashValid, res.ExecutorSignatureValid, res.Error)
-		if res.Valid {
-			t.Errorf("[%s] SECURITY: forged chain accepted at index %d (id=%s)", label, i, res.ReceiptID)
-		}
-		if res.ExecutorSignatureValid {
-			t.Errorf("[%s] SECURITY: executor signature still valid after rewriting the chain link at index %d", label, i)
+		if forgedMap[i] {
+			if res.Valid {
+				t.Errorf("[%s] SECURITY: forged receipt accepted at index %d (id=%s)", label, i, res.ReceiptID)
+			}
+			if res.ExecutorSignatureValid {
+				t.Errorf("[%s] SECURITY: executor signature still valid after rewriting the chain link at index %d", label, i)
+			}
 		}
 	}
 }
@@ -99,8 +105,6 @@ func assertForgeryRejected(t *testing.T, label string, chain []*SettlementReceip
 // successors so they stay contiguous. Once previous_receipt_hash is part of the
 // signed content (issue #43), every rewritten receipt must fail verification.
 func TestAdversarialChainRewrite_DeleteMiddleReceipt(t *testing.T) {
-	t.Skip("limitación conocida: issue #43 (la firma del ejecutor no cubre previous_receipt_hash)")
-
 	_, signer := makeTestSigners(t)
 	cs, db, chain := seedValidChain5(t, signer)
 
@@ -121,7 +125,8 @@ func TestAdversarialChainRewrite_DeleteMiddleReceipt(t *testing.T) {
 	if len(forged) != 4 {
 		t.Fatalf("expected 4 receipts after deletion, got %d", len(forged))
 	}
-	assertForgeryRejected(t, "delete-middle", forged, signer.PublicKey())
+	// Index 2 is receipt 4, whose previous_receipt_hash was changed to point to receipt 2.
+	assertForgedIndicesRejected(t, "delete-middle", forged, signer.PublicKey(), []int{2})
 }
 
 // TestAdversarialChainRewrite_SwapAdjacentReceipts swaps receipts 2 and 3 from a
@@ -129,8 +134,6 @@ func TestAdversarialChainRewrite_DeleteMiddleReceipt(t *testing.T) {
 // forged order is internally consistent. Once previous_receipt_hash is part of
 // the signed content (issue #43), the swap must fail verification.
 func TestAdversarialChainRewrite_SwapAdjacentReceipts(t *testing.T) {
-	t.Skip("limitación conocida: issue #43 (la firma del ejecutor no cubre previous_receipt_hash)")
-
 	_, signer := makeTestSigners(t)
 	cs, db, chain := seedValidChain5(t, signer)
 
@@ -155,5 +158,6 @@ func TestAdversarialChainRewrite_SwapAdjacentReceipts(t *testing.T) {
 	if len(forged) != 5 {
 		t.Fatalf("expected 5 receipts after swap, got %d", len(forged))
 	}
-	assertForgeryRejected(t, "swap-2-3", forged, signer.PublicKey())
+	// Indices 1, 2, 3 have their previous_receipt_hash rewritten to forge the chain.
+	assertForgedIndicesRejected(t, "swap-2-3", forged, signer.PublicKey(), []int{1, 2, 3})
 }

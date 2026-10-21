@@ -558,7 +558,29 @@ aparecen en el JSON.
 ```
 
 **Nota:** `executor_signature`, `emitter_acceptance`, `emitter_acceptance_at`,
-`dispute_reason`, `emitter_signature` NO aparecen.
+`dispute_reason`, `emitter_signature` y `sequence_number` NO aparecen.
+`previous_receipt_hash` SÍ aparece y es firmado por el ejecutor para garantizar la continuidad de la cadena (§7.1, S7, Issue #43).
+
+#### Receipt (para firma del emisor / contrafirma)
+```json
+{
+  "receipt_id":"0192de5f-7c01-8000-c000-000000000002",
+  "contract_id":"0192de5f-7c01-8000-b000-000000000001",
+  "envelope_hash":"e3b0c44298fc1c149afbf4c8996fb924...",
+  "emitter_agent_id":"agent-a",
+  "executor_agent_id":"agent-b",
+  "territory":{...},
+  "verdict":"SETTLED_CLEAN",
+  "assertions":[...],
+  "executor_signed_at":"2026-01-01T12:05:00Z",
+  "previous_receipt_hash":"...",
+  "emitter_acceptance":"ACCEPTED",
+  "dispute_reason":""
+}
+```
+
+**Nota:** `executor_signature`, `emitter_acceptance_at`, `emitter_signature` y `sequence_number` NO aparecen.
+`emitter_acceptance` ("ACCEPTED" o "DISPUTED") y `dispute_reason` (motivo si aplica) SÍ se incluyen en el hash del emisor para prevenir inversión de decisiones y manipulación de disputas (Issue #48).
 
 ### 7.2 Pipeline de Hash y Firma
 
@@ -604,12 +626,12 @@ Estado a la fecha de esta revisión. Cada divergencia está rastreada en un issu
 
 | ID | Qué se firma | La spec dice (§) | La implementación hace | Issue |
 |---|---|---|---|---|
-| **D1** | `previous_receipt_hash` (ejecutor) | **Incluido** en el contenido firmable del ejecutor (línea 556) | **Excluido**: `ComputeReceiptHash` lo pone a cero | **#43** |
+| **D1** | `previous_receipt_hash` (ejecutor) | **Incluido** en el contenido firmable del ejecutor (línea 556) | **Resuelto**: `ComputeReceiptHash` lo incluye y firma (Issue #43) | **#43** |
 | **D2** | `sequence_number` (ejecutor) | No listado | Excluido; `SaveReceipt` lo asigna **después** de firmar | **#43** |
 | **D3** | `protocol_version` | No listado | Firmado (tag sin `omitempty`) | (a documentar) |
 | **D4** | `mesh_id` | No listado | Firmado (tag sin `omitempty`) | (a documentar) |
 | **D5** | `remediation_chain` | No listado | Firmado cuando no está vacío | (a documentar) |
-| **D6** | Contenido firmable del **emisor** | **No definido en ningún apartado de §7** | Firma el mismo payload que el ejecutor → **no cubre decisión, motivo ni fecha**; la contrafirma se persiste sin verificar | **#48** |
+| **D6** | Contenido firmable del **emisor** | Definido en §7.1 (contrafirma) | **Resuelto**: `ComputeEmitterReceiptHash` incluye decisión y motivo; verificado en servidor antes de persistir | **#48** |
 | **D7** | §7.4 `executor.Sign(hex_bytes)` | Ambiguo: ¿bytes del hex o string hex? | Firma el **string hex** de 64 caracteres ASCII | **#38** |
 | **D8** | Esquema recibo vs envelope/lease | §7.2 define el del recibo (hash hex) | El recibo firma el hex; envelope/lease firman **bytes JCS** | **#38** |
 

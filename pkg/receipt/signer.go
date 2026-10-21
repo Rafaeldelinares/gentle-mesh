@@ -54,8 +54,7 @@ func VerifyExecutorSignature(r *SettlementReceipt, executorPublicKey []byte) err
 }
 
 // AcceptReceipt records the emitter agent's acceptance of a receipt.
-// The executorSignedAt must match the value used by the executor when signing
-// the receipt. This ensures both parties sign over the identical content.
+// It binds the formal decision (ACCEPTED) to the receipt (Issue #48).
 func AcceptReceipt(r *SettlementReceipt, emitterSigner signing.Signer, executorSignedAt time.Time) error {
 	if r == nil {
 		return fmt.Errorf("receipt is nil")
@@ -64,13 +63,15 @@ func AcceptReceipt(r *SettlementReceipt, emitterSigner signing.Signer, executorS
 		return fmt.Errorf("emitter signer is nil")
 	}
 
-	// Override ExecutorSignedAt so ComputeReceiptHash signs over the same
-	// content the executor signed (same timestamp, same cleared sigs).
 	r.ExecutorSignedAt = executorSignedAt
+	r.EmitterAcceptance = AcceptanceAccepted
+	r.DisputeReason = ""
+	now := time.Now().UTC()
+	r.EmitterAcceptanceAt = &now
 
-	hash, err := ComputeReceiptHash(r)
+	hash, err := ComputeEmitterReceiptHash(r)
 	if err != nil {
-		return fmt.Errorf("compute receipt hash: %w", err)
+		return fmt.Errorf("compute emitter receipt hash: %w", err)
 	}
 
 	sig, err := emitterSigner.Sign([]byte(hash))
@@ -78,16 +79,13 @@ func AcceptReceipt(r *SettlementReceipt, emitterSigner signing.Signer, executorS
 		return fmt.Errorf("sign acceptance: %w", err)
 	}
 
-	now := time.Now().UTC()
-	r.EmitterAcceptance = AcceptanceAccepted
-	r.EmitterAcceptanceAt = &now
 	r.EmitterSignature = sig
 	return nil
 }
 
 // DisputeReceipt records the emitter agent's dispute of a receipt.
-// The executorSignedAt must match the value used by the executor when signing
-// the receipt. reason must be non-empty.
+// It binds the formal decision (DISPUTED) and dispute reason to the receipt (Issue #48).
+// reason must be non-empty.
 func DisputeReceipt(r *SettlementReceipt, emitterSigner signing.Signer, reason string, executorSignedAt time.Time) error {
 	if r == nil {
 		return fmt.Errorf("receipt is nil")
@@ -99,12 +97,15 @@ func DisputeReceipt(r *SettlementReceipt, emitterSigner signing.Signer, reason s
 		return fmt.Errorf("dispute reason is required")
 	}
 
-	// Override ExecutorSignedAt for deterministic hash.
 	r.ExecutorSignedAt = executorSignedAt
+	r.EmitterAcceptance = AcceptanceDisputed
+	r.DisputeReason = reason
+	now := time.Now().UTC()
+	r.EmitterAcceptanceAt = &now
 
-	hash, err := ComputeReceiptHash(r)
+	hash, err := ComputeEmitterReceiptHash(r)
 	if err != nil {
-		return fmt.Errorf("compute receipt hash: %w", err)
+		return fmt.Errorf("compute emitter receipt hash: %w", err)
 	}
 
 	sig, err := emitterSigner.Sign([]byte(hash))
@@ -112,11 +113,7 @@ func DisputeReceipt(r *SettlementReceipt, emitterSigner signing.Signer, reason s
 		return fmt.Errorf("sign dispute: %w", err)
 	}
 
-	now := time.Now().UTC()
-	r.EmitterAcceptance = AcceptanceDisputed
-	r.EmitterAcceptanceAt = &now
 	r.EmitterSignature = sig
-	r.DisputeReason = reason
 	return nil
 }
 
@@ -129,10 +126,13 @@ func VerifyEmitterSignature(r *SettlementReceipt, emitterPublicKey []byte) error
 	if r.EmitterSignature == "" {
 		return fmt.Errorf("missing emitter signature")
 	}
+	if r.EmitterAcceptance == "" {
+		return fmt.Errorf("missing emitter acceptance decision")
+	}
 
-	hash, err := ComputeReceiptHash(r)
+	hash, err := ComputeEmitterReceiptHash(r)
 	if err != nil {
-		return fmt.Errorf("compute receipt hash: %w", err)
+		return fmt.Errorf("compute emitter receipt hash: %w", err)
 	}
 
 	return signing.Verify(emitterPublicKey, []byte(hash), r.EmitterSignature)

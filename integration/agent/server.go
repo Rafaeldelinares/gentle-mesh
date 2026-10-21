@@ -231,12 +231,14 @@ func (s *Server) verifyEnvelope(env *envelope.CognitiveTaskEnvelope) error {
 	return nil
 }
 
-func (s *Server) verifyEmitterReceiptSignature(stored *receipt.SettlementReceipt, emitterSig string) error {
+func (s *Server) verifyEmitterReceiptSignature(stored *receipt.SettlementReceipt, emitterSig string, acceptance receipt.Acceptance, disputeReason string) error {
 	emitterPubKey, err := s.getEmitterPublicKey(stored.EmitterAgentID)
 	if err != nil {
 		return fmt.Errorf("emitter key not found: %w", err)
 	}
 	candidate := *stored
+	candidate.EmitterAcceptance = acceptance
+	candidate.DisputeReason = disputeReason
 	candidate.EmitterSignature = emitterSig
 	if err := receipt.VerifyEmitterSignature(&candidate, emitterPubKey); err != nil {
 		return fmt.Errorf("emitter signature invalid: %w", err)
@@ -1005,7 +1007,7 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// S2: Verify emitter's signature on the receipt before persisting acceptance.
-	if err := s.verifyEmitterReceiptSignature(stored, req.EmitterSignature); err != nil {
+	if err := s.verifyEmitterReceiptSignature(stored, req.EmitterSignature, receipt.AcceptanceAccepted, ""); err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
@@ -1014,6 +1016,7 @@ func (s *Server) handleAccept(w http.ResponseWriter, r *http.Request) {
 	// using AcceptReceipt; we just store the acceptance on B's chain.
 	now := time.Now().UTC()
 	stored.EmitterAcceptance = receipt.AcceptanceAccepted
+	stored.DisputeReason = ""
 	stored.EmitterAcceptanceAt = &now
 	stored.EmitterSignature = req.EmitterSignature
 
@@ -1124,7 +1127,7 @@ func (s *Server) handleDispute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// S2: Verify emitter's signature on the receipt before persisting dispute.
-	if err := s.verifyEmitterReceiptSignature(stored, req.EmitterSignature); err != nil {
+	if err := s.verifyEmitterReceiptSignature(stored, req.EmitterSignature, receipt.AcceptanceDisputed, req.DisputeReason); err != nil {
 		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}

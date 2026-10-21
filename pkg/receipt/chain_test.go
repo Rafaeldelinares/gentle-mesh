@@ -397,6 +397,45 @@ func TestComputeReceiptHash_ClearsSignatures(t *testing.T) {
 	}
 }
 
+func TestComputeReceiptHash_IncludesPreviousReceiptHash(t *testing.T) {
+	fixedTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	r1 := &SettlementReceipt{
+		ReceiptID:           "test-001",
+		ContractID:          "contract-001",
+		EnvelopeHash:        "abc123",
+		EmitterAgentID:      "agent-a",
+		ExecutorAgentID:     "agent-b",
+		Verdict:             VerdictSettledClean,
+		ExecutorSignedAt:    fixedTime,
+		PreviousReceiptHash: "prev-hash-1",
+	}
+
+	r2 := &SettlementReceipt{
+		ReceiptID:           "test-001",
+		ContractID:          "contract-001",
+		EnvelopeHash:        "abc123",
+		EmitterAgentID:      "agent-a",
+		ExecutorAgentID:     "agent-b",
+		Verdict:             VerdictSettledClean,
+		ExecutorSignedAt:    fixedTime,
+		PreviousReceiptHash: "prev-hash-2",
+	}
+
+	h1, err := ComputeReceiptHash(r1)
+	if err != nil {
+		t.Fatalf("ComputeReceiptHash(r1): %v", err)
+	}
+	h2, err := ComputeReceiptHash(r2)
+	if err != nil {
+		t.Fatalf("ComputeReceiptHash(r2): %v", err)
+	}
+
+	if h1 == h2 {
+		t.Errorf("ComputeReceiptHash must differ when PreviousReceiptHash differs, got identical hash %s", h1)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Chain verification
 // ─────────────────────────────────────────────────────────────────
