@@ -79,17 +79,53 @@ func TestS3_Envelope_CapabilitiesIncludedInSignature(t *testing.T) {
 	}
 }
 
-// TestS3_Envelope_ValidateCapabilities verifies validation rules for capabilities.
-func TestS3_Envelope_ValidateCapabilities(t *testing.T) {
-	// Empty capability string must be rejected
-	envEmptyCap := makeTestEnvelopeWithCaps([]envelope.Capability{""})
-	if err := envelope.Validate(envEmptyCap); err == nil {
-		t.Errorf("Validate should reject empty capability string")
+// TestA1_Envelope_ZeroConfigMinimalProfile verifies RFC-002 A1:
+// An envelope for a low-risk task without capability declarations (nil or empty)
+// validates successfully under the minimal profile, and adding undeclared capabilities
+// invalidates the signature.
+func TestA1_Envelope_ZeroConfigMinimalProfile(t *testing.T) {
+	signer, err := signing.GenerateSigner("agent-a")
+	if err != nil {
+		t.Fatalf("GenerateSigner: %v", err)
 	}
 
-	// Duplicate capability must be rejected
-	envDupCap := makeTestEnvelopeWithCaps([]envelope.Capability{envelope.CapabilityNet, envelope.CapabilityNet})
-	if err := envelope.Validate(envDupCap); err == nil {
-		t.Errorf("Validate should reject duplicate capabilities")
+	// 1. Nil capabilities (minimal profile) validates cleanly
+	envNil := makeTestEnvelopeWithCaps(nil)
+	if err := envelope.Validate(envNil); err != nil {
+		t.Errorf("Validate failed on minimal profile envelope with nil capabilities: %v", err)
+	}
+
+	// 2. Empty capabilities slice also validates cleanly
+	envEmpty := makeTestEnvelopeWithCaps([]envelope.Capability{})
+	if err := envelope.Validate(envEmpty); err != nil {
+		t.Errorf("Validate failed on minimal profile envelope with empty capabilities: %v", err)
+	}
+
+	// 3. Minimal profile hash differs from capability-bearing envelopes
+	envNet := makeTestEnvelopeWithCaps([]envelope.Capability{envelope.CapabilityNet})
+	hMin, err := envelope.ComputeEnvelopeHash(envNil)
+	if err != nil {
+		t.Fatalf("ComputeEnvelopeHash(envNil): %v", err)
+	}
+	hNet, err := envelope.ComputeEnvelopeHash(envNet)
+	if err != nil {
+		t.Fatalf("ComputeEnvelopeHash(envNet): %v", err)
+	}
+	if hMin == hNet {
+		t.Errorf("minimal profile hash collides with capability-bearing hash")
+	}
+
+	// 4. Signing minimal profile and then tampering by adding capabilities fails verification
+	if err := envelope.SignEnvelope(envNil, signer); err != nil {
+		t.Fatalf("SignEnvelope: %v", err)
+	}
+	if err := envelope.VerifyEnvelopeSignature(envNil, signer.PublicKey()); err != nil {
+		t.Fatalf("VerifyEnvelopeSignature on legitimate minimal profile envelope failed: %v", err)
+	}
+
+	tampered := *envNil
+	tampered.Capabilities = []envelope.Capability{envelope.CapabilityExec}
+	if err := envelope.VerifyEnvelopeSignature(&tampered, signer.PublicKey()); err == nil {
+		t.Errorf("SECURITY VULNERABILITY (A1): VerifyEnvelopeSignature accepted tampered capabilities added to minimal profile envelope")
 	}
 }

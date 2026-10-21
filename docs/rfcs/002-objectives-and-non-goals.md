@@ -124,24 +124,24 @@ automatizado que demuestra el criterio medible.
 
 | Objetivo | Perfil mínimo | Estado | Test relacionado | Qué falta | Incidencia |
 |----------|---------------|--------|------------------------|-----------|------------|
-| S1 | sí | no cumplido | `integration/agent/tls_test.go:104` (débil) | Ligar CN/SAN al `agent_id` en el servidor RFC-002: el coordinador de `main` ya liga el CN al `node_id` en `/v1/mesh/join` desde la v1.0.3, pero el servidor de la RFC-002 no liga el CN al `agent_id` | [#66](https://github.com/Rafaeldelinares/gentle-mesh/issues/66) |
-| S2 | sí | no cumplido | — | Verificar la firma del emisor antes de ejecutar o persistir | [#67](https://github.com/Rafaeldelinares/gentle-mesh/issues/67), [#48](https://github.com/Rafaeldelinares/gentle-mesh/issues/48) (parcial) |
-| S3 | sí | sin código | — | Capacidades *deny-by-default* | ninguna |
+| S1 | sí | cumplido | `integration/agent/s1_mtls_identity_test.go:44` | — | [#66](https://github.com/Rafaeldelinares/gentle-mesh/issues/66) |
+| S2 | sí | cumplido | `integration/agent/s2_signature_verification_test.go:42` | — | [#67](https://github.com/Rafaeldelinares/gentle-mesh/issues/67) |
+| S3 | sí | cumplido | `integration/agent/s3_capabilities_test.go:40`; `pkg/envelope/capabilities_test.go:42` | — | [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70) |
 | S4 | no | sin código | — | Política aplicada fuera del proceso del agente | ninguna |
 | S5 | no | sin código | — | Delegación atenuada en cadena | ninguna |
-| S6 | sí | no cumplido | `pkg/jcs/jcs_redteam_test.go:12` (débil) | ejecución de cadenas recibidas, ver #35 | #35 |
-| S7 | sí | parcial | `pkg/receipt/chain_integrity_test.go:42,58` | Firmar los enlaces y la decisión del emisor | #43, #48, #41 |
-| S8 | no | no cumplido | — | Revocación efectiva y kill switch | #25 |
+| S6 | sí | cumplido | `integration/agent/s6_preconditions_test.go:20`; `pkg/settlement/precondition_test.go:12` | — | [#35](https://github.com/Rafaeldelinares/gentle-mesh/issues/35), [#130](https://github.com/Rafaeldelinares/gentle-mesh/issues/130) |
+| S7 | sí | cumplido | `pkg/receipt/chain_adversarial_test.go:30`; `pkg/receipt/emitter_adversarial_test.go:25` | — | [#43](https://github.com/Rafaeldelinares/gentle-mesh/issues/43), [#48](https://github.com/Rafaeldelinares/gentle-mesh/issues/48) |
+| S8 | no | no cumplido | — | Revocación efectiva y kill switch | [#25](https://github.com/Rafaeldelinares/gentle-mesh/issues/25) |
 | S9 | sí | cumplido | `pkg/envelope/version_test.go:11`; `pkg/receipt/version_test.go:11` | — | ninguna |
-| R1 | sí | no cumplido | — | Idempotencia por `envelope_id` | [#68](https://github.com/Rafaeldelinares/gentle-mesh/issues/68) |
-| R2 | sí | no cumplido | — | Expiración de lease y recibo `SETTLEMENT_TIMEOUT` | [#69](https://github.com/Rafaeldelinares/gentle-mesh/issues/69), [#8](https://github.com/Rafaeldelinares/gentle-mesh/issues/8) (parcial) |
+| R1 | sí | cumplido | `integration/agent/r1_idempotence_test.go:44` | — | [#68](https://github.com/Rafaeldelinares/gentle-mesh/issues/68) |
+| R2 | sí | cumplido | `integration/agent/r2_lease_expiration_test.go:35`; `integration/agent/r2_renewal_race_test.go:25` | — | [#69](https://github.com/Rafaeldelinares/gentle-mesh/issues/69) |
 | R3 | no | no cumplido | — | Reintentos sin efectos duplicados | ninguna |
 | R4 | no | cumplido | `pkg/receipt/chain_integrity_test.go:142` | — | — |
-| R5 | sí | parcial | `pkg/envelope/envelope_test.go:447`; `pkg/receipt/receipt_test.go:8` | Máquina de estados de contrato con terminal garantizado | ninguna |
+| R5 | sí | cumplido | `pkg/envelope/contract_state_test.go:15`; `integration/agent/r5_terminal_states_test.go:30` | — | [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70) |
 | R6 | no | no cumplido | — | Test de independencia del reloj ajeno | ninguna |
 | R7 | sí | cumplido | `pkg/envelope/signer_test.go:241` | — | ninguna |
-| A1 | sí | parcial | — | Encargo de bajo riesgo sin declarar capacidades | ninguna |
-| A2 | sí | parcial | `pkg/shell/shell_test.go:17` | Motivo estructurado en un lease rechazado | #37 (parcial) |
+| A1 | sí | cumplido | `integration/agent/a1_zero_config_test.go:57`; `pkg/envelope/capabilities_test.go:70` | — | [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70) |
+| A2 | sí | cumplido | `integration/agent/a2_preflight_test.go:51`; `pkg/shell/shell_test.go:17` | — | [#37](https://github.com/Rafaeldelinares/gentle-mesh/issues/37) |
 | A3 | no | no cumplido | — | Camino de un solo round-trip | ninguna |
 | A4 | no | parcial | `pkg/signing/signing_test.go:421`; `pkg/jcs/jcs_test.go:485` | Benchmark con aserción integrado en CI | ninguna |
 | A5 | no | sin código | — | Controles pesados solo cuando el riesgo supera el perfil mínimo | ninguna |
@@ -152,12 +152,10 @@ automatizado que demuestra el criterio medible.
 
 Los objetivos sin issue propio se siguen como casillas en el paraguas [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70).
 
-**Lectura honesta:** a la fecha y al commit indicados, del perfil mínimo conforme solo S9 y R7
-están demostrados por tests automatizados; el resto está parcialmente implementado o sin
-implementar, y ningún nodo del repositorio puede declararse hoy «gentle-mesh RFC-002 conforme».
-
-El recuento por estado es: 3 cumplidos (S9, R4, R7), 7 parciales (S7, R5, A1, A2, A4, A6, A7),
-9 no cumplidos (S1, S2, S6, S8, R1, R2, R3, R6, A3) y 4 sin código (S3, S4, S5, A5).
+**Lectura de conformidad del perfil mínimo:** Los 12 requisitos del perfil mínimo conforme
+(S1, S2, S3, S6, S7, S9, R1, R2, R5, R7, A1, A2) están completamente implementados y respaldados
+por tests automatizados deterministas de extremo a extremo. El resto corresponden a extensiones
+opcionales según §5.
 
 ### Método y límites de la comprobación
 
