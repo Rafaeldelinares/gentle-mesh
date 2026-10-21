@@ -144,15 +144,14 @@ func (s *Shell) evalPrecondition(ctx context.Context, p envelope.Precondition) e
 			result.Message = "tool parameter missing"
 			return result
 		}
-		ctx2, cancel := context.WithTimeout(ctx, 3*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx2, "sh", "-c", fmt.Sprintf("command -v %s", tool))
-		if err := cmd.Run(); err != nil {
+		// S6: Use exec.LookPath directly (eliminates shell invocation and command injection).
+		path, err := exec.LookPath(tool)
+		if err != nil {
 			result.Passed = false
 			result.Message = fmt.Sprintf("tool not found: %s", tool)
 		} else {
 			result.Passed = true
-			result.Message = fmt.Sprintf("tool available: %s", tool)
+			result.Message = fmt.Sprintf("tool available: %s (%s)", tool, path)
 		}
 
 	case envelope.PreconditionGitCleanWorktree:
@@ -178,9 +177,23 @@ func (s *Shell) evalPrecondition(ctx context.Context, p envelope.Precondition) e
 			result.Message = "command parameter missing"
 			return result
 		}
+		parts, err := settlement.SplitCommand(cmdStr)
+		if err != nil || len(parts) == 0 {
+			result.Passed = false
+			result.Message = fmt.Sprintf("invalid command syntax: %v", err)
+			return result
+		}
 		ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx2, "sh", "-c", cmdStr)
+		// S6: Direct execution with tokenized arguments without subshell invocation.
+		// SECURITY NOTE: While direct execution prevents shell metacharacter injection
+		// (pipes, semicolons, redirects), executing arbitrary binaries declared in an envelope
+		// still runs with host worker privileges. This is safe only when the envelope source
+		// is verified (mTLS S1 + Ed25519 S2) or when running under sandbox isolation (bwrap).
+		cmd := exec.CommandContext(ctx2, parts[0], parts[1:]...)
+		if s.config.WorkspaceDir != "" {
+			cmd.Dir = s.config.WorkspaceDir
+		}
 		if err := cmd.Run(); err != nil {
 			result.Passed = false
 			result.Message = fmt.Sprintf("command failed: %v", err)

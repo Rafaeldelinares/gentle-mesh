@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -313,6 +314,74 @@ func TestShell_Signer(t *testing.T) {
 	}
 	if signer.AgentID() != "test-agent" {
 		t.Errorf("AgentID = %q, want %q", signer.AgentID(), "test-agent")
+	}
+}
+
+// TestShell_PreconditionToolAvailable_CommandInjectionRejected verifies that
+// shell metacharacters in the tool parameter cannot cause command injection (Issue #35 / S6).
+func TestShell_PreconditionToolAvailable_CommandInjectionRejected(t *testing.T) {
+	workspace := t.TempDir()
+	chainDB := filepath.Join(t.TempDir(), "chain.db")
+	injectedMarker := filepath.Join(t.TempDir(), "pwned.marker")
+
+	s, err := New(Config{
+		MeshID:       "mesh-test",
+		AgentID:      "test-agent",
+		WorkspaceDir: workspace,
+		ChainDBPath:  chainDB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// In the vulnerable implementation ("sh -c command -v %s"), the shell executes:
+	// command -v nonexistent-tool-xyz; touch /path/to/pwned.marker
+	// which creates the file and exits 0 (falsely passing the precondition).
+	maliciousTool := fmt.Sprintf("nonexistent-tool-xyz; touch %s", injectedMarker)
+	report, err := s.Check(context.Background(), []envelope.Precondition{
+		{Type: envelope.PreconditionToolAvailable, Params: map[string]string{"tool": maliciousTool}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Passed {
+		t.Errorf("vulnerability #35: malicious tool string passed pre-flight check")
+	}
+	if _, err := os.Stat(injectedMarker); err == nil {
+		t.Errorf("CRITICAL SECURITY VULNERABILITY #35: command injection succeeded, marker file %s was created", injectedMarker)
+		_ = os.Remove(injectedMarker)
+	}
+}
+
+// TestShell_PreconditionCommandExitCode_CommandInjectionRejected verifies that
+// command chaining in command_exit_code cannot execute secondary commands without shell.
+func TestShell_PreconditionCommandExitCode_CommandInjectionRejected(t *testing.T) {
+	workspace := t.TempDir()
+	chainDB := filepath.Join(t.TempDir(), "chain.db")
+	injectedMarker := filepath.Join(t.TempDir(), "shell_cmd_pwned.marker")
+
+	s, err := New(Config{
+		MeshID:       "mesh-test",
+		AgentID:      "test-agent",
+		WorkspaceDir: workspace,
+		ChainDBPath:  chainDB,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	maliciousCmd := fmt.Sprintf("echo safe; touch %s", injectedMarker)
+	_, err = s.Check(context.Background(), []envelope.Precondition{
+		{Type: envelope.PreconditionCommandExitCode, Params: map[string]string{"command": maliciousCmd}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(injectedMarker); err == nil {
+		t.Errorf("CRITICAL SECURITY VULNERABILITY #35: command chaining succeeded, marker file %s was created", injectedMarker)
+		_ = os.Remove(injectedMarker)
 	}
 }
 

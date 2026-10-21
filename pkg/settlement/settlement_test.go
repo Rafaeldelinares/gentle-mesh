@@ -595,6 +595,36 @@ func TestSummary_AllPass(t *testing.T) {
 	}
 }
 
+func TestSplitCommand(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected []string
+	}{
+		{"echo hello world", []string{"echo", "hello", "world"}},
+		{`git log --grep="feat: new" -n 1`, []string{"git", "log", `--grep=feat: new`, "-n", "1"}},
+		{"'quoted binary' arg1 arg2", []string{"quoted binary", "arg1", "arg2"}},
+		{"   leading and trailing   ", []string{"leading", "and", "trailing"}},
+		{"", nil},
+	}
+
+	for _, tc := range tests {
+		tokens, err := SplitCommand(tc.input)
+		if err != nil {
+			t.Errorf("SplitCommand(%q) returned error: %v", tc.input, err)
+			continue
+		}
+		if len(tokens) != len(tc.expected) {
+			t.Errorf("SplitCommand(%q) len = %d, want %d (%v vs %v)", tc.input, len(tokens), len(tc.expected), tokens, tc.expected)
+			continue
+		}
+		for i := range tokens {
+			if tokens[i] != tc.expected[i] {
+				t.Errorf("SplitCommand(%q)[%d] = %q, want %q", tc.input, i, tokens[i], tc.expected[i])
+			}
+		}
+	}
+}
+
 // runGit runs git with args, ignoring errors (for test setup).
 func runGit(t *testing.T, args []string) {
 	t.Helper()
