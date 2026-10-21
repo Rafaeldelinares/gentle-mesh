@@ -750,7 +750,7 @@ func VerifyChainIntegrity(
 		// 4. Verify emitter acceptance/dispute signature (if present).
 		switch {
 		case r.EmitterSignature != "" && r.EmitterAcceptance != "":
-			receiptHash, err := ComputeReceiptHash(r)
+			receiptHash, err := ComputeEmitterReceiptHash(r)
 			if err != nil {
 				result.EmitterSignatureValid = false
 				if result.Error == "" {
@@ -763,9 +763,11 @@ func VerifyChainIntegrity(
 					result.Error = fmt.Sprintf("emitter signature invalid: %v", err)
 				}
 			}
-		case r.EmitterSignature == "" && r.EmitterAcceptance != "":
-			// Receipt emitted but not yet accepted/disputed by A.
-			result.EmitterSignatureValid = true
+		case r.EmitterSignature != "" && r.EmitterAcceptance == "":
+			result.EmitterSignatureValid = false
+			if result.Error == "" {
+				result.Error = "emitter signature present without acceptance decision"
+			}
 		default:
 			// No emitter action yet (receipt not yet reviewed by A).
 			result.EmitterSignatureValid = true
@@ -798,21 +800,47 @@ type VerificationResult struct {
 }
 
 // ComputeReceiptHash computes the JCS canonical SHA-256 hash of a receipt
-// with all mutable fields cleared: both signatures, emitter acceptance,
-// acceptance timestamp, and dispute reason.
+// for executor signing and verification.
 //
-// This represents the EXECUTOR-signed content: the immutable receipt data
-// plus assertions, as signed by the executor agent. The emitter signs this
-// exact same content (via AcceptReceipt/DisputeReceipt) so that verification
-// is deterministic regardless of whether the emitter has responded yet.
+// Per RFC-002 §7.1 and S7, this represents the EXECUTOR-signed content:
+// the immutable receipt data, assertions, and PreviousReceiptHash (chain link).
+// Post-settlement fields (both signatures, emitter acceptance decision,
+// acceptance timestamp, dispute reason, and SQLite sequence number) are cleared.
 func ComputeReceiptHash(r *SettlementReceipt) (string, error) {
+	if r == nil {
+		return "", fmt.Errorf("receipt is nil")
+	}
 	cleared := *r
 	cleared.ExecutorSignature = ""
 	cleared.EmitterAcceptance = ""
 	cleared.EmitterAcceptanceAt = nil
 	cleared.EmitterSignature = ""
 	cleared.DisputeReason = ""
-	cleared.PreviousReceiptHash = ""
+	// NOTE: PreviousReceiptHash is NOT cleared: the executor signs the chain link (RFC-002 §7.1, S7).
+	cleared.SequenceNumber = 0
+
+	data, err := jcs.Marshal(&cleared)
+	if err != nil {
+		return "", fmt.Errorf("jcs marshal: %w", err)
+	}
+	return jcs.HashHex(data)
+}
+
+// ComputeEmitterReceiptHash computes the JCS canonical SHA-256 hash of a receipt
+// for emitter counter-signature (AcceptReceipt / DisputeReceipt / VerifyEmitterSignature).
+//
+// Unlike ComputeReceiptHash (which represents the initial executor proposal),
+// ComputeEmitterReceiptHash binds the emitter's formal decision (ACCEPTED vs DISPUTED)
+// and dispute reason to the receipt, preventing decision-flipping attacks (Issue #48).
+// The emitter's own signature, acceptance timestamp, and sequence number are cleared.
+func ComputeEmitterReceiptHash(r *SettlementReceipt) (string, error) {
+	if r == nil {
+		return "", fmt.Errorf("receipt is nil")
+	}
+	cleared := *r
+	cleared.ExecutorSignature = ""
+	cleared.EmitterSignature = ""
+	cleared.EmitterAcceptanceAt = nil
 	cleared.SequenceNumber = 0
 
 	data, err := jcs.Marshal(&cleared)

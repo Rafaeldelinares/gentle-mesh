@@ -248,6 +248,52 @@ func TestS2_Server_RejectsInvalidDisputeSignature(t *testing.T) {
 	}
 }
 
+// TestS7_Server_CrossContaminatedSignaturesRejected tests that an acceptance signature
+// cannot be used to dispute, and a dispute signature cannot be used to accept (Issue #48).
+func TestS7_Server_CrossContaminatedSignaturesRejected(t *testing.T) {
+	_, ts, emitterSigner, _ := setupS2Server(t)
+	client := ts.Client()
+
+	env := makeS2Envelope("mesh-s2-test", "agent-emitter", "test-executor")
+	_ = envelope.SignEnvelope(env, emitterSigner)
+	envJSON, _ := json.Marshal(env)
+
+	_, body := postJSON(t, client, ts.URL+"/settle", &SettleRequest{EnvelopeJSON: envJSON, LeaseID: "lease-01"})
+	var settleResp SettleResponse
+	_ = json.Unmarshal(body, &settleResp)
+	var rec receipt.SettlementReceipt
+	_ = json.Unmarshal(settleResp.ReceiptJSON, &rec)
+
+	// Create valid dispute signature
+	recDispute := rec
+	_ = receipt.DisputeReceipt(&recDispute, emitterSigner, "bad quality", rec.ExecutorSignedAt)
+
+	// Attempt to use dispute signature on POST /accept -> MUST BE 401
+	acceptCross := &AcceptRequest{
+		ReceiptJSON:         settleResp.ReceiptJSON,
+		ExecutorSignedAtRFC: rec.ExecutorSignedAt.Format(time.RFC3339Nano),
+		EmitterSignature:    recDispute.EmitterSignature,
+	}
+	if resp, _ := postJSON(t, client, ts.URL+"/accept", acceptCross); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("SECURITY VULNERABILITY (Issue #48): POST /accept accepted dispute signature, status=%d, want 401", resp.StatusCode)
+	}
+
+	// Create valid accept signature
+	recAccept := rec
+	_ = receipt.AcceptReceipt(&recAccept, emitterSigner, rec.ExecutorSignedAt)
+
+	// Attempt to use accept signature on POST /dispute -> MUST BE 401
+	disputeCross := &DisputeRequest{
+		ReceiptJSON:         settleResp.ReceiptJSON,
+		ExecutorSignedAtRFC: rec.ExecutorSignedAt.Format(time.RFC3339Nano),
+		EmitterSignature:    recAccept.EmitterSignature,
+		DisputeReason:       "fake reason",
+	}
+	if resp, _ := postJSON(t, client, ts.URL+"/dispute", disputeCross); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("SECURITY VULNERABILITY (Issue #48): POST /dispute accepted accept signature, status=%d, want 401", resp.StatusCode)
+	}
+}
+
 // TestS2_Server_WithKeystoreIntegration verifies S2 using pkg/keystore as PublicKeyResolver.
 func TestS2_Server_WithKeystoreIntegration(t *testing.T) {
 	tmpDir := t.TempDir()
