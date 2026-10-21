@@ -104,6 +104,29 @@ func (sm *ContractStateMachine) TransitionWithReason(target ContractStatus, reas
 	return nil
 }
 
+// TransitionFrom attempts to transition from expectedFrom to target status.
+// It fails if current status does not match expectedFrom or if the transition is illegal.
+func (sm *ContractStateMachine) TransitionFrom(expectedFrom, target ContractStatus, reason string) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if sm.current != expectedFrom {
+		return fmt.Errorf("%w: state is %s, expected %s", ErrInvalidContractTransition, sm.current, expectedFrom)
+	}
+
+	if err := ValidateContractTransition(sm.current, target); err != nil {
+		return err
+	}
+
+	sm.history = append(sm.history, TransitionRecord{
+		From:   sm.current,
+		To:     target,
+		Reason: reason,
+	})
+	sm.current = target
+	return nil
+}
+
 // History returns a copy of all transitions made by this state machine.
 func (sm *ContractStateMachine) History() []TransitionRecord {
 	sm.mu.RLock()

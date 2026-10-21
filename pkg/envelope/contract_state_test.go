@@ -222,7 +222,7 @@ func TestR5_ContractStateMachine_Concurrency(t *testing.T) {
 		wg.Add(1)
 		go func(tgt ContractStatus) {
 			defer wg.Done()
-			if err := sm.TransitionTo(tgt); err == nil {
+			if err := sm.TransitionFrom(ContractStatusExecuting, tgt, "concurrent-test"); err == nil {
 				mu.Lock()
 				successCount++
 				mu.Unlock()
