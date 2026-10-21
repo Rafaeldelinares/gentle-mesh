@@ -82,6 +82,8 @@
 
 Ver la matriz completa de todos los objetivos en [docs/rfcs/002-objectives-and-non-goals.md](docs/rfcs/002-objectives-and-non-goals.md) y el histórico en el issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70).
 
+**Para la historia y el horizonte del proyecto, ver [docs/PROJECT_HISTORY.md](docs/PROJECT_HISTORY.md).**
+
 **Roadmap completo y lo que no haremos:** [ROADMAP.md](ROADMAP.md).
 
 **Proceso de revisión y excepción documentada:** [PROCESO-REVISION.md](docs/PROCESO-REVISION.md).
