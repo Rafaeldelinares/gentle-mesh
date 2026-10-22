@@ -994,3 +994,109 @@ func TestGentleShellRunner_HomeIsDerivedFromUserHomeDir(t *testing.T) {
 		t.Errorf("expected %v in bwrap argv, got: %v", wantGentleShell, argv)
 	}
 }
+
+// TestGentleShellRunner_HostSideGitIgnoresSandboxWrittenConfig reproduces the
+// F2-03 escape: the cache bare is bound read-write inside bwrap (by design, so
+// the agent can git add/commit), and a linked worktree shares the cache's common
+// config. Anything the sandboxed agent writes there is read back by the git the
+// runner executes OUTSIDE the sandbox (collectDiff, rev-parse, status,
+// cleanupWorktree), with the worker user's own privileges.
+//
+// The test poisons the cache config with core.fsmonitor pointing at a script
+// that drops a marker file, runs one full task, and then asserts the script was
+// never executed. Without hardening git honours core.fsmonitor and the marker
+// appears; with hardening the config value is overridden and it does not.
+// sandboxedGitPrefix shadows `git` with the hardened invocation for the fake
+// bwrap, emulating the sandbox boundary described above.
+const sandboxedGitPrefix = `git() {
+  command git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.pager=cat \
+    -c diff.external= -c credential.helper= -c core.gitProxy= \
+    -c protocol.file.allow=never --no-optional-locks "$@"
+}
+`
+
+func TestGentleShellRunner_HostSideGitIgnoresSandboxWrittenConfig(t *testing.T) {
+	cache, worktreesRoot := seedBareCache(t)
+
+	markerDir := t.TempDir()
+	marker := filepath.Join(markerDir, "pwned")
+	// core.fsmonitor is executed by git itself, so a plain script is enough:
+	// git spawns it and speaks its IPC protocol on fd 3. We only care that it ran.
+	evil := filepath.Join(markerDir, "evil.sh")
+	script := "#!/bin/sh\necho pwned >> " + shellQuote(marker) + "\nexit 1\n"
+	if err := os.WriteFile(evil, []byte(script), 0o755); err != nil {
+		t.Fatalf("failed to write poison script: %v", err)
+	}
+
+	// This is exactly what an agent with write access to the cache could do
+	// from inside the sandbox.
+	poison := exec.Command("git", "-C", cache, "config", "core.fsmonitor", evil)
+	if out, err := poison.CombinedOutput(); err != nil {
+		t.Fatalf("failed to poison cache config: %v\n%s", err, out)
+	}
+
+	// Sanity check: UNHARDENED git DOES execute the poisoned config from a linked
+	// worktree, which is what the runner's host-side `git status` does. Without it
+	// a green result could just mean git ignores core.fsmonitor here, and the test
+	// would prove nothing. `git status` is the trigger (rev-parse never invokes it).
+	unhardenedMarker := filepath.Join(markerDir, "unhardened")
+	evil2 := filepath.Join(markerDir, "evil2.sh")
+	if err := os.WriteFile(evil2, []byte("#!/bin/sh\necho pwned >> "+shellQuote(unhardenedMarker)+"\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("failed to write sanity script: %v", err)
+	}
+	probeWorktree := filepath.Join(markerDir, "probe-wt")
+	probeGit := func(extra ...string) {
+		t.Helper()
+		args := append([]string{"-C", cache, "config", "core.fsmonitor", evil2}, extra...)
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("sanity git %v failed: %v\n%s", extra, err, out)
+		}
+	}
+	probeGit()
+	if out, err := exec.Command("git", "-C", cache, "worktree", "add", "-f", probeWorktree, "-b", "probe").CombinedOutput(); err != nil {
+		t.Fatalf("failed to create probe worktree: %v\n%s", err, out)
+	}
+	_ = exec.Command("git", "-C", probeWorktree, "status", "--porcelain").Run()
+	if _, err := os.Stat(unhardenedMarker); err != nil {
+		t.Skipf("git on this platform does not execute core.fsmonitor from a linked worktree; cannot prove the escape: %v", err)
+	}
+	// Restore the poison the runner must survive.
+	poisonAgain := exec.Command("git", "-C", cache, "config", "core.fsmonitor", evil)
+	if out, err := poisonAgain.CombinedOutput(); err != nil {
+		t.Fatalf("failed to re-poison cache config: %v\n%s", err, out)
+	}
+
+	// The fake bwrap stands in for the sandbox boundary. In production the
+	// agent's own git runs inside bwrap, where a path outside the namespace
+	// (this marker) is invisible, so only the runner's host-side git can be
+	// observed through it. Shadowing `git` with the hardened form keeps the
+	// marker a signal for the runner alone.
+	bwrapScript := writeFakeBwrap(t, sandboxedGitPrefix+passBwrapScript)
+	gsScript := writeFakeGentleShell(t, fakeGentleShellScript(
+		filepath.Join(t.TempDir(), "gs-argv.txt"), gentleShellHappyStream, "", 0))
+
+	r := runner.NewGentleShellRunner(defaultRunnerOptions(t, runner.GentleShellRunnerOptions{
+		Bwrap:         bwrapScript,
+		GentleShell:   gsScript,
+		RepoCache:     cache,
+		WorktreesRoot: worktreesRoot,
+		ThinkingLevel: "minimal",
+		TotalTimeout:  2 * time.Minute,
+		IdleTimeout:   30 * time.Second,
+	}))
+
+	sink := newMockSink(context.Background())
+	if err := r.Run(context.Background(), protocol.TaskRequest{
+		TaskID: "task-poison",
+		Agent:  "worker",
+		Task:   "host side git must ignore cache written config",
+	}, sink); err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	if _, err := os.Stat(marker); err == nil {
+		content, _ := os.ReadFile(marker)
+		t.Fatalf("ESCAPE: the sandbox-written core.fsmonitor was executed on the host %d time(s): %s",
+			bytes.Count(content, []byte("pwned")), content)
+	}
+}

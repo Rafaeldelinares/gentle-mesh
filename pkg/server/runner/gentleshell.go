@@ -31,6 +31,60 @@ const (
 	gentleShellDiffInlineLimit = 256 << 10
 )
 
+// hardenedGitArgs returns the leading git arguments that neutralise every
+// config-driven code execution path git honours.
+//
+// The RepoCache is bound read-write inside the sandbox (buildDefaultSandboxMounts)
+// so the agent can git add/commit, and a linked worktree shares that cache's
+// common config. Without this, whatever the sandboxed agent writes into the
+// cache is read back by the git the runner executes outside the sandbox, with
+// the worker's own privileges: core.fsmonitor, core.hooksPath, diff.external,
+// credential.helper and core.gitProxy all spawn programs, and protocol.file
+// re-enables the file:// transport. Verified with a live PoC on git 2.55.0:
+// a poisoned core.fsmonitor was executed on the host 8 times per task.
+func hardenedGitArgs() []string {
+	return []string{
+		"-c", "core.hooksPath=" + os.DevNull,
+		"-c", "core.fsmonitor=false",
+		"-c", "core.pager=cat",
+		"-c", "diff.external=",
+		"-c", "credential.helper=",
+		"-c", "core.gitProxy=",
+		"-c", "protocol.file.allow=never",
+		"--no-optional-locks",
+	}
+}
+
+// hardenedGitEnv returns the parent environment plus the overrides that stop
+// git from picking up a hostile system or global config (~/.gitconfig) that
+// could reintroduce any of the settings hardenedGitArgs disables. It keeps the
+// rest of the environment intact: this is not an environment-leak fix, it only
+// closes the config source that reaches into the sandbox.
+func hardenedGitEnv() []string {
+	env := append([]string{}, os.Environ()...)
+	env = append(env,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+		"GIT_OPTIONAL_LOCKS=0",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	return env
+}
+
+// gitCommand builds a git invocation with hardenedGitArgs and hardenedGitEnv.
+// dir is passed as -C and must therefore come after the -c overrides.
+func gitCommand(dir string, args ...string) *exec.Cmd {
+	full := make([]string, 0, len(hardenedGitArgs())+2+len(args))
+	full = append(full, hardenedGitArgs()...)
+	if dir != "" {
+		full = append(full, "-C", dir)
+	}
+	full = append(full, args...)
+	cmd := exec.Command("git", full...)
+	cmd.Env = hardenedGitEnv()
+	return cmd
+}
+
 // GentleShellRunnerOptions configures a GentleShellRunner.
 //
 // SandboxMounts is the ordered list of `--bind` / `--ro-bind` arguments that
@@ -576,10 +630,12 @@ func (r *GentleShellRunner) prepareWorktree(ctx context.Context, worktreeDir, br
 	}
 	// Add the worktree. --force would mask a stale directory; we explicitly
 	// refuse to overwrite so two concurrent tasks do not stomp on each other.
-	cmd := r.opts.commandFactory(ctx, "git",
-		"-C", r.opts.RepoCache,
-		"worktree", "add", "-b", branch, worktreeDir, r.opts.BaseRef,
-	)
+	gitArgs := append(hardenedGitArgs(), "-C", r.opts.RepoCache,
+		"worktree", "add", "-b", branch, worktreeDir, r.opts.BaseRef)
+	cmd := r.opts.commandFactory(ctx, "git", gitArgs...)
+	if cmd != nil {
+		cmd.Env = hardenedGitEnv()
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git worktree add failed: %w: %s", err, strings.TrimSpace(string(out)))
@@ -609,11 +665,11 @@ func (r *GentleShellRunner) cleanupWorktree(worktreeDir string) {
 	// Use git's own machinery to remove the worktree, falling back to a raw
 	// recursive remove if git itself fails.
 	if cachePath != "" && cachePath != gitFile {
-		remove := exec.Command("git", "-C", cachePath, "worktree", "remove", "--force", worktreeDir)
+		remove := gitCommand(cachePath, "worktree", "remove", "--force", worktreeDir)
 		if err := remove.Run(); err != nil {
 			_ = os.RemoveAll(worktreeDir)
 		}
-		_ = exec.Command("git", "-C", cachePath, "worktree", "prune").Run()
+		_ = gitCommand(cachePath, "worktree", "prune").Run()
 	} else {
 		_ = os.RemoveAll(worktreeDir)
 	}
@@ -623,14 +679,14 @@ func (r *GentleShellRunner) cleanupWorktree(worktreeDir string) {
 // and the HEAD commit hash. It runs in the worker daemon's filesystem, not
 // inside the sandbox, so the agent's output is read-only and trusted.
 func (r *GentleShellRunner) collectDiff(worktreeDir string) (string, string, error) {
-	diffCmd := exec.Command("git", "-C", worktreeDir, "diff", r.opts.BaseRef+"..HEAD")
+	diffCmd := gitCommand(worktreeDir, "diff", "--no-ext-diff", "--no-textconv", r.opts.BaseRef+"..HEAD")
 	var diffOut bytes.Buffer
 	diffCmd.Stdout = &diffOut
 	if err := diffCmd.Run(); err != nil {
 		return "", "", fmt.Errorf("git diff failed: %w", err)
 	}
 
-	revCmd := exec.Command("git", "-C", worktreeDir, "rev-parse", "HEAD")
+	revCmd := gitCommand(worktreeDir, "rev-parse", "HEAD")
 	revOut, err := revCmd.Output()
 	if err != nil {
 		return "", "", fmt.Errorf("git rev-parse failed: %w", err)
@@ -651,7 +707,7 @@ func (r *GentleShellRunner) verifyCommitProduced(worktreeDir, headCommit string)
 	if headCommit == baseSHA {
 		return fmt.Errorf("agent reported done but no new commit was produced on branch (HEAD still at base ref %s)", shortSHA(baseSHA))
 	}
-	statusCmd := exec.Command("git", "-C", worktreeDir, "status", "--porcelain")
+	statusCmd := gitCommand(worktreeDir, "status", "--porcelain")
 	var statusOut bytes.Buffer
 	statusCmd.Stdout = &statusOut
 	if err := statusCmd.Run(); err != nil {
@@ -666,7 +722,7 @@ func (r *GentleShellRunner) verifyCommitProduced(worktreeDir, headCommit string)
 // resolveBaseSHA returns the SHA-1 of BaseRef as resolved against the
 // local bare RepoCache.
 func (r *GentleShellRunner) resolveBaseSHA() (string, error) {
-	cmd := exec.Command("git", "-C", r.opts.RepoCache, "rev-parse", r.opts.BaseRef)
+	cmd := gitCommand(r.opts.RepoCache, "rev-parse", r.opts.BaseRef)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse %s: %w", r.opts.BaseRef, err)
