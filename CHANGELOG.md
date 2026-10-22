@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] (v1.0.4)
 
+### Breaking Changes
+
+- **Coordinator default `local-fallback` is now `false`** (#141): Tasks submitted without an available eligible mesh worker will now fail with `DISPATCH_FAILED` rather than silently running in a local simulated runner and reporting fake completion. To restore the old behaviour, explicitly pass `-local-fallback=true` on the coordinator CLI or set `LocalFallback: &true` in `meshhttp.ServerConfig`.
+
+### Changed
+
+- **Transparency on simulated execution and rate limits** (#141):
+  - Coordinator prints a visible `NOTICE` when rate limiting is disabled (`-rate-limit 0`).
+  - Coordinator prints an explicit `WARNING` when `-local-fallback` is enabled.
+  - Worker server prints an explicit `WARNING` at startup and per-task execution when running with `-runner=simulated`.
+  - `SimulatedRunner` emits `EventStatus` with `Message: "WARNING: running in SIMULATED mode"` to prevent client confusion.
+
 ### Fixed
 
 - `gentle-mesh rpc` answers an unsupported command with an explicit error frame without terminating

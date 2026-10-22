@@ -292,6 +292,9 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	defer s.activeTasks.Add(-1)
 
 	log.Printf("[worker] executing task %q (agent: %q, tags: %v)", taskID, req.Agent, req.Tags)
+	if _, isSim := s.runner.(*runner.SimulatedRunner); isSim {
+		log.Printf("[worker] WARNING: task %q is running in SIMULATED mode", taskID)
+	}
 	err := s.runner.Run(r.Context(), req, sink)
 	if err != nil {
 		log.Printf("[worker] task %q execution error: %v", taskID, err)

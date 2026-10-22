@@ -156,7 +156,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		})
 	}
 	if cfg.Runner == nil {
-		useLocal := true
+		useLocal := false
 		if cfg.LocalFallback != nil {
 			useLocal = *cfg.LocalFallback
 		}
@@ -171,14 +171,14 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 				FallbackRunner: localRunner,
 				Token:          dispatchTok,
 			})
-			log.Printf("tasks without an eligible node run in a local SIMULATED runner and are reported completed with executed_locally")
+			log.Printf("WARNING: local fallback is ON: tasks without an eligible node run in a local SIMULATED runner and are reported completed with executed_locally")
 		} else {
 			cfg.Runner = runner.NewMeshRunner(runner.MeshRunnerOptions{
 				Selector:       cfg.Registry,
 				FallbackRunner: nil,
 				Token:          dispatchTok,
 			})
-			log.Printf("the local fallback is OFF: tasks without an eligible node will fail with DISPATCH_FAILED")
+			log.Printf("the local fallback is OFF (default): tasks without an eligible node will fail with DISPATCH_FAILED")
 		}
 	}
 
