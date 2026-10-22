@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
+	"github.com/gentleman-programming/gentle-mesh/pkg/gitsafe"
 	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
 	"github.com/gentleman-programming/gentle-mesh/pkg/settlement"
 	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
@@ -185,7 +186,12 @@ func (s *ShellServer) evalPrecondition(ctx context.Context, p envelope.Precondit
 		}
 
 	case envelope.PreconditionGitCleanWorktree:
-		cmd := exec.CommandContext(ctx, "git", "-C", s.shell.workspace, "status", "--porcelain")
+		cmd, buildErr := gitsafe.Command(ctx, s.shell.workspace, "status", "--porcelain")
+		if buildErr != nil {
+			result.Passed = false
+			result.Message = fmt.Sprintf("git status error: %v", buildErr)
+			break
+		}
 		out, err := cmd.Output()
 		if err != nil {
 			result.Passed = false

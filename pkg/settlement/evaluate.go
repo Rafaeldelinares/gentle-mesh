@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gentleman-programming/gentle-mesh/pkg/gitsafe"
 )
 
 // Result is the outcome of an assertion evaluation.
@@ -326,9 +328,17 @@ func (e *Evaluator) evalGitCleanWorktree(ctx context.Context, result *AssertionR
 		cwd = resolved
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
-	cmd.Dir = cwd
-	cmd.Env = e.env
+	// The workspace is writable by the agent that ran the task, so this git reads a
+	// config that decides whether anything gets executed. The argv is hardened
+	// (including neutralizing any filter driver the config defines) and the
+	// environment is this evaluator's allowlist plus git's own overrides, so
+	// neither the repository nor the host can reintroduce a program path.
+	argv, err := gitsafe.Argv(cwd, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("git status: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, "git", argv...)
+	cmd.Env = append(append([]string{}, e.env...), gitsafe.Overrides()...)
 
 	out, err := cmd.Output()
 	if err != nil {

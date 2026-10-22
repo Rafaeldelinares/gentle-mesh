@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
+	"github.com/gentleman-programming/gentle-mesh/pkg/gitsafe"
 	"github.com/gentleman-programming/gentle-mesh/pkg/keystore"
 	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
 	"github.com/gentleman-programming/gentle-mesh/pkg/settlement"
@@ -1472,7 +1473,12 @@ func (s *Server) runPreconditions(preconds []envelope.Precondition) []envelope.P
 		case envelope.PreconditionGitCleanWorktree:
 			ctxGit, cancelGit := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancelGit()
-			cmd := exec.CommandContext(ctxGit, "git", "-C", s.config.WorkspaceDir, "status", "--porcelain")
+			cmd, buildErr := gitsafe.Command(ctxGit, s.config.WorkspaceDir, "status", "--porcelain")
+			if buildErr != nil {
+				result.Passed = false
+				result.Message = fmt.Sprintf("git status error: %v", buildErr)
+				break
+			}
 			out, err := cmd.Output()
 			result.Passed = (err == nil && strings.TrimSpace(string(out)) == "")
 			result.Message = fmt.Sprintf("git worktree clean=%v", result.Passed)

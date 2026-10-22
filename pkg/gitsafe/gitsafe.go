@@ -53,17 +53,24 @@ func fixedArgs() []string {
 // filterAttrs are the per-driver settings that name a program to run.
 var filterAttrs = []string{"clean", "smudge", "process"}
 
-// Env returns the parent environment plus the overrides that stop git from
-// loading a hostile system or global config. Everything else is kept: this
-// package is about where git reads configuration from, not about scrubbing the
-// environment.
-func Env() []string {
-	return append(append([]string{}, os.Environ()...),
+// Overrides returns only the environment variables that stop git from loading
+// a hostile system or global config. Callers that manage their own environment
+// (the settlement evaluator allowlists it, for instance) append these to it
+// instead of using Env.
+func Overrides() []string {
+	return []string{
 		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_CONFIG_GLOBAL="+os.DevNull,
+		"GIT_CONFIG_GLOBAL=" + os.DevNull,
 		"GIT_OPTIONAL_LOCKS=0",
 		"GIT_TERMINAL_PROMPT=0",
-	)
+	}
+}
+
+// Env returns the parent environment plus Overrides. Everything else is kept:
+// this package is about where git reads configuration from, not about scrubbing
+// the environment.
+func Env() []string {
+	return append(append([]string{}, os.Environ()...), Overrides()...)
 }
 
 // filterDrivers lists the filter driver names configured in dir. It follows
@@ -82,6 +89,13 @@ func filterDrivers(dir string) ([]string, error) {
 		// git config exits 1 when nothing matched, which is the common case.
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return nil, nil
+		}
+		// A directory that is not a repository has no config to read, so there
+		// is nothing to neutralize. Reporting it as an error here would change
+		// what the caller sees: the git command it goes on to build fails with
+		// this same "not a git repository" message.
+		if strings.Contains(stderr.String(), "not a git repository") {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("enumerate filter drivers in %s: %w%s", dir, err, stderrSuffix(stderr.String()))

@@ -1,12 +1,14 @@
 package settlement
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -262,4 +264,65 @@ func TestEvaluator_WithEnvAddsExplicitVariables(t *testing.T) {
 	if result.Result != ResultPass {
 		t.Fatalf("WithEnv must add the requested variable: %s (%s)", result.Result, result.Message)
 	}
+}
+
+// F2-03 (same class, different component): the Evaluator's git_clean_worktree
+// check runs `git status` on the host against the workspace the agent worked
+// in. If that workspace's git config is writable by the agent, the same
+// config-driven execution paths exist here: a poisoned core.fsmonitor in the
+// workspace config runs on the host.
+func TestEvaluator_GitCleanWorktreeIgnoresWorkspaceConfig(t *testing.T) {
+	workspace := t.TempDir()
+	if out, err := exec.Command("git", "-C", workspace, "init", "-b", "main").CombinedOutput(); err != nil {
+		t.Skipf("git unavailable: %v\n%s", err, out)
+	}
+
+	markerDir := t.TempDir()
+	marker := filepath.Join(markerDir, "pwned")
+	// Outside the workspace: a script inside it would show up in
+	// git status --porcelain as untracked and make the worktree dirty.
+	payload := filepath.Join(markerDir, "payload.sh")
+	script := "#!/bin/sh\necho pwned >> " + shellQuote(marker) + "\nexit 1\n"
+	if err := os.WriteFile(payload, []byte(script), 0o755); err != nil {
+		t.Fatalf("failed to write payload: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", workspace, "config", "core.fsmonitor", payload).CombinedOutput(); err != nil {
+		t.Fatalf("failed to poison workspace config: %v\n%s", err, out)
+	}
+
+	// Teeth: unhardened git DOES execute it in this workspace.
+	sanityMarker := filepath.Join(markerDir, "unhardened")
+	sanityPayload := filepath.Join(markerDir, "sanity.sh")
+	if err := os.WriteFile(sanityPayload, []byte("#!/bin/sh\necho pwned >> "+shellQuote(sanityMarker)+"\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("failed to write sanity payload: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", workspace, "config", "core.fsmonitor", sanityPayload).CombinedOutput(); err != nil {
+		t.Fatalf("failed to repoint fsmonitor: %v\n%s", err, out)
+	}
+	_ = exec.Command("git", "-C", workspace, "status", "--porcelain").Run()
+	if _, err := os.Stat(sanityMarker); err != nil {
+		t.Skipf("git does not execute core.fsmonitor here; cannot prove the escape: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", workspace, "config", "core.fsmonitor", payload).CombinedOutput(); err != nil {
+		t.Fatalf("failed to restore fsmonitor: %v\n%s", err, out)
+	}
+
+	got := NewEvaluator(workspace).Evaluate(context.Background(), &Assertion{
+		ID:     "a1",
+		Type:   AssertionGitCleanWorktree,
+		Params: map[string]any{},
+	}, 0)
+
+	if data, err := os.ReadFile(marker); err == nil {
+		t.Fatalf("ESCAPE: the workspace core.fsmonitor ran on the host %d time(s): %s",
+			bytes.Count(data, []byte("pwned")), strings.TrimSpace(string(data)))
+	}
+	if got.Result != ResultPass {
+		t.Fatalf("a clean worktree must still pass, got %s (%s)", got.Result, got.Message)
+	}
+}
+
+// shellQuote single-quotes a path for safe interpolation into a shell payload.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
