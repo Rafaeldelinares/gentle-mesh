@@ -3,6 +3,7 @@ package gitsafe
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,44 +114,75 @@ func TestFilterDriversEnumeratesConfiguredOnes(t *testing.T) {
 	}
 }
 
-func TestArgvNeutralizesEveryDiscoveredDriver(t *testing.T) {
+// The neutralization must travel in the environment, not in -c: git splits -c at
+// the first equals sign, so a driver named "a=b" is inexpressible there.
+func TestPlanNeutralizesEveryDiscoveredDriverInEnv(t *testing.T) {
 	cache := seedRepo(t)
 	gitConfig(t, cache, "filter.x.smudge", "payload")
 	gitConfig(t, cache, "filter.x.required", "true")
 	gitConfig(t, cache, "filter.zz.clean", "payload")
+	gitConfig(t, cache, "filter.a=b.smudge", "payload")
 
-	argv, err := Argv(cache, "worktree", "add", "-b", "b", "/tmp/x", "main")
+	argv, env, err := Plan(cache, "worktree", "add", "-b", "b", "/tmp/x", "main")
 	if err != nil {
-		t.Fatalf("Argv: %v", err)
+		t.Fatalf("Plan: %v", err)
 	}
-	joined := strings.Join(argv, " ")
+	if strings.Contains(strings.Join(argv, " "), "filter.") {
+		t.Errorf("argv must not carry filter overrides (they would split on '='): %v", argv)
+	}
+
+	joined := strings.Join(env, " ")
 	for _, want := range []string{
-		"-c filter.x.smudge=",
-		"-c filter.x.clean=",
-		"-c filter.x.process=",
-		"-c filter.x.required=false",
-		"-c filter.zz.clean=",
-		"-c filter.zz.required=false",
-		"-C " + cache,
+		"=filter.x.clean", "=filter.x.smudge", "=filter.x.process", "=filter.x.required",
+		"=filter.zz.clean",
+		// The '='-named driver is the whole point: it is only addressable here.
+		"=filter.a=b.smudge", "=filter.a=b.clean", "=filter.a=b.required",
 	} {
 		if !strings.Contains(joined, want) {
-			t.Errorf("argv missing %q\n%s", want, joined)
+			t.Errorf("env missing a GIT_CONFIG_KEY with %q\n%s", want, joined)
+		}
+	}
+	// Count must match the number of pairs, or git ignores the tail.
+	count := 0
+	values := 0
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GIT_CONFIG_KEY_") {
+			count++
+		}
+		if strings.HasPrefix(kv, "GIT_CONFIG_VALUE_") {
+			values++
+		}
+	}
+	if count != values {
+		t.Fatalf("key/value pair mismatch: %d keys, %d values", count, values)
+	}
+	if !strings.Contains(joined, fmt.Sprintf("GIT_CONFIG_COUNT=%d", count)) {
+		t.Errorf("GIT_CONFIG_COUNT does not match the %d pairs: %s", count, joined)
+	}
+	// The required flags must be relaxed to false, everything else empty.
+	if !strings.Contains(joined, "GIT_CONFIG_VALUE_3=false") {
+		t.Errorf("required must be relaxed: %s", joined)
+	}
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GIT_CONFIG_VALUE_") && !strings.HasSuffix(kv, "=false") && !strings.HasSuffix(kv, "=") {
+			t.Errorf("unexpected non-empty neutralization value: %q", kv)
 		}
 	}
 }
 
-// The fixed keys must survive for repos with no drivers at all.
-func TestArgvAlwaysCarriesFixedOverrides(t *testing.T) {
+// The fixed keys travel in argv and must survive for repos with no drivers.
+func TestPlanAlwaysCarriesFixedOverridesInArgv(t *testing.T) {
 	cache := seedRepo(t)
-	argv, err := Argv(cache, "status", "--porcelain")
+	argv, _, err := Plan(cache, "status", "--porcelain")
 	if err != nil {
-		t.Fatalf("Argv: %v", err)
+		t.Fatalf("Plan: %v", err)
 	}
 	joined := strings.Join(argv, " ")
 	for _, want := range []string{
 		"-c core.hooksPath=", "-c core.fsmonitor=false", "-c core.pager=cat",
 		"-c diff.external=", "-c credential.helper=", "-c core.gitProxy=",
 		"-c protocol.file.allow=never", "--no-optional-locks",
+		"-C " + cache,
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("argv missing %q", want)

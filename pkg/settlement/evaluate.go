@@ -333,12 +333,12 @@ func (e *Evaluator) evalGitCleanWorktree(ctx context.Context, result *AssertionR
 	// (including neutralizing any filter driver the config defines) and the
 	// environment is this evaluator's allowlist plus git's own overrides, so
 	// neither the repository nor the host can reintroduce a program path.
-	argv, err := gitsafe.Argv(cwd, "status", "--porcelain")
+	argv, gitEnv, err := gitsafe.Plan(cwd, "status", "--porcelain")
 	if err != nil {
 		return fmt.Errorf("git status: %w", err)
 	}
 	cmd := exec.CommandContext(ctx, "git", argv...)
-	cmd.Env = append(append([]string{}, e.env...), gitsafe.Overrides()...)
+	cmd.Env = append(append([]string{}, e.env...), gitEnv...)
 
 	out, err := cmd.Output()
 	if err != nil {

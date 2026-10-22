@@ -54,9 +54,12 @@ func fixedArgs() []string {
 var filterAttrs = []string{"clean", "smudge", "process"}
 
 // Overrides returns only the environment variables that stop git from loading
-// a hostile system or global config. Callers that manage their own environment
-// (the settlement evaluator allowlists it, for instance) append these to it
-// instead of using Env.
+// a hostile system or global config, plus the filter-driver neutralization for
+// a given directory.
+//
+// Callers that manage their own environment (the settlement evaluator
+// allowlists it, for instance) append these to it. Nothing here is a
+// replacement for the caller's environment: these are additions.
 func Overrides() []string {
 	return []string{
 		"GIT_CONFIG_NOSYSTEM=1",
@@ -66,23 +69,22 @@ func Overrides() []string {
 	}
 }
 
-// Env returns the parent environment plus Overrides. Everything else is kept:
-// this package is about where git reads configuration from, not about scrubbing
-// the environment.
-func Env() []string {
-	return append(append([]string{}, os.Environ()...), Overrides()...)
-}
-
-// filterDrivers lists the filter driver names configured in dir. It follows
-// include.path on purpose: an included file can define a driver, and skipping it
-// would hand back an incomplete list, which is exactly the failure mode this
-// function exists to prevent.
+// filterDrivers lists the filter driver names configured in dir.
+//
+// Keys are read with --name-only -z rather than parsed out of "key value"
+// lines: a driver name may contain spaces, and cutting a line at the first
+// space would silently drop such a driver, which is a fail-open enumeration.
+//
+// It follows include.path on purpose: an included file can define a driver,
+// and skipping it would hand back an incomplete list, which is exactly the
+// failure mode this function exists to prevent.
 func filterDrivers(dir string) ([]string, error) {
 	cmd := exec.Command("git", "--no-optional-locks", "-C", dir, "config",
-		"--get-regexp", `^filter\..*`)
-	cmd.Env = Env()
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
+		"--get-regexp", "--name-only", "-z", `^filter\..*`)
+	// Deliberately not Env(): a GIT_DIR (or GIT_WORK_TREE) in the host
+	// environment would make the enumeration read a different repository than
+	// the one about to be neutralized.
+	cmd.Env = Overrides()
 
 	out, err := cmd.Output()
 	if err != nil {
@@ -95,20 +97,16 @@ func filterDrivers(dir string) ([]string, error) {
 		// is nothing to neutralize. Reporting it as an error here would change
 		// what the caller sees: the git command it goes on to build fails with
 		// this same "not a git repository" message.
-		if strings.Contains(stderr.String(), "not a git repository") {
+		if strings.Contains(err.Error(), "not a git repository") {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("enumerate filter drivers in %s: %w%s", dir, err, stderrSuffix(stderr.String()))
+		return nil, fmt.Errorf("enumerate filter drivers in %s: %w", dir, err)
 	}
 
 	seen := map[string]struct{}{}
 	drivers := make([]string, 0, 4)
-	for _, line := range strings.Split(string(out), "\n") {
-		key, _, found := strings.Cut(strings.TrimSpace(line), " ")
-		if !found {
-			continue
-		}
-		name, ok := driverName(key)
+	for _, key := range strings.Split(string(out), "\x00") {
+		name, ok := driverName(strings.TrimSuffix(key, "\n"))
 		if !ok {
 			continue
 		}
@@ -140,57 +138,87 @@ func driverName(key string) (string, bool) {
 	return "", false
 }
 
-func stderrSuffix(s string) string {
-	if s = strings.TrimSpace(s); s == "" {
-		return ""
-	}
-	return ": " + s
-}
-
-// Argv returns the full argument vector for a hardened git invocation in dir,
-// including the program-neutralization overrides.
+// driverNeutralizationEnv returns the environment that disables every driver in
+// drivers, using git's GIT_CONFIG_KEY_n/GIT_CONFIG_VALUE_n mechanism instead of
+// -c overrides.
 //
-// It is exposed separately from Command for callers that build the *exec.Cmd
-// themselves (the runner injects a command factory to assert argv in tests).
-func Argv(dir string, args ...string) ([]string, error) {
-	if err := checkDiffArgs(args); err != nil {
-		return nil, err
+// The reason is precise: -c is parsed as name=value splitting at the FIRST
+// equals sign, so a driver named "a=b" cannot be addressed that way at all.
+// `-c filter.a=b.smudge=` sets the key `filter.a` to `b.smudge=`, leaving
+// filter.a=b.smudge live. The environment entries are not split, and they
+// outrank the repository config, so they neutralize every name git accepts.
+func driverNeutralizationEnv(drivers []string) []string {
+	if len(drivers) == 0 {
+		return nil
 	}
-	drivers, err := filterDrivers(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	full := make([]string, 0, 4*len(fixedArgs())+6*len(drivers)+2+len(args))
-	full = append(full, fixedArgs()...)
+	keys := make([]string, 0, 4*len(drivers))
+	values := make([]string, 0, 4*len(drivers))
 	for _, name := range drivers {
 		for _, attr := range filterAttrs {
 			// Emptying the command and relaxing required turns every driver
 			// into a pass-through: checkout still copies the blob verbatim, but
 			// nothing is executed. Verified against a poisoned driver.
-			full = append(full, "-c", fmt.Sprintf("filter.%s.%s=", name, attr))
+			keys = append(keys, fmt.Sprintf("filter.%s.%s", name, attr))
+			values = append(values, "")
 		}
-		full = append(full, "-c", fmt.Sprintf("filter.%s.required=false", name))
+		keys = append(keys, fmt.Sprintf("filter.%s.required", name))
+		values = append(values, "false")
 	}
+
+	env := make([]string, 0, 2+2*len(keys))
+	env = append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(keys)))
+	for i, key := range keys {
+		env = append(env,
+			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, key),
+			fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, values[i]),
+		)
+	}
+	return env
+}
+
+// Plan returns the argument vector and the environment additions for a
+// hardened git invocation in dir.
+//
+// Both halves are returned together because they cannot be built apart: the
+// filter-driver neutralization has to travel in the environment, so a caller
+// that takes only the argv would silently lose it.
+//
+// The env slice is meant to be appended AFTER the caller's own environment, so
+// these values win over anything the caller had (os/exec keeps the last
+// assignment of a duplicated name).
+func Plan(dir string, args ...string) (argv, env []string, err error) {
+	if err := checkDiffArgs(args); err != nil {
+		return nil, nil, err
+	}
+	drivers, err := filterDrivers(dir)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	full := make([]string, 0, len(fixedArgs())+2+len(args))
+	full = append(full, fixedArgs()...)
 	if dir != "" {
 		full = append(full, "-C", dir)
 	}
-	return append(full, args...), nil
+	full = append(full, args...)
+
+	additions := append(Overrides(), driverNeutralizationEnv(drivers)...)
+	return full, additions, nil
 }
 
 // Command builds a git invocation for dir with every config-driven program path
-// neutralized.
+// neutralized, inheriting the host environment.
 //
 // It fails rather than guessing when the filter drivers in dir cannot be
 // enumerated: an incomplete list would silently restore the escape this
 // package exists to close.
 func Command(ctx context.Context, dir string, args ...string) (*exec.Cmd, error) {
-	full, err := Argv(dir, args...)
+	full, additions, err := Plan(dir, args...)
 	if err != nil {
 		return nil, err
 	}
 	cmd := exec.CommandContext(ctx, "git", full...)
-	cmd.Env = Env()
+	cmd.Env = append(os.Environ(), additions...)
 	return cmd, nil
 }
 

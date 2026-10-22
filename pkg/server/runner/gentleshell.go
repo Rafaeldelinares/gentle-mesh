@@ -605,14 +605,14 @@ func (r *GentleShellRunner) prepareWorktree(ctx context.Context, worktreeDir, br
 	}
 	// Add the worktree. --force would mask a stale directory; we explicitly
 	// refuse to overwrite so two concurrent tasks do not stomp on each other.
-	gitArgs, err := gitsafe.Argv(r.opts.RepoCache,
+	gitArgs, gitEnv, err := gitsafe.Plan(r.opts.RepoCache,
 		"worktree", "add", "-b", branch, worktreeDir, r.opts.BaseRef)
 	if err != nil {
 		return fmt.Errorf("build git worktree add: %w", err)
 	}
 	cmd := r.opts.commandFactory(ctx, "git", gitArgs...)
 	if cmd != nil {
-		cmd.Env = gitsafe.Env()
+		cmd.Env = append(os.Environ(), gitEnv...)
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
