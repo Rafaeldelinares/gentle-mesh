@@ -25,11 +25,19 @@ Las specs citan el texto verificado del issue #145 y del pedido del mantenedor.
 
 | ID | Spec | Trabajo | Allowed edit surface | Commit |
 |----|------|---------|----------------------|--------|
-| T1 | S5, S3 | Hardening de las 7 invocaciones de git del host del runner (6 con `exec.Command` + `prepareWorktree`, que va por `commandFactory`) | `pkg/server/runner/gentleshell.go`, `pkg/server/runner/gentleshell_test.go` | `fix(runner): harden host-side git against sandbox-written cache config` |
-| T2 | S1 | `absPath` con contención real: rechaza absolutos y `..`, resuelve symlinks, verifica con `Rel` sobre raíz resuelta | `pkg/settlement/evaluate.go`, `pkg/settlement/evaluate_test.go` | `fix(settlement): contain assertion paths to the workspace root` |
-| T3 | S2 | Env allowlist deny-by-default para el Evaluator; `WithEnv` queda como escape hatch explícito | `pkg/settlement/evaluate.go`, `pkg/settlement/evaluate_test.go` | `fix(settlement): run assertions with an allowlisted environment, not os.Environ()` |
+| T1 | S5, S3 | Hardening de las 7 invocaciones de git del host del runner (6 con `exec.Command` + `prepareWorktree`, que va por `commandFactory`) | `pkg/server/runner/gentleshell.go`, `pkg/server/runner/gentleshell_test.go` | `50b2028` **hecho** |
+| T2 | S1 | `absPath` con contención real: rechaza absolutos y `..`, resuelve symlinks, verifica con `Rel` sobre raíz resuelta | `pkg/settlement/evaluate.go`, `pkg/settlement/evaluate_test.go` | `a17c8d5` **hecho** |
+| T3 | S2 | Env allowlist deny-by-default para el Evaluator; `WithEnv` queda como escape hatch explícito | `pkg/settlement/evaluate.go`, `pkg/settlement/evaluate_test.go` | `4d349eb` **hecho** |
 
-Cada task: test RED observado → fix → GREEN. Al cierre, `./scripts/security-gates.sh`, `go vet`, `staticcheck`, `go test -race ./pkg/... ./cmd/... ./integration/agent/...`.
+PR: #146. Cada task: test RED observado → fix → GREEN. Al cierre, `./scripts/security-gates.sh`, `go vet`, `staticcheck`, `go test -race ./pkg/... ./cmd/... ./integration/agent/...`.
+
+### Evidencia por work unit
+
+| Task | RED observado | GREEN |
+|------|----------------|-------|
+| T1 | 8 ejecuciones del payload en el host | 0; mutar (quitar `-c core.fsmonitor=false`) → FAIL con 4 |
+| T2 | 4 escapes devolvían `PASS` (absoluto, `..`, symlink, `cwd`) | 7/7 |
+| T3 | el secreto llegaba al comando (`exit 0, expected 1`) | 3/3 |
 
 ## Log
 
@@ -48,3 +56,11 @@ Cada task: test RED observado → fix → GREEN. Al cierre, `./scripts/security-
 **L7 (trampa evitada):** `protocol.file.allow=never` **rompe** el fetch local de un repo a otro (`apply` depende de eso; `git fetch` desde un path local queda bloqueado). Los dos call sites necesitan conjuntos distintos: el runner nunca usa file transport (nunca clona), así que lleva `never`; `apply` lo necesita y no se toca. Todos los flags se validaron uno por uno contra el binario local de git antes de escribirlos.
 
 **L8 (test que mentía):** el primer RED de T1 pasó sin querer: el probe de sanity usaba `git rev-parse`, que no dispara `core.fsmonitor`, y el test terminaba en `Skip` — verde por la razón equivocada. Corregido para usar un worktree enlazado + `git status`, que es lo que hace el runner. RED real: **8 ejecuciones del binario envenenado en el host**. GREEN: 0. Mutación (quitar `-c core.fsmonitor=false`) → vuelve a FAIL con 4, así que el test tiene dientes.
+
+**L9 (segundo test que mentía, T2):** `TestAbsPath_RejectsCwdEscapingWorkspace` pasaba porque `git status` en un directorio que no es repo ya devuelve error, no por contención. Reescrito con un repo git real afuera del workspace, y agregado el caso legítimo espejo (`AllowsCwdInsideWorkspace`) para que el fix no pueda pasar por negarlo todo.
+
+**L10 (gates de cierre):** `./scripts/security-gates.sh` 0 violaciones, `go vet ./...` y `staticcheck ./...` limpios, `go test -race -timeout 10m ./pkg/... ./cmd/... ./integration/agent/...` en verde (EXIT=0), sin regresión en `pkg/shell` ni `integration/agent`. El drift de gofmt de `pkg/settlement/evaluate.go` es preexistente en `c3e900a` (verificado con `git show`) y mis bloques no aportan ningún hunk de `gofmt -d`.
+
+**Pendiente de esta fase:** verificación independiente de seguridad (subagente read-only) sobre las tres afirmaciones. Si encuentra un bypass, entra como commit de fix en la PR #146 antes de dar el frente por cerrado.
+
+**Siguiente frente (no esta rama):** PKI. F1-01 tiene una decisión de diseño abierta que el mantenedor quiere elegir: si la rehidratación de revocaciones lee el store en cada handshake, o si la rotación deja de borrar el serial revocado.
