@@ -28,6 +28,8 @@ Las specs citan el texto verificado del issue #145 y del pedido del mantenedor.
 | T1 | S5, S3 | Hardening de las 7 invocaciones de git del host del runner (6 con `exec.Command` + `prepareWorktree`, que va por `commandFactory`) | `pkg/server/runner/gentleshell.go`, `pkg/server/runner/gentleshell_test.go` | `50b2028` **hecho** |
 | T2 | S1 | `absPath` con contención real: rechaza absolutos y `..`, resuelve symlinks, verifica con `Rel` sobre raíz resuelta | `pkg/settlement/evaluate.go`, `pkg/settlement/evaluate_test.go` | `a17c8d5` **hecho** |
 | T3 | S2 | Env allowlist deny-by-default para el Evaluator; `WithEnv` queda como escape hatch explícito | `pkg/settlement/evaluate.go`, `pkg/settlement/evaluate_test.go` | `4d349eb` **hecho** |
+| T4 | S3 | Bypass de `filter.<driver>`: paquete compartido `pkg/gitsafe` con enumeración y neutralización de drivers | `pkg/gitsafe/`, `pkg/server/runner/gentleshell.go`, `pkg/server/runner/filter_driver_bypass_test.go` | `fb7d7d5` **hecho** |
+| T5 | S3 | El mismo escape en los otros 4 `git status` del host (Evaluator, `pkg/shell`, `integration/agent` x2) | `pkg/settlement/evaluate.go`, `pkg/shell/shell.go`, `integration/agent/server_shell.go`, `integration/agent/server.go` | `4a89698` **hecho** |
 
 PR: #146. Cada task: test RED observado → fix → GREEN. Al cierre, `./scripts/security-gates.sh`, `go vet`, `staticcheck`, `go test -race ./pkg/... ./cmd/... ./integration/agent/...`.
 
@@ -38,6 +40,8 @@ PR: #146. Cada task: test RED observado → fix → GREEN. Al cierre, `./scripts
 | T1 | 8 ejecuciones del payload en el host | 0; mutar (quitar `-c core.fsmonitor=false`) → FAIL con 4 |
 | T2 | 4 escapes devolvían `PASS` (absoluto, `..`, symlink, `cwd`) | 7/7 |
 | T3 | el secreto llegaba al comando (`exit 0, expected 1`) | 3/3 |
+| T4 | `ESCAPE: the sandbox-defined smudge filter ran on the host 1 time(s)` | 0; paridad de diff byte a byte con git normal |
+| T5 | `ESCAPE: the workspace core.fsmonitor ran on the host 2 time(s)` | 0; worktree limpio sigue pasando |
 
 ## Log
 
@@ -62,5 +66,13 @@ PR: #146. Cada task: test RED observado → fix → GREEN. Al cierre, `./scripts
 **L10 (gates de cierre):** `./scripts/security-gates.sh` 0 violaciones, `go vet ./...` y `staticcheck ./...` limpios, `go test -race -timeout 10m ./pkg/... ./cmd/... ./integration/agent/...` en verde (EXIT=0), sin regresión en `pkg/shell` ni `integration/agent`. El drift de gofmt de `pkg/settlement/evaluate.go` es preexistente en `c3e900a` (verificado con `git show`) y mis bloques no aportan ningún hunk de `gofmt -d`.
 
 **Pendiente de esta fase:** verificación independiente de seguridad (subagente read-only) sobre las tres afirmaciones. Si encuentra un bypass, entra como commit de fix en la PR #146 antes de dar el frente por cerrado.
+
+**L11 (bypass encontrado por la verificación independiente, T4):** el primer hardening de T1 cerró las claves **fijas** de git, pero los *filter drivers* tienen clave dinámica (`filter.<nombre>.smudge`): ningún `-c` global los alcanza, y las dos mitades del ataque viven en el cache escribible (`info/attributes` + la definición del driver). `git worktree add` hace checkout, así que ejecuta el smudge **en el host**. Reproducido por mí contra el commit anterior, con todos los flags puestos: el payload corrió. La clase se cierra enumerando los drivers del repo y neutralizándolos uno por uno (`clean`/`smudge`/`process` vacíos + `required=false`), lo que verifiqué que deja el checkout como pass-through: contenido idéntico y payload sin ejecutar. La enumeración es **fail-closed**: una lista incompleta devolvería el escape en silencio.
+
+**L12 (dos correcciones al pie del bypass, T4):** un `git diff` sin `--no-ext-diff` ahora se **rechaza** con error explícito (con `diff.external=` vacío, git falla duro en vez de diffear, así que sin el flag parecería un runner roto y no uno neutralizado); y un test fija la **paridad de salida**: el diff endurecido debe ser idéntico byte a byte al de git normal, o el operador estaría revisando una propuesta que no es la del agente.
+
+**L13 (alcance ampliado con evidencia, T5):** la verificación señaló como *advisory* que los otros cuatro `git status` del host (evaluator, `pkg/shell`, `integration/agent` x2) tenían el mismo mecanismo contra el mismo config escribible por el sandbox. Aunque fuera preexistente y no estuviera en el pedido, es la misma clase sobre el componente que corre en el host del worker, así que entra en este frente. En el Evaluator el endurecimiento se compone con su env allowlisted (`gitsafe.Overrides()`) para no deshacer F2-02.
+
+**L14 (deuda consciente que NO cierro aquí):** la env allowlist de F2-02 no tiene forma de que el operador restaure `GOPROXY`/`HTTPS_PROXY`/`GOFLAGS`/`GOPRIVATE` en un worker detrás de proxy o con registry privado. Ningún llamador de producción usa `WithEnv`. Es una regresión de usabilidad real de mi propio cambio: queda anotada para decidir con el mantenedor (flag de CLI vs variable de entorno) en vez de resolverla por mi cuenta.
 
 **Siguiente frente (no esta rama):** PKI. F1-01 tiene una decisión de diseño abierta que el mantenedor quiere elegir: si la rehidratación de revocaciones lee el store en cada handshake, o si la rotación deja de borrar el serial revocado.
