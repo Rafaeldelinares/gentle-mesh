@@ -81,10 +81,10 @@ func Overrides() []string {
 func filterDrivers(dir string) ([]string, error) {
 	cmd := exec.Command("git", "--no-optional-locks", "-C", dir, "config",
 		"--get-regexp", "--name-only", "-z", `^filter\..*`)
-	// Deliberately not Env(): a GIT_DIR (or GIT_WORK_TREE) in the host
-	// environment would make the enumeration read a different repository than
-	// the one about to be neutralized.
-	cmd.Env = Overrides()
+	// Deliberately neither Env() nor the caller's environment: a GIT_DIR (or
+	// GIT_WORK_TREE) would make the enumeration read a different repository
+	// than the one about to be neutralized.
+	cmd.Env = Sanitize(Overrides())
 
 	out, err := cmd.Output()
 	if err != nil {
@@ -176,6 +176,38 @@ func driverNeutralizationEnv(drivers []string) []string {
 	return env
 }
 
+// repoLocationVars redirect git at a different repository, index or object
+// store than the one the caller named. They are stripped from the environment
+// of both the enumeration and the command, because if only one of them saw
+// them, git would read a configuration nobody enumerated.
+var repoLocationVars = []string{
+	"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+	"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+	"GIT_NAMESPACE", "GIT_PREFIX",
+}
+
+// Sanitize removes the variables that point git at another repository, index or
+// object store. Callers that manage their own environment should apply it to
+// whatever they are going to pass.
+func Sanitize(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		drop := false
+		for _, bad := range repoLocationVars {
+			if name == bad {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
 // Plan returns the argument vector and the environment additions for a
 // hardened git invocation in dir.
 //
@@ -218,7 +250,7 @@ func Command(ctx context.Context, dir string, args ...string) (*exec.Cmd, error)
 		return nil, err
 	}
 	cmd := exec.CommandContext(ctx, "git", full...)
-	cmd.Env = append(os.Environ(), additions...)
+	cmd.Env = append(Sanitize(os.Environ()), additions...)
 	return cmd, nil
 }
 

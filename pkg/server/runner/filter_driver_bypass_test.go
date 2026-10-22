@@ -104,3 +104,85 @@ func TestGentleShellRunner_HostSideGitIgnoresSandboxWrittenFilterDriver(t *testi
 			bytes.Count(data, []byte("pwned")), strings.TrimSpace(string(data)))
 	}
 }
+
+// TestGentleShellRunner_HostSideGitIgnoresSandboxWrittenConditionalDriver is the
+// regression test for the enumeration/execution mismatch, exercised through the
+// runner's real path (Run -> prepareWorktree) rather than through a hand-written
+// sequence.
+//
+// All three halves live in the read-write cache: the driver, the info/attributes
+// that select it, and an includeIf that makes it conditional on the current
+// branch. The condition `onbranch:proposal/*` is inactive while the cache's HEAD
+// is `main`, so enumerating against the cache finds nothing — but the runner
+// creates the worktree with `-b proposal/<task_id>`, which moves HEAD to the new
+// branch before checking out, at which point the include is live and the smudge
+// runs on the host. `proposal/<task_id>` is exactly the branch shape the runner
+// uses, so a wildcard match is fully general.
+func TestGentleShellRunner_HostSideGitIgnoresSandboxWrittenConditionalDriver(t *testing.T) {
+	cache, worktreesRoot := seedBareCache(t)
+
+	markerDir := t.TempDir()
+	marker := filepath.Join(markerDir, "pwned")
+	payload := filepath.Join(cache, "smudge-payload.sh")
+	script := "#!/bin/sh\necho \"HOST-EXEC $(id -un)@$(hostname)\" >> " + shellQuote(marker) + "\ncat\nexit 0\n"
+	if err := os.WriteFile(payload, []byte(script), 0o755); err != nil {
+		t.Fatalf("failed to write payload: %v", err)
+	}
+	evil := filepath.Join(cache, "evil.cfg")
+	evilBody := "[filter \"pwn\"]\n\tsmudge = " + payload + "\n\trequired = true\n"
+	if err := os.WriteFile(evil, []byte(evilBody), 0o644); err != nil {
+		t.Fatalf("failed to write evil.cfg: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(cache, "info"), 0o755); err != nil {
+		t.Fatalf("failed to create info dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, "info", "attributes"), []byte("* filter=pwn\n"), 0o644); err != nil {
+		t.Fatalf("failed to write info/attributes: %v", err)
+	}
+	cfgFile := filepath.Join(cache, "config")
+	cfg, err := os.OpenFile(cfgFile, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("failed to open cache config: %v", err)
+	}
+	if _, err := cfg.WriteString("\n[includeIf \"onbranch:proposal/*\"]\n\tpath = " + evil + "\n"); err != nil {
+		t.Fatalf("failed to append includeIf: %v", err)
+	}
+	cfg.Close()
+
+	// Teeth: plain git on the same cache runs it, so a pass below means something.
+	if out, err := exec.Command("git", "-C", cache, "worktree", "add", "-f",
+		filepath.Join(markerDir, "teeth"), "-b", "proposal/teeth", "main").CombinedOutput(); err != nil {
+		t.Fatalf("teeth worktree add failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Skipf("git does not activate the conditional driver here; cannot prove the escape: %v", err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatalf("failed to clear marker: %v", err)
+	}
+
+	bwrapScript := writeFakeBwrap(t, sandboxedGitPrefix+passBwrapScript)
+	gsScript := writeFakeGentleShell(t, fakeGentleShellScript(
+		filepath.Join(t.TempDir(), "gs-argv.txt"), gentleShellHappyStream, "", 0))
+
+	r := runner.NewGentleShellRunner(defaultRunnerOptions(t, runner.GentleShellRunnerOptions{
+		Bwrap:         bwrapScript,
+		GentleShell:   gsScript,
+		RepoCache:     cache,
+		WorktreesRoot: worktreesRoot,
+		ThinkingLevel: "minimal",
+		TotalTimeout:  2 * time.Minute,
+		IdleTimeout:   30 * time.Second,
+	}))
+
+	sink := newMockSink(context.Background())
+	_ = r.Run(context.Background(), protocol.TaskRequest{
+		TaskID: "task-conditional",
+		Agent:  "worker",
+		Task:   "conditional filter driver must not reach the host",
+	}, sink)
+
+	if data, err := os.ReadFile(marker); err == nil {
+		t.Fatalf("ESCAPE: the conditional smudge driver ran on the host: %s", strings.TrimSpace(string(data)))
+	}
+}
