@@ -14,6 +14,14 @@ import (
 type CertStore interface {
 	// IssueCert stores a newly issued certificate.
 	IssueCert(ctx context.Context, cert *CertRecord) error
+	// IssueCertIfAbsent stores a certificate only when the node has none, and
+	// reports ErrCertIdentityExists otherwise. The insert is the arbiter, so two
+	// concurrent callers cannot both win.
+	IssueCertIfAbsent(ctx context.Context, cert *CertRecord) error
+	// RevokeSerial records a serial as revoked without needing a node_certs row.
+	// Used when a certificate was signed but must not be usable, which is the
+	// case for the loser of a concurrent enrollment race.
+	RevokeSerial(ctx context.Context, serial, nodeID string) error
 	// GetCert retrieves a certificate by node ID.
 	GetCert(ctx context.Context, nodeID string) (*CertRecord, error)
 	// ListCerts returns all issued certificates.
@@ -42,6 +50,12 @@ type CertRecord struct {
 	Revoked    bool
 	RevokedAt  *time.Time
 }
+
+// ErrCertIdentityExists reports that a certificate is already recorded for a
+// node id. Enrollment uses it to lose a race it must not win: IssueCert upserts
+// over node_id, so a second enrollment would silently replace the first
+// certificate and leave that first one in neither table.
+var ErrCertIdentityExists = errors.New("certificate already exists for this node id")
 
 // RevokedCertRecord is an entry of the append-only revocation ledger.
 type RevokedCertRecord struct {
@@ -191,6 +205,77 @@ func (s *SQLiteCertStore) IssueCert(ctx context.Context, cert *CertRecord) error
 		return fmt.Errorf("failed to issue cert: %w", err)
 	}
 
+	return nil
+}
+
+// IssueCertIfAbsent stores a certificate only when the node has none.
+//
+// It deliberately does NOT upsert: the plain INSERT is the atomic arbiter, so
+// when two callers race the same node id exactly one insert lands and the other
+// gets ErrCertIdentityExists. Upserting here would be worse than losing the
+// race, because the loser's certificate would be signed by the CA and then
+// overwritten out of existence: presentable at a TLS handshake, absent from
+// node_certs and from the revocation ledger, and valid for a year.
+func (s *SQLiteCertStore) IssueCertIfAbsent(ctx context.Context, cert *CertRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	s.closeMu.RLock()
+	defer s.closeMu.RUnlock()
+	if s.closed || s.db == nil {
+		return errors.New("cert store is closed")
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	query := `
+	INSERT INTO node_certs (
+		node_id, common_name, serial, cert_pem,
+		issued_at, expires_at, revoked
+	) VALUES (?, ?, ?, ?, ?, ?, 0)
+	`
+	if _, err := s.db.ExecContext(ctx, query,
+		cert.NodeID, cert.CommonName, cert.Serial, cert.CertPEM,
+		cert.IssuedAt.Unix(), cert.ExpiresAt.Unix()); err != nil {
+		// Any failure that left a row for this node id means we lost the race
+		// rather than hitting a different error, so ask instead of matching on
+		// driver error strings.
+		var one int
+		if qErr := s.db.QueryRowContext(ctx, `SELECT 1 FROM node_certs WHERE node_id = ?`, cert.NodeID).Scan(&one); qErr == nil {
+			return ErrCertIdentityExists
+		}
+		return fmt.Errorf("failed to issue cert: %w", err)
+	}
+	return nil
+}
+
+// RevokeSerial records a serial in the ledger without requiring a node_certs
+// row, which is the case for a certificate that was signed but must not be
+// usable: the loser of a concurrent enrollment has no row of its own.
+func (s *SQLiteCertStore) RevokeSerial(ctx context.Context, serial, nodeID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if serial == "" {
+		return errors.New("serial is required")
+	}
+
+	s.closeMu.RLock()
+	defer s.closeMu.RUnlock()
+	if s.closed || s.db == nil {
+		return errors.New("cert store is closed")
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO revoked_serials (serial, node_id, revoked_at) VALUES (?, ?, ?)`,
+		serial, nodeID, time.Now().Unix()); err != nil {
+		return fmt.Errorf("failed to record revocation: %w", err)
+	}
 	return nil
 }
 

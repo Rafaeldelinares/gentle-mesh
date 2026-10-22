@@ -125,6 +125,12 @@ type failingCertStore struct {
 func (s *failingCertStore) IssueCert(ctx context.Context, rec *store.CertRecord) error {
 	return s.inner.IssueCert(ctx, rec)
 }
+func (s *failingCertStore) IssueCertIfAbsent(ctx context.Context, rec *store.CertRecord) error {
+	return s.inner.IssueCertIfAbsent(ctx, rec)
+}
+func (s *failingCertStore) RevokeSerial(ctx context.Context, serial, nodeID string) error {
+	return s.inner.RevokeSerial(ctx, serial, nodeID)
+}
 func (s *failingCertStore) GetCert(ctx context.Context, nodeID string) (*store.CertRecord, error) {
 	return s.inner.GetCert(ctx, nodeID)
 }

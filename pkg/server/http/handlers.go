@@ -150,7 +150,7 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 	// Everything that does not depend on the token is validated before
 	// consuming it: a request that is going to be rejected must not burn an
 	// enrollment use.
-	nodeID := req.NodeID
+	nodeID := strings.TrimSpace(req.NodeID)
 	if nodeID == "" {
 		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "node_id is required"})
 		return
@@ -168,13 +168,14 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 	// arrives in the body and the token is not bound to any identity, so without
 	// this check any valid token mints a CA-signed certificate for ANY node in
 	// the mesh, and because issuance clears revoked to 0, that also resurrects
-	// revoked nodes. Legitimate rotation does not come through here: it is
-	// cert-issue with an admin token.
+	// revoked nodes. Rotation is a different door: `gentle-mesh cert-issue`, a
+	// local operator command that needs no token at all.
 	//
-	// This runs before UseToken on purpose: refusing an identity must not burn
-	// an invite, or an operator would lose a valid token to an attack attempt.
+	// This runs before UseToken so refusing an identity does not burn an invite.
+	// It is only a pre-check, not the arbiter: two requests can both observe
+	// "no certificate", so the insert below is what actually decides.
 	//
-	// With no certificate store there is no persisted identity to take over, and
+	// With no certificate store there is no persisted identity to take over and
 	// no revocation state to corrupt, so the check has nothing to defend; the
 	// coordinator in that configuration also wires no revocation checker at all.
 	if s.certStore != nil {
@@ -184,7 +185,7 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 			return
 		}
 		if existing != nil {
-			writeJSON(w, stdhttp.StatusConflict, map[string]string{"error": fmt.Sprintf("node_id %q already has a certificate: enrollment is only for new nodes, rotate with cert-issue or revoke the existing certificate first", nodeID)})
+			writeJSON(w, stdhttp.StatusConflict, map[string]string{"error": fmt.Sprintf("node_id %q already has a certificate: enrollment is only for new nodes, use `gentle-mesh cert-issue` to rotate", nodeID)})
 			return
 		}
 	}
@@ -236,7 +237,22 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 			IssuedAt:   cert.NotBefore,
 			ExpiresAt:  cert.NotAfter,
 		}
-		if err := s.certStore.IssueCert(r.Context(), certRecord); err != nil {
+		// IssueCertIfAbsent, not IssueCert: the CA has already signed this
+		// certificate by now, so losing the race must not leave it stranded. An
+		// upsert would overwrite the winner and put the loser's certificate in
+		// neither table, where nothing can ever revoke it.
+		err := s.certStore.IssueCertIfAbsent(r.Context(), certRecord)
+		if errors.Is(err, store.ErrCertIdentityExists) {
+			// The other request won. This certificate was already signed, so it
+			// has to be made explicitly unusable rather than merely discarded.
+			if revErr := s.certStore.RevokeSerial(r.Context(), certRecord.Serial, nodeID); revErr != nil {
+				writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("lost enrollment race and failed to revoke the superseded certificate: %v", revErr)})
+				return
+			}
+			writeJSON(w, stdhttp.StatusConflict, map[string]string{"error": fmt.Sprintf("node_id %q was enrolled concurrently by another request", nodeID)})
+			return
+		}
+		if err != nil {
 			writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to record issued certificate: %v", err)})
 			return
 		}
