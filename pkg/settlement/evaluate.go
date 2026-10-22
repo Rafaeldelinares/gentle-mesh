@@ -140,7 +140,10 @@ func (e *Evaluator) Evaluate(ctx context.Context, assertion *Assertion, index in
 // ─────────────────────────────────────────────────────────────────
 
 func (e *Evaluator) evalFileModified(ctx context.Context, result *AssertionResult, a *Assertion) error {
-	path := e.absPath(fmt.Sprintf("%v", a.Params["path"]))
+	path, err := e.absPath(fmt.Sprintf("%v", a.Params["path"]))
+	if err != nil {
+		return err
+	}
 
 	info, err := os.Stat(path)
 	if err != nil {
@@ -160,7 +163,10 @@ func (e *Evaluator) evalFileModified(ctx context.Context, result *AssertionResul
 }
 
 func (e *Evaluator) evalFileHashEquals(ctx context.Context, result *AssertionResult, a *Assertion) error {
-	path := e.absPath(fmt.Sprintf("%v", a.Params["path"]))
+	path, err := e.absPath(fmt.Sprintf("%v", a.Params["path"]))
+	if err != nil {
+		return err
+	}
 	expectedHash := fmt.Sprintf("%v", a.Params["expected_hash"])
 
 	data, err := os.ReadFile(path)
@@ -259,7 +265,11 @@ func (e *Evaluator) evalCommandOutputContains(ctx context.Context, result *Asser
 func (e *Evaluator) evalGitCleanWorktree(ctx context.Context, result *AssertionResult, a *Assertion) error {
 	cwd := e.workingDir
 	if cwdParam := a.Params["cwd"]; cwdParam != nil && cwdParam != "" {
-		cwd = e.absPath(fmt.Sprintf("%v", cwdParam))
+		resolved, err := e.absPath(fmt.Sprintf("%v", cwdParam))
+		if err != nil {
+			return err
+		}
+		cwd = resolved
 	}
 
 	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
@@ -344,11 +354,84 @@ func (e *Evaluator) evalNoRegression(ctx context.Context, result *AssertionResul
 // Helpers
 // ─────────────────────────────────────────────────────────────────
 
-func (e *Evaluator) absPath(p string) string {
-	if filepath.IsAbs(p) {
-		return p
+// absPath resolves an assertion-supplied path against the workspace root and
+// guarantees the result stays inside it.
+//
+// Absolute paths and ".." are refused outright, and symlinks are resolved
+// before the containment check: a lexical check alone (Clean + ".." prefix +
+// filepath.Rel) is defeated by a symlink that sits inside the workspace and
+// points out of it, which is exactly the shape an agent commits into a
+// worktree.
+//
+// Residual risk: this is a check-then-use sequence, so a process that can swap
+// a symlink between the resolution and the subsequent read could still race it.
+// Closing that needs openat2/RESOLVE_BENEATH on every access, which is out of
+// scope here; the resolution keeps the common case (a committed symlink,
+// pointing at /etc/shadow) contained.
+func (e *Evaluator) absPath(p string) (string, error) {
+	if p == "" {
+		return "", errors.New("path is required")
 	}
-	return filepath.Join(e.workingDir, p)
+	if filepath.IsAbs(p) {
+		return "", fmt.Errorf("absolute path %q is not allowed: assertion paths are relative to the workspace", p)
+	}
+	root, err := filepath.EvalSymlinks(e.workingDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("resolve workspace root %q: %w", e.workingDir, err)
+		}
+		root = filepath.Clean(e.workingDir)
+	}
+	joined := filepath.Join(root, filepath.Clean(p))
+	if !withinRoot(root, joined) {
+		return "", fmt.Errorf("path %q escapes the workspace root", p)
+	}
+	resolved, err := resolveExistingPrefix(joined)
+	if err != nil {
+		return "", err
+	}
+	if !withinRoot(root, resolved) {
+		return "", fmt.Errorf("path %q resolves outside the workspace root", p)
+	}
+	return joined, nil
+}
+
+// withinRoot reports whether p is the root itself or lives under it.
+func withinRoot(root, p string) bool {
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
+// resolveExistingPrefix resolves symlinks on the deepest existing ancestor of
+// path and re-appends the components that do not exist yet, so a symlink whose
+// target does not exist is still judged by where it points.
+func resolveExistingPrefix(path string) (string, error) {
+	remainder := ""
+	current := path
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			if remainder == "" {
+				return resolved, nil
+			}
+			return filepath.Join(resolved, remainder), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("resolve %q: %w", current, err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("no existing ancestor for %q", path)
+		}
+		remainder = filepath.Join(filepath.Base(current), remainder)
+		current = parent
+	}
 }
 
 func (e *Evaluator) runCommand(ctx context.Context, cmdStr string) (int, string, string, error) {
