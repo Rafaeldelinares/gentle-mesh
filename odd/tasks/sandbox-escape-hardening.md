@@ -32,6 +32,7 @@ Las specs citan el texto verificado del issue #145 y del pedido del mantenedor.
 | T5 | S3 | El mismo escape en los otros 4 `git status` del host (Evaluator, `pkg/shell`, `integration/agent` x2) | `pkg/settlement/evaluate.go`, `pkg/shell/shell.go`, `integration/agent/server_shell.go`, `integration/agent/server.go` | `4a89698` **hecho** |
 | T6 | S3 | Bypass `=`: neutralización por `GIT_CONFIG_KEY_n` + enumeración con `--name-only -z` | `pkg/gitsafe/`, `pkg/server/runner/gentleshell.go`, `pkg/settlement/evaluate.go` | `f4044b0` **hecho** |
 | T7 | S3 | Bypass `includeIf onbranch`: enumerar donde git lee, no antes | `pkg/gitsafe/`, `pkg/server/runner/gentleshell.go`, tests | `869411d` **hecho** |
+| T8 | S3, S5 | Regresiones validadas por el verificador + demo del residual | `pkg/gitsafe/driver_names_and_readtree_test.go`, `pkg/server/runner/conditional_driver_matrix_test.go` | `f14d9c4` **hecho** |
 
 PR: #146. Cada task: test RED observado → fix → GREEN. Al cierre, `./scripts/security-gates.sh`, `go vet`, `staticcheck`, `go test -race ./pkg/... ./cmd/... ./integration/agent/...`.
 
@@ -46,6 +47,7 @@ PR: #146. Cada task: test RED observado → fix → GREEN. Al cierre, `./scripts
 | T5 | `ESCAPE: the workspace core.fsmonitor ran on the host 2 time(s)` | 0; worktree limpio sigue pasando |
 | T6 | `ESCAPE: driver con '=' ejecutado en el host (1 vez)` | 0, en el camino smudge (`worktree add`) **y** en el clean (`git status`) |
 | T7 | `ESCAPE: the conditional smudge driver ran on the host: HOST-EXEC <user>@<host>` | 0, worktree poblado con el contenido correcto |
+| T8 | (sin RED: es cobertura de lo ya arreglado) | 8/8 variantes condicionales por la vía real; 13 nombres enumerados y neutralizados; `read-tree` neutraliza `core.fsmonitor` |
 
 ## Log
 
@@ -81,7 +83,11 @@ El arreglo es de dos fases: `worktree add --no-checkout` (no checkoutea nada →
 
 **L19 (el test que se burlaba de mí, cuarta vez):** el test de gitsafe para T7 **pasaba antes de arreglar el código de producción**, porque codificaba la secuencia de dos fases él mismo en vez de ejercitar `prepareWorktree`. Es exactamente el modo de fallo que ya me había mordido tres veces en esta rama. Lo dejé, pero con el comentario que dice sin ambigüedad que fija el *mecanismo* y que el test de regresión de producción es el del runner, que sí falla contra la implementación anterior.
 
-**Pendiente de esta fase:** verificación independiente de seguridad (subagente read-only). Va en cuarta pasada sobre T7; si encuentra algo, entra como commit de fix en la PR #146 antes de dar el frente por cerrado.
+**L20 (cuarta pasada: CONFIRMED los cuatro puntos, y un residual que me delegó):** el desajuste quedó cerrado por la vía de producción contra 8 variantes condicionales y 13 nombres de driver; `read-tree -m -u HEAD` es equivalente al checkout que reemplazó (archivos, HEAD sin moverse, status limpio, commit del agente encima con un commit adelante, sin borrados fantasma, y ningún hook donde el checkout habría disparado `post-checkout`); `Sanitize()` no rompe ningún caller; el barrido de regresión es idéntico a git plano incluso con symlink, bit de ejecución y CRLF.
+
+El residual: las dos fases son dos procesos git, así que lo que se escriba en el cache **entre** enumerar y materializar no está en la lista. Determinista (1 ejecución en el host) y solo con una tarea sandboxed concurrente sobre el cache compartido — que es el default del worker. **Decisión: trackear en #147, no cerrar en esta PR**, porque el cierre real (enumerate+execute desde un único snapshot) es cambio arquitectónico, porque un guard de concurrencia rompería `f2_cost_comparison_test.go` (que corre con `-concurrency 2` a propósito), y porque es estrictamente más estrecho que la línea base. Un test del repo lo demuestra y **loguea** el número de ejecuciones, así que no puede empeorar en silencio: la cobertura que falta es explícita, no accidental.
+
+**Pendiente de esta fase:** ninguno. Las cuatro pasadas adversarias cerraron lo queiecían cerrar; el único hallazgo abierto quedó trackeado con su repro y sus dos direcciones propuestas.
 
 **L11 (bypass encontrado por la verificación independiente, T4):** el primer hardening de T1 cerró las claves **fijas** de git, pero los *filter drivers* tienen clave dinámica (`filter.<nombre>.smudge`): ningún `-c` global los alcanza, y las dos mitades del ataque viven en el cache escribible (`info/attributes` + la definición del driver). `git worktree add` hace checkout, así que ejecuta el smudge **en el host**. Reproducido por mí contra el commit anterior, con todos los flags puestos: el payload corrió. La clase se cierra enumerando los drivers del repo y neutralizándolos uno por uno (`clean`/`smudge`/`process` vacíos + `required=false`), lo que verifiqué que deja el checkout como pass-through: contenido idéntico y payload sin ejecutar. La enumeración es **fail-closed**: una lista incompleta devolvería el escape en silencio.
 
