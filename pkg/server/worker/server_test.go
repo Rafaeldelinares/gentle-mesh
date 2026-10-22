@@ -16,6 +16,80 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/worker"
 )
 
+func TestWorkerServer_SimulatedRunnerEmitsWarning(t *testing.T) {
+	simRunner := runner.NewSimulatedRunner(runner.SimulatedOptions{})
+	srv := worker.NewServer(worker.ServerConfig{
+		Addr:   "127.0.0.1:0",
+		Runner: simRunner,
+	})
+
+	if err := srv.Listen(); err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	go func() { _ = srv.Start() }()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}()
+
+	taskReq := protocol.TaskRequest{Agent: "worker", Task: "test simulation warning"}
+	body, _ := json.Marshal(taskReq)
+	req, err := http.NewRequest(http.MethodPost, "http://"+srv.Addr()+"/v1/execute", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("http.NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/execute: %v", err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	var events []*protocol.Event
+	var blockLines []string
+	for {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil && readErr != io.EOF {
+			break
+		}
+		cleanLine := strings.TrimRight(line, "\r\n")
+		if cleanLine == "" {
+			if len(blockLines) > 0 {
+				raw := []byte(strings.Join(blockLines, "\n"))
+				if evt, err := protocol.ParseSSE(raw); err == nil {
+					events = append(events, evt)
+				}
+				blockLines = blockLines[:0]
+			}
+		} else {
+			blockLines = append(blockLines, cleanLine)
+		}
+		if readErr == io.EOF {
+			break
+		}
+	}
+
+	// Must contain a status or thought event explicitly warning about SIMULATED mode
+	var sawSimulatedWarning bool
+	for _, evt := range events {
+		if evt.Type == protocol.EventStatus {
+			var sp protocol.StatusPayload
+			if err := evt.UnmarshalPayload(&sp); err == nil {
+				if strings.Contains(strings.ToUpper(sp.Message), "SIMULATED") {
+					sawSimulatedWarning = true
+					break
+				}
+			}
+		}
+	}
+	if !sawSimulatedWarning {
+		t.Errorf("expected worker executing simulated runner to emit status event with SIMULATED warning message, got events: %+v", events)
+	}
+}
+
 func TestWorkerServer_ExecuteAndStreamSSE(t *testing.T) {
 	// Configure simulated runner with slight token delay to verify active tasks during execution
 	simRunner := runner.NewSimulatedRunner(runner.SimulatedOptions{

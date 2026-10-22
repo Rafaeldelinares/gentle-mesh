@@ -359,6 +359,9 @@ func TestServer_StartupAndGracefulShutdown(t *testing.T) {
 	if !strings.Contains(stdout.String(), "Coordinator stopped gracefully") {
 		t.Errorf("expected shutdown log in stdout, got: %s", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "rate limiting is DISABLED") {
+		t.Errorf("expected notice that rate limiting is DISABLED in stdout, got: %s", stdout.String())
+	}
 }
 
 func TestServer_DBPathFlag(t *testing.T) {

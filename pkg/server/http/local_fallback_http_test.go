@@ -104,10 +104,31 @@ func (r *lfbRecordingRunner) Run(ctx context.Context, req protocol.TaskRequest, 
 	return nil
 }
 
-// (a) LocalFallback nil, no node -> completed + executed_locally=true (current behaviour).
-func TestLocalFallbackNilNoNodeCompletesLocally(t *testing.T) {
-	ts, _ := newLFBServer(t, nil)
-	id := lfbPost(ts, `{"agent":"worker","task":"a","git_repo":"toy/repo","git_branch":"a"}`)
+// (a) LocalFallback nil, no node -> default must be FALSE: fails with DISPATCH_FAILED,
+// no silent simulated execution on the coordinator.
+func TestLocalFallbackNilNoNodeDefaultsToFalseAndFailsDispatch(t *testing.T) {
+	ts, _ := newLFBServer(t, nil) // LocalFallback nil = default must be false
+	id := lfbPost(ts, `{"agent":"worker","task":"default-fallback-test","git_repo":"toy/repo","git_branch":"a"}`)
+	if id == "" {
+		t.Fatal("POST failed")
+	}
+	d := lfbWait(ts, id, "failed", 5*time.Second)
+	e, _ := d["error"].(map[string]any)
+	if code, _ := e["code"].(string); code != "DISPATCH_FAILED" {
+		t.Errorf("expected code DISPATCH_FAILED when LocalFallback is nil (default false), got %v", e["code"])
+	}
+	if msg, _ := e["message"].(string); !strings.Contains(msg, "no mesh worker available") {
+		t.Errorf("expected message to contain 'no mesh worker available', got %q", msg)
+	}
+	if c, _ := d["completion"].(map[string]any); c != nil {
+		t.Errorf("no simulated execution should have happened, got completion %v", c)
+	}
+}
+
+// (a2) LocalFallback=true explicitly configured -> completes locally and emits warning.
+func TestLocalFallbackTrueCompletesLocallyWithWarning(t *testing.T) {
+	ts, _ := newLFBServer(t, boolPtr(true))
+	id := lfbPost(ts, `{"agent":"worker","task":"explicit-fallback-test","git_repo":"toy/repo","git_branch":"a2"}`)
 	if id == "" {
 		t.Fatal("POST failed")
 	}

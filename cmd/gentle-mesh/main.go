@@ -228,7 +228,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	gentleShellIdleTimeout := fs.Duration("gentle-shell-idle-timeout", 5*time.Minute, "Idle timeout: terminate a gentle-shell task that produces no output for this duration")
 	gentleShellMaxToolCalls := fs.Int("gentle-shell-max-tool-calls", 15, "Maximum number of tool_call events a gentle-shell task may emit before being terminated")
 	gentleShellThinking := fs.String("gentle-shell-thinking", "minimal", "Pi --thinking level forwarded to gentle-shell (off|minimal|low|medium|high|xhigh|max)")
-	localFallback := fs.Bool("local-fallback", true, "When -runner=mesh and no node is eligible, run the task in a local SIMULATED runner (true, default) or fail it with DISPATCH_FAILED (false). With -runner=simulated or -runner=pi the flag has no effect.")
+	localFallback := fs.Bool("local-fallback", false, "When -runner=mesh and no node is eligible, run the task in a local SIMULATED runner (true) or fail it with DISPATCH_FAILED (false, default). With -runner=simulated or -runner=pi the flag has no effect.")
 	tlsEnable := fs.Bool("tls", false, "Enable TLS/HTTPS with generated certificates (generates CA if not exists)")
 	tlsDir := fs.String("tls-dir", "", "Directory for TLS certificates and CA (defaults to <tasks-dir>/tls)")
 	tlsInit := fs.Bool("tls-init", false, "Initialize TLS: generate new CA and server certificates (overwrites existing)")
@@ -388,6 +388,12 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}
 	fmt.Fprintf(stdout, "Gentle Mesh coordinator starting on %s (%s, tasks dir: %s, territory mode: %s, runner: %s)\n",
 		*addr, tlsStatus, *tasksDir, mode, *runnerName)
+	if *rateLimitRequests <= 0 {
+		fmt.Fprintf(stdout, "NOTICE: rate limiting is DISABLED (-rate-limit 0). Use -rate-limit <reqs> to enable burst/DDoS protection.\n")
+	}
+	if *localFallback {
+		fmt.Fprintf(stdout, "WARNING: -local-fallback is ENABLED: tasks will run locally if no mesh worker is available\n")
+	}
 	if *dispatchToken == "" {
 		fmt.Fprintf(stdout, "WARNING: coordinator starting without -dispatch-token (worker dispatch will use -token)\n")
 	}
@@ -925,6 +931,9 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	}()
 
 	fmt.Fprintf(stdout, "Worker HTTP server started on %s\n", workerSrv.Addr())
+	if *workerRunnerName == "simulated" {
+		fmt.Fprintf(stdout, "WARNING: worker running with -runner=simulated (simulated task execution, not a real Pi subagent)\n")
+	}
 
 	srvErrCh := make(chan error, 1)
 	go func() {

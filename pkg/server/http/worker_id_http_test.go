@@ -17,13 +17,14 @@ import (
 	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
 )
 
-func newWhoServer(t *testing.T) (*httptest.Server, string) {
+func newWhoServerWithFallback(t *testing.T, fallback bool) (*httptest.Server, string) {
 	t.Helper()
 	dir := t.TempDir()
 	srv, err := meshhttp.NewServer(meshhttp.ServerConfig{
 		TasksDir:         dir,
 		HeartbeatTimeout: 5 * time.Second,
 		TaskTTL:          time.Hour,
+		LocalFallback:    &fallback,
 	})
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
@@ -34,6 +35,10 @@ func newWhoServer(t *testing.T) (*httptest.Server, string) {
 		_ = srv.Shutdown(context.Background())
 	})
 	return ts, filepath.Join(dir, "gentle-mesh.db")
+}
+
+func newWhoServer(t *testing.T) (*httptest.Server, string) {
+	return newWhoServerWithFallback(t, false)
 }
 
 // joinFakeNode starts a mesh node that joins the coordinator and answers every task with the SSE
@@ -169,7 +174,7 @@ func TestServerTaskStateAndStoreRecordTheWorkerNode(t *testing.T) {
 	}
 
 	// The local fallback (no nodes at all) must never invent a node.
-	ts2, dbPath2 := newWhoServer(t)
+	ts2, dbPath2 := newWhoServerWithFallback(t, true)
 	tr2 := postWhoTask(t, ts2, `{"agent":"worker","task":"nobody around"}`)
 	state2 := waitWhoState(t, ts2, tr2.TaskID, protocol.TaskStatusCompleted)
 	if state2.WorkerID != "" {
