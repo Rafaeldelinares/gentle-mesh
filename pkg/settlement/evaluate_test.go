@@ -188,3 +188,78 @@ func TestAbsPath_AllowsCwdInsideWorkspace(t *testing.T) {
 		t.Fatalf("a cwd inside the workspace must still pass, got %s (%s)", got.Result, got.Message)
 	}
 }
+
+// requireBinary skips the test when the helper binary is unavailable.
+func requireBinary(t *testing.T, name string) {
+	t.Helper()
+	if _, err := exec.LookPath(name); err != nil {
+		t.Skipf("%s not available: %v", name, err)
+	}
+}
+
+func evalExitCode(t *testing.T, e *Evaluator, command string) *AssertionResult {
+	t.Helper()
+	return e.Evaluate(context.Background(), &Assertion{
+		ID:     "a1",
+		Type:   AssertionCommandExitCode,
+		Params: map[string]any{"command": command, "expected_code": 1},
+	}, 0)
+}
+
+// F2-02: NewEvaluator captured os.Environ() and handed it to every command the
+// assertions ran, so `go test` inside a settlement could read the worker's API
+// keys, tokens and agent configuration. The environment must be an allowlist:
+// deny by default, with WithEnv as the explicit escape hatch for callers that
+// genuinely need one more variable.
+func TestEvaluator_CommandDoesNotInheritHostEnvironment(t *testing.T) {
+	requireBinary(t, "printenv")
+	// A stand-in for the secrets a real worker carries (API keys, agent config).
+	t.Setenv("GENTLE_MESH_FAKE_SECRET", "s3cr3t")
+
+	got := evalExitCode(t, NewEvaluator(t.TempDir()), "printenv GENTLE_MESH_FAKE_SECRET")
+
+	// printenv exits 1 when the variable is absent, which is what the
+	// assertion expects. If the host environment were inherited it would exit
+	// 0 and the leak would show up as a failure here.
+	if got.Result != ResultPass {
+		t.Fatalf("the host environment must not reach the command: %s (%s)", got.Result, got.Message)
+	}
+}
+
+// Containment of variables must not degrade into running with no environment at
+// all: the toolchain assertions actually execute (go, git) need these.
+func TestEvaluator_CommandKeepsToolchainEnvironment(t *testing.T) {
+	requireBinary(t, "printenv")
+	root := t.TempDir()
+
+	for _, name := range []string{"PATH", "HOME"} {
+		if _, err := exec.LookPath("git"); err != nil {
+			t.Skip("git not available")
+		}
+		result := NewEvaluator(root).Evaluate(context.Background(), &Assertion{
+			ID:     "a1",
+			Type:   AssertionCommandExitCode,
+			Params: map[string]any{"command": "printenv " + name, "expected_code": 0},
+		}, 0)
+		if result.Result != ResultPass {
+			t.Fatalf("%s must survive the allowlist: %s (%s)", name, result.Result, result.Message)
+		}
+	}
+}
+
+// WithEnv stays available for callers that need one extra variable, and it
+// still wins over the inherited environment for that name.
+func TestEvaluator_WithEnvAddsExplicitVariables(t *testing.T) {
+	requireBinary(t, "printenv")
+	root := t.TempDir()
+
+	result := NewEvaluator(root).WithEnv([]string{"GENTLE_MESH_EXPLICIT=1"}).
+		Evaluate(context.Background(), &Assertion{
+			ID:     "a1",
+			Type:   AssertionCommandExitCode,
+			Params: map[string]any{"command": "printenv GENTLE_MESH_EXPLICIT", "expected_code": 0},
+		}, 0)
+	if result.Result != ResultPass {
+		t.Fatalf("WithEnv must add the requested variable: %s (%s)", result.Result, result.Message)
+	}
+}

@@ -62,18 +62,72 @@ type Evaluator struct {
 	timeout    time.Duration
 }
 
+// evaluatorEnvAllowlist is the set of host variables a settlement command may
+// see. It is an allowlist rather than a filter on purpose: NewEvaluator used to
+// hand the whole os.Environ() to every assertion, so API keys, tokens, agent
+// configuration and anything else the worker carried were visible to the code
+// an assertion ran. Everything not listed here is dropped.
+//
+// The list is what the toolchain assertions actually need (go test, git):
+// the toolchain lookup, the build/module caches, and locale/timezone. It is
+// deliberately not a sandbox: the command still runs unconfined on the worker,
+// which is tracked separately.
+var evaluatorEnvAllowlist = []string{
+	"PATH", "HOME", "USER", "LOGNAME", "SHELL",
+	"TMPDIR", "TMP", "TEMP",
+	"LANG", "LC_ALL", "LC_CTYPE", "TZ",
+	"GOPATH", "GOCACHE", "GOMODCACHE", "GOTMPDIR", "GOROOT", "GOTOOLCHAIN",
+	"CGO_ENABLED", "GODEBUG",
+}
+
+// allowlistedEnv projects environ onto evaluatorEnvAllowlist, keeping only the
+// first assignment of each allowed name and preserving allowlist order.
+func allowlistedEnv(environ []string) []string {
+	out := make([]string, 0, len(evaluatorEnvAllowlist))
+	for _, name := range evaluatorEnvAllowlist {
+		for _, kv := range environ {
+			if strings.HasPrefix(kv, name+"=") {
+				out = append(out, kv)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// overrideEnv returns env with key=value applied, replacing any previous
+// assignment of key so an explicit override actually wins.
+func overrideEnv(env []string, kv string) []string {
+	name, _, found := strings.Cut(kv, "=")
+	if !found {
+		return env
+	}
+	out := make([]string, 0, len(env)+1)
+	for _, existing := range env {
+		if strings.HasPrefix(existing, name+"=") {
+			continue
+		}
+		out = append(out, existing)
+	}
+	return append(out, kv)
+}
+
 // NewEvaluator creates an evaluator targeting the given directory.
 func NewEvaluator(workingDir string) *Evaluator {
 	return &Evaluator{
 		workingDir: workingDir,
-		env:        os.Environ(),
+		env:        allowlistedEnv(os.Environ()),
 		timeout:    60 * time.Second,
 	}
 }
 
-// WithEnv sets extra environment variables for command execution.
+// WithEnv sets extra environment variables for command execution. It is the
+// explicit escape hatch for a caller that genuinely needs one more variable;
+// it replaces any inherited value of the same name.
 func (e *Evaluator) WithEnv(env []string) *Evaluator {
-	e.env = append(e.env, env...)
+	for _, kv := range env {
+		e.env = overrideEnv(e.env, kv)
+	}
 	return e
 }
 
