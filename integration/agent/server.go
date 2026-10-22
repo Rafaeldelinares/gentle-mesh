@@ -157,7 +157,7 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	// Create settlement engine.
-	evaluator := settlement.NewEvaluator(cfg.WorkspaceDir)
+	evaluator := settlement.NewEvaluator(cfg.WorkspaceDir).WithEnvAllow(cfg.EnvAllow...)
 	engine, err := settlement.NewEngine(settlement.EngineConfig{
 		Evaluator:      evaluator,
 		ChainStore:     chainStore,

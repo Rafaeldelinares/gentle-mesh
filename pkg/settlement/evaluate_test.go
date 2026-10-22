@@ -326,3 +326,60 @@ func TestEvaluator_GitCleanWorktreeIgnoresWorkspaceConfig(t *testing.T) {
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
+
+// printenvExit runs `printenv <name>` through an assertion and returns the
+// command's exit code: 0 when the variable reached the child, 1 when it did not.
+// Reading the exit code directly keeps the assertions below readable.
+func printenvExit(t *testing.T, e *Evaluator, name string) int {
+	t.Helper()
+	// expected_code 1 never matches, so the assertion reports FAIL and the
+	// evidence carries the real exit code instead of being discarded.
+	got := e.Evaluate(context.Background(), &Assertion{
+		ID:     "a1",
+		Type:   AssertionCommandExitCode,
+		Params: map[string]any{"command": "printenv " + name, "expected_code": 1},
+	}, 0)
+	return got.Evidence.ExitCode
+}
+
+// The operator escape hatch for variables a worker legitimately needs behind a
+// proxy or with a private module registry (GOPROXY, HTTPS_PROXY, GOPRIVATE).
+// The default stays a strict allowlist, so the exception is something the
+// operator asks for on purpose, the same shape as -local-fallback.
+func TestEvaluator_EnvAllowExtendsOnlyTheNamedVariables(t *testing.T) {
+	requireBinary(t, "printenv")
+	root := t.TempDir()
+	t.Setenv("GENTLE_MESH_FAKE_OPTIONAL", "on")
+	t.Setenv("GENTLE_MESH_FAKE_OTHER", "on")
+
+	if code := printenvExit(t, NewEvaluator(root), "GENTLE_MESH_FAKE_OPTIONAL"); code == 0 {
+		t.Fatal("by default a variable outside the allowlist must not reach the command")
+	}
+
+	extended := NewEvaluator(root).WithEnvAllow("GENTLE_MESH_FAKE_OPTIONAL")
+	if code := printenvExit(t, extended, "GENTLE_MESH_FAKE_OPTIONAL"); code != 0 {
+		t.Fatalf("an explicitly allowed variable must reach the command, exit %d", code)
+	}
+	// Naming one variable must not open its neighbours.
+	if code := printenvExit(t, extended, "GENTLE_MESH_FAKE_OTHER"); code == 0 {
+		t.Fatal("allowing one variable must not leak another one that was not named")
+	}
+}
+
+// A name must be matched exactly: a prefix of a real variable is not that
+// variable, and WithEnvAllow is the operator's escape hatch, so a sloppy match
+// here would be a hole.
+func TestEvaluator_EnvAllowMatchesNamesExactly(t *testing.T) {
+	requireBinary(t, "printenv")
+	root := t.TempDir()
+	t.Setenv("GENTLE_MESH_EXACT", "on")
+	t.Setenv("GENTLE_MESH_EXTRALONGER", "on")
+
+	extended := NewEvaluator(root).WithEnvAllow("GENTLE_MESH_EXACT")
+	if code := printenvExit(t, extended, "GENTLE_MESH_EXACT"); code != 0 {
+		t.Fatalf("the named variable must reach the command, exit %d", code)
+	}
+	if code := printenvExit(t, extended, "GENTLE_MESH_EXTRALONGER"); code == 0 {
+		t.Fatal("a variable whose name merely starts with an allowed name must stay out")
+	}
+}

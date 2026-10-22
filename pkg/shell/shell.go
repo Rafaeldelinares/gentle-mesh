@@ -27,14 +27,18 @@ import (
 
 // Config holds shell configuration.
 type Config struct {
-	MeshID          string        // Mesh network identity (required, cannot be empty)
-	AgentID         string        // Local agent identity (e.g., "pi-local", "pi-emitter")
-	WorkspaceDir    string        // Working directory for command execution
-	ChainDBPath     string        // Path to SQLite receipt chain database
-	EvalTimeout     time.Duration // Maximum time for a single assertion evaluation
-	MaxRemediations     int           // Maximum number of remediation loops
-	RemoteURL           string        // Remote executor URL (empty = local mode)
+	MeshID              string                // Mesh network identity (required, cannot be empty)
+	AgentID             string                // Local agent identity (e.g., "pi-local", "pi-emitter")
+	WorkspaceDir        string                // Working directory for command execution
+	ChainDBPath         string                // Path to SQLite receipt chain database
+	EvalTimeout         time.Duration         // Maximum time for a single assertion evaluation
+	MaxRemediations     int                   // Maximum number of remediation loops
+	RemoteURL           string                // Remote executor URL (empty = local mode)
 	GrantedCapabilities []envelope.Capability // Granted capabilities under S3 (deny-by-default)
+	// EnvAllow names extra host variables the assertion commands may see, on top
+	// of settlement's strict allowlist. Empty (the default) keeps the allowlist
+	// closed; an operator opts in explicitly, the same shape as -local-fallback.
+	EnvAllow []string
 }
 
 // Shell is a contract-aware shell execution layer.
@@ -65,7 +69,7 @@ func New(cfg Config) (*Shell, error) {
 	}
 
 	// Create evaluator.
-	evaluator := settlement.NewEvaluator(cfg.WorkspaceDir)
+	evaluator := settlement.NewEvaluator(cfg.WorkspaceDir).WithEnvAllow(cfg.EnvAllow...)
 	if cfg.EvalTimeout > 0 {
 		evaluator = evaluator.WithTimeout(cfg.EvalTimeout)
 	}

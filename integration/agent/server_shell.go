@@ -44,6 +44,21 @@ type ShellServer struct {
 type shellWrapper struct {
 	workspace   string
 	evalTimeout time.Duration
+	envAllow    []string
+}
+
+// SetEnvAllow names extra host variables the assertion commands of this server
+// may see, on top of settlement's strict allowlist.
+//
+// It is a method rather than a constructor parameter so the existing signature
+// stays untouched, and it is called before the server starts serving. Without it
+// the allowlist stays closed, which is the default: an operator opts in on
+// purpose, the same shape as -local-fallback.
+func (s *ShellServer) SetEnvAllow(names ...string) {
+	if s == nil || s.shell == nil {
+		return
+	}
+	s.shell.envAllow = append([]string{}, names...)
 }
 
 // NewShellServer creates a shell-based HTTP server.
@@ -294,7 +309,7 @@ func (s *ShellServer) handleExecuteLocal(w http.ResponseWriter, r *http.Request)
 func (s *ShellServer) executeLocal(ctx context.Context, assertions []envelope.Assertion) (*receipt.SettlementReceipt, error) {
 	settledAssertions := convertAssertions(assertions)
 
-	eval := settlement.NewEvaluator(s.shell.workspace)
+	eval := settlement.NewEvaluator(s.shell.workspace).WithEnvAllow(s.shell.envAllow...)
 	if s.shell.evalTimeout > 0 {
 		eval = eval.WithTimeout(s.shell.evalTimeout)
 	}

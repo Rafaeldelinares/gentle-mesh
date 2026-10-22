@@ -23,22 +23,22 @@ import (
 type Result string
 
 const (
-	ResultPass Result = "PASS"
-	ResultFail Result = "FAIL"
+	ResultPass  Result = "PASS"
+	ResultFail  Result = "FAIL"
 	ResultError Result = "ERROR"
 )
 
 // Evidence captures the observable output of an assertion.
 type Evidence struct {
 	// For command assertions.
-	Command   string `json:"command,omitempty"`
-	ExitCode   int    `json:"exit_code,omitempty"`
-	Stdout     string `json:"stdout,omitempty"`
-	Stderr     string `json:"stderr,omitempty"`
+	Command  string `json:"command,omitempty"`
+	ExitCode int    `json:"exit_code,omitempty"`
+	Stdout   string `json:"stdout,omitempty"`
+	Stderr   string `json:"stderr,omitempty"`
 	// For file assertions.
 	ActualHash   string `json:"actual_hash,omitempty"`
 	ExpectedHash string `json:"expected_hash,omitempty"`
-	FileExists  bool   `json:"file_exists,omitempty"`
+	FileExists   bool   `json:"file_exists,omitempty"`
 	// For git assertions.
 	GitStatus string `json:"git_status,omitempty"`
 	// For port assertions.
@@ -49,12 +49,12 @@ type Evidence struct {
 
 // AssertionResult is the deterministic outcome of evaluating one assertion.
 type AssertionResult struct {
-	AssertionIndex int                  `json:"assertion_index"`
-	AssertionID    string               `json:"assertion_id"`
-	AssertionType AssertionType         `json:"assertion_type"`
-	Result        Result                `json:"result"`
-	Evidence      Evidence              `json:"evidence"`
-	Message       string                `json:"message,omitempty"`
+	AssertionIndex int           `json:"assertion_index"`
+	AssertionID    string        `json:"assertion_id"`
+	AssertionType  AssertionType `json:"assertion_type"`
+	Result         Result        `json:"result"`
+	Evidence       Evidence      `json:"evidence"`
+	Message        string        `json:"message,omitempty"`
 }
 
 // Evaluator runs assertions against a target workspace.
@@ -124,10 +124,58 @@ func NewEvaluator(workingDir string) *Evaluator {
 }
 
 // WithEnv sets extra environment variables for command execution. It is the
-// explicit escape hatch for a caller that genuinely needs one more variable;
-// it replaces any inherited value of the same name.
+// explicit escape hatch for a caller that genuinely needs one more variable; it
+// replaces any inherited value of the same name.
 func (e *Evaluator) WithEnv(env []string) *Evaluator {
 	for _, kv := range env {
+		e.env = overrideEnv(e.env, kv)
+	}
+	return e
+}
+
+// WithEnvAllow names host variables to add to the allowlist, for a worker that
+// legitimately needs one: GOPROXY and HTTPS_PROXY behind a proxy, GOPRIVATE or
+// GONOSUMDB for a private registry, GOPATH or a toolchain path.
+//
+// It is deliberately narrow: it can only make a variable visible, never hide
+// one, and it matches names exactly, so allowing GOPROXY does not drag in
+// GOPROXY_EXTRA. Names not already in the host environment are ignored.
+//
+// The default stays the strict allowlist, so the exception is something the
+// operator asks for on purpose.
+func (e *Evaluator) WithEnvAllow(names ...string) *Evaluator {
+	if len(names) == 0 {
+		return e
+	}
+	env := os.Environ()
+	extra := make([]string, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	allowed := map[string]struct{}{}
+	for _, kv := range e.env {
+		if name, _, found := strings.Cut(kv, "="); found {
+			allowed[name] = struct{}{}
+		}
+	}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		if _, ok := allowed[name]; ok {
+			continue // already on the base allowlist
+		}
+		for _, kv := range env {
+			if strings.HasPrefix(kv, name+"=") {
+				extra = append(extra, kv)
+				break
+			}
+		}
+	}
+	for _, kv := range extra {
 		e.env = overrideEnv(e.env, kv)
 	}
 	return e
