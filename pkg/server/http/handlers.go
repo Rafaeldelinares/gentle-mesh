@@ -164,6 +164,31 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 		return
 	}
 
+	// Enrollment is the bootstrap of a node that does not exist yet. The node id
+	// arrives in the body and the token is not bound to any identity, so without
+	// this check any valid token mints a CA-signed certificate for ANY node in
+	// the mesh, and because issuance clears revoked to 0, that also resurrects
+	// revoked nodes. Legitimate rotation does not come through here: it is
+	// cert-issue with an admin token.
+	//
+	// This runs before UseToken on purpose: refusing an identity must not burn
+	// an invite, or an operator would lose a valid token to an attack attempt.
+	//
+	// With no certificate store there is no persisted identity to take over, and
+	// no revocation state to corrupt, so the check has nothing to defend; the
+	// coordinator in that configuration also wires no revocation checker at all.
+	if s.certStore != nil {
+		existing, certErr := s.certStore.GetCert(r.Context(), nodeID)
+		if certErr != nil {
+			writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to verify node identity: %v", certErr)})
+			return
+		}
+		if existing != nil {
+			writeJSON(w, stdhttp.StatusConflict, map[string]string{"error": fmt.Sprintf("node_id %q already has a certificate: enrollment is only for new nodes, rotate with cert-issue or revoke the existing certificate first", nodeID)})
+			return
+		}
+	}
+
 	// Validate token. The node id validated above travels with the consume so
 	// the token records who used it.
 	_, err := s.tokenStore.UseToken(r.Context(), req.Token, nodeID)
