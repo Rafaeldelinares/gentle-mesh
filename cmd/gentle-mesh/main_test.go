@@ -2261,7 +2261,28 @@ func TestRunBranchFlagDocumentsTheLockContract(t *testing.T) {
 	if !strings.Contains(lower, "not a checkout") {
 		t.Errorf("the -branch help must say it is not a checkout, got %q", seccion)
 	}
-	if !strings.Contains(lower, "git") {
-		t.Errorf("the -branch help must mention that no runner runs git, got %q", seccion)
+	if !strings.Contains(lower, "the coordinator never") {
+		t.Errorf("the -branch help must scope the no-git claim to the coordinator, got %q", seccion)
+	}
+	if !strings.Contains(lower, "gentle-shell") {
+		t.Errorf("the -branch help must name the gentle-shell runner as the git producer, got %q", seccion)
+	}
+}
+
+func TestCLI_ApplyRequiresCacheFlag(t *testing.T) {
+	ctx := context.Background()
+	var stdout, stderr bytes.Buffer
+
+	err := runCLI(ctx, []string{"apply", "-task", "task-1"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("apply without -cache must fail, stdout: %s", stdout.String())
+	}
+	if !strings.Contains(err.Error(), "-cache is required") {
+		t.Errorf("apply must report -cache as required, got: %v", err)
+	}
+	// A missing -cache must be rejected before any git side effect, so no
+	// default path from a developer's machine can leak or be probed.
+	if strings.Contains(err.Error(), "/home/") {
+		t.Errorf("the error must not leak a personal default path: %v", err)
 	}
 }
