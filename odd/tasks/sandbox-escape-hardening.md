@@ -30,6 +30,7 @@ Las specs citan el texto verificado del issue #145 y del pedido del mantenedor.
 | T3 | S2 | Env allowlist deny-by-default para el Evaluator; `WithEnv` queda como escape hatch explícito | `pkg/settlement/evaluate.go`, `pkg/settlement/evaluate_test.go` | `4d349eb` **hecho** |
 | T4 | S3 | Bypass de `filter.<driver>`: paquete compartido `pkg/gitsafe` con enumeración y neutralización de drivers | `pkg/gitsafe/`, `pkg/server/runner/gentleshell.go`, `pkg/server/runner/filter_driver_bypass_test.go` | `fb7d7d5` **hecho** |
 | T5 | S3 | El mismo escape en los otros 4 `git status` del host (Evaluator, `pkg/shell`, `integration/agent` x2) | `pkg/settlement/evaluate.go`, `pkg/shell/shell.go`, `integration/agent/server_shell.go`, `integration/agent/server.go` | `4a89698` **hecho** |
+| T6 | S3 | Bypass `=`: neutralización por `GIT_CONFIG_KEY_n` + enumeración con `--name-only -z` | `pkg/gitsafe/`, `pkg/server/runner/gentleshell.go`, `pkg/settlement/evaluate.go` | `f4044b0` **hecho** |
 
 PR: #146. Cada task: test RED observado → fix → GREEN. Al cierre, `./scripts/security-gates.sh`, `go vet`, `staticcheck`, `go test -race ./pkg/... ./cmd/... ./integration/agent/...`.
 
@@ -42,6 +43,7 @@ PR: #146. Cada task: test RED observado → fix → GREEN. Al cierre, `./scripts
 | T3 | el secreto llegaba al comando (`exit 0, expected 1`) | 3/3 |
 | T4 | `ESCAPE: the sandbox-defined smudge filter ran on the host 1 time(s)` | 0; paridad de diff byte a byte con git normal |
 | T5 | `ESCAPE: the workspace core.fsmonitor ran on the host 2 time(s)` | 0; worktree limpio sigue pasando |
+| T6 | `ESCAPE: driver con '=' ejecutado en el host (1 vez)` | 0, en el camino smudge (`worktree add`) **y** en el clean (`git status`) |
 
 ## Log
 
@@ -67,7 +69,11 @@ PR: #146. Cada task: test RED observado → fix → GREEN. Al cierre, `./scripts
 
 **L15 (gates repetidos sobre el estado final):`security-gates.sh` 0 violaciones, `go vet ./...` y `staticcheck ./...` limpios, y `go test -race -timeout 10m ./pkg/... ./cmd/... ./integration/agent/...` en verde (EXIT=0) ya con T4 y T5 aplicados, no solo sobre el estado previo. Los cinco paquetes tocados por T5 (`gitsafe`, `settlement`, `shell`, `runner`, `integration/agent`) pasan individualmente con `-race`.
 
-**Pendiente de esta fase:** verificación independiente de seguridad (subagente read-only) sobre las tres afirmaciones. Si encuentra un bypass, entra como commit de fix en la PR #146 antes de dar el frente por cerrado.
+**L16 (segundo bypass, T6 — el primero no cerraba lo que decía cerrar):** la neutralización por `-c` **no** podía alcanzar un driver llamado `a=b`, porque git parte `-c` en el **primer** `=`: `-c filter.a=b.smudge=` fija `filter.a` y deja viva `filter.a=b.smudge`. Y ese nombre es sección de config válida *y* valor válido de gitattributes, o sea que la enumeración lo encontraba y lo neutralizaba en la nada. **Reproducido por mí** contra `fb7d7d5`: el payload corrió en el host por el `worktree add` endurecido. La lección de fondo no es el `=` sino el **footgun de la API**: `Argv()` sin env era una forma natural de construirse un comando con la neutralización a medias, en silencio. Por eso `Plan()` devuelve argv **y** env juntos, y `Env()` desaparece.
+
+**L17 (fail-open de enumeración, T6):** `--get-regexp` imprime `key value` y yo cortaba por el primer espacio, así que un driver con espacio se descartaba en silencio de la lista: enumeración fail-open. Ahora se parsea con `--name-only -z`. También la enumeración corre solo con los overrides de git y no con el env del host, para que un `GIT_DIR` del entorno no la haga leer otro repo que el que se va a neutralizar (no alcanzable por el sandbox —no puede escribir el env del host— pero estaba mal).
+
+**Pendiente de esta fase:** verificación independiente de seguridad (subagente read-only). Va en tercera pasada sobre T6; si encuentra algo, entra como commit de fix en la PR #146 antes de dar el frente por cerrado.
 
 **L11 (bypass encontrado por la verificación independiente, T4):** el primer hardening de T1 cerró las claves **fijas** de git, pero los *filter drivers* tienen clave dinámica (`filter.<nombre>.smudge`): ningún `-c` global los alcanza, y las dos mitades del ataque viven en el cache escribible (`info/attributes` + la definición del driver). `git worktree add` hace checkout, así que ejecuta el smudge **en el host**. Reproducido por mí contra el commit anterior, con todos los flags puestos: el payload corrió. La clase se cierra enumerando los drivers del repo y neutralizándolos uno por uno (`clean`/`smudge`/`process` vacíos + `required=false`), lo que verifiqué que deja el checkout como pass-through: contenido idéntico y payload sin ejecutar. La enumeración es **fail-closed**: una lista incompleta devolvería el escape en silencio.
 
