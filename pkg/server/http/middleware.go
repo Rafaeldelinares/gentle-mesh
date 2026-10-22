@@ -26,11 +26,11 @@ const corsExposeHeaders = "Content-Type, Last-Event-ID, X-Accel-Buffering"
 
 // RateLimiter implements a simple token-bucket rate limiter per IP.
 type RateLimiter struct {
-	mu       sync.Mutex
-	clients  map[string]*clientLimiter
-	limit    int           // requests per window
-	window   time.Duration // time window
-	burst    int           // max burst size
+	mu      sync.Mutex
+	clients map[string]*clientLimiter
+	limit   int           // requests per window
+	window  time.Duration // time window
+	burst   int           // max burst size
 }
 
 type clientLimiter struct {

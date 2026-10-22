@@ -392,7 +392,7 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 					Status:    st.Status,
 					EventsURL: "/v1/tasks/" + existingTask.TaskID + "/events",
 					CreatedAt: st.CreatedAt,
-					Warnings: taskWarnings(req),
+					Warnings:  taskWarnings(req),
 				})
 				return
 			}
@@ -448,7 +448,7 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 					Status:    st.Status,
 					EventsURL: "/v1/tasks/" + existingTask.TaskID + "/events",
 					CreatedAt: st.CreatedAt,
-					Warnings: taskWarnings(req),
+					Warnings:  taskWarnings(req),
 				})
 				return
 			}
@@ -480,7 +480,7 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		Status:    t.CurrentStatus(),
 		EventsURL: "/v1/tasks/" + t.TaskID + "/events",
 		CreatedAt: t.CreatedAt,
-		Warnings: taskWarnings(req),
+		Warnings:  taskWarnings(req),
 	})
 }
 
@@ -875,7 +875,6 @@ func (s *Server) handleCertsRevoke(w stdhttp.ResponseWriter, r *stdhttp.Request)
 	})
 }
 
-
 // CreateWebhookRequest represents a webhook creation request.
 type CreateWebhookRequest struct {
 	URL    string   `json:"url"`
@@ -1035,7 +1034,7 @@ func (s *Server) handleTaskCheckpoint(w stdhttp.ResponseWriter, r *stdhttp.Reque
 	t.EmitEvent(protocol.EventCheckpoint, cp)
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
-		"task_id":   id,
+		"task_id":    id,
 		"checkpoint": cp,
 	})
 }
@@ -1061,7 +1060,7 @@ func (s *Server) handleGetCheckpoint(w stdhttp.ResponseWriter, r *stdhttp.Reques
 	}
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
-		"task_id":   id,
+		"task_id":    id,
 		"checkpoint": state.Checkpoint,
 	})
 }

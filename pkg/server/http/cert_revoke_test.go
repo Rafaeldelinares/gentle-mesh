@@ -533,4 +533,3 @@ func TestServer_RevokedCertRejectedOnTLSResumption(t *testing.T) {
 		t.Errorf("expected TLS error indicating bad certificate or closed connection, got: %v", err)
 	}
 }
-

@@ -20,8 +20,11 @@ type CertStore interface {
 	ListCerts(ctx context.Context) ([]*CertRecord, error)
 	// RevokeCert marks a certificate as revoked.
 	RevokeCert(ctx context.Context, nodeID string) error
-	// IsCertRevoked checks if a certificate is revoked.
+	// IsCertRevoked is the authoritative revocation lookup, keyed by serial.
 	IsCertRevoked(ctx context.Context, serial string) (bool, error)
+	// RevokedSerials lists every serial in the revocation ledger, so a starting
+	// coordinator can warm its in-memory blocklist from the authoritative source.
+	RevokedSerials(ctx context.Context) ([]RevokedCertRecord, error)
 	// DeleteCert removes a certificate record.
 	DeleteCert(ctx context.Context, nodeID string) error
 	// Close closes the certificate store.
@@ -38,6 +41,13 @@ type CertRecord struct {
 	ExpiresAt  time.Time
 	Revoked    bool
 	RevokedAt  *time.Time
+}
+
+// RevokedCertRecord is an entry of the append-only revocation ledger.
+type RevokedCertRecord struct {
+	Serial    string
+	NodeID    string
+	RevokedAt time.Time
 }
 
 // SQLiteCertStore implements CertStore using SQLite.
@@ -68,6 +78,23 @@ func InitCertSchema(db *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_certs_serial ON node_certs(serial);`,
 		`CREATE INDEX IF NOT EXISTS idx_certs_revoked ON node_certs(revoked);`,
+
+		// The revocation ledger. node_certs holds ONE row per node, so rotating a
+		// certificate overwrites that row: the serial of the certificate it
+		// replaced, and its revoked flag, are gone. Revocation is a fact that must
+		// survive that, so it is recorded separately and append-only, keyed by
+		// serial, which is what a TLS handshake actually presents.
+		`CREATE TABLE IF NOT EXISTS revoked_serials (
+			serial TEXT PRIMARY KEY,
+			node_id TEXT NOT NULL,
+			revoked_at INTEGER NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_revoked_serials_node ON revoked_serials(node_id);`,
+
+		// Backfill, so revocations recorded before this ledger existed are not
+		// lost on upgrade: INSERT OR IGNORE keeps re-running it idempotent.
+		`INSERT OR IGNORE INTO revoked_serials (serial, node_id, revoked_at)
+			SELECT serial, node_id, COALESCE(revoked_at, 0) FROM node_certs WHERE revoked = 1;`,
 	}
 
 	for _, stmt := range ddlStatements {
@@ -292,21 +319,50 @@ func (s *SQLiteCertStore) RevokeCert(ctx context.Context, nodeID string) error {
 
 	now := time.Now().Unix()
 
-	query := `UPDATE node_certs SET revoked = 1, revoked_at = ? WHERE node_id = ?`
-	result, err := s.db.ExecContext(ctx, query, now, nodeID)
+	// One transaction for both records: the ledger entry is the fact the TLS
+	// handshake consults, and a revocation that only landed on node_certs would
+	// be erased by the next rotation of that node.
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to revoke cert: %w", err)
 	}
+	defer func() { _ = tx.Rollback() }()
 
+	result, err := tx.ExecContext(ctx, `UPDATE node_certs SET revoked = 1, revoked_at = ? WHERE node_id = ?`, now, nodeID)
+	if err != nil {
+		return fmt.Errorf("failed to revoke cert: %w", err)
+	}
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		return errors.New("certificate not found")
 	}
 
+	// Read the serial inside the transaction so the ledger records exactly what
+	// was revoked, and INSERT OR IGNORE keeps a repeated revocation idempotent.
+	var serial string
+	if err := tx.QueryRowContext(ctx, `SELECT serial FROM node_certs WHERE node_id = ?`, nodeID).Scan(&serial); err != nil {
+		return fmt.Errorf("failed to read revoked serial: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT OR IGNORE INTO revoked_serials (serial, node_id, revoked_at) VALUES (?, ?, ?)`,
+		serial, nodeID, now); err != nil {
+		return fmt.Errorf("failed to record revocation: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit revocation: %w", err)
+	}
 	return nil
 }
 
-// IsCertRevoked checks if a certificate is revoked by serial number.
+// IsCertRevoked is the authoritative revocation lookup, keyed by the serial a
+// TLS handshake actually presents.
+//
+// It reads the append-only ledger, not node_certs: a node holds one row there,
+// so rotating its certificate replaces the serial, and a lookup by the old
+// serial would find nothing and answer "not revoked". Absence from the ledger is
+// a genuine "not revoked"; a database error is returned as an error so the
+// caller can fail closed.
 func (s *SQLiteCertStore) IsCertRevoked(ctx context.Context, serial string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -318,19 +374,50 @@ func (s *SQLiteCertStore) IsCertRevoked(ctx context.Context, serial string) (boo
 		return false, errors.New("cert store is closed")
 	}
 
-	query := `SELECT revoked FROM node_certs WHERE serial = ?`
-	row := s.db.QueryRowContext(ctx, query, serial)
-
-	var revoked int
-	err := row.Scan(&revoked)
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM revoked_serials WHERE serial = ?`, serial).Scan(&one)
 	if err == sql.ErrNoRows {
-		return false, nil // Unknown cert, treat as not revoked
+		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("failed to check revocation: %w", err)
 	}
+	return true, nil
+}
 
-	return revoked == 1, nil
+// RevokedSerials lists the revocation ledger so a starting coordinator can warm
+// its in-memory blocklist from the authoritative source.
+func (s *SQLiteCertStore) RevokedSerials(ctx context.Context) ([]RevokedCertRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	s.closeMu.RLock()
+	defer s.closeMu.RUnlock()
+	if s.closed || s.db == nil {
+		return nil, errors.New("cert store is closed")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT serial, node_id, revoked_at FROM revoked_serials ORDER BY revoked_at, serial`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list revoked serials: %w", err)
+	}
+	defer rows.Close()
+
+	var out []RevokedCertRecord
+	for rows.Next() {
+		var rec RevokedCertRecord
+		var revokedAt int64
+		if err := rows.Scan(&rec.Serial, &rec.NodeID, &revokedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan revoked serial: %w", err)
+		}
+		rec.RevokedAt = time.Unix(revokedAt, 0)
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to list revoked serials: %w", err)
+	}
+	return out, nil
 }
 
 // DeleteCert removes a certificate record.

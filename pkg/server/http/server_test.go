@@ -2811,4 +2811,3 @@ func TestServer_CertEnrollmentReturnsNoPrivateKey(t *testing.T) {
 		t.Errorf("expected exactly 2 fields in response (cert_pem, node_id), got %d: %+v", len(rawResp), rawResp)
 	}
 }
-
