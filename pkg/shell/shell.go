@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
+	"github.com/gentleman-programming/gentle-mesh/pkg/gitsafe"
 	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
 	"github.com/gentleman-programming/gentle-mesh/pkg/settlement"
 	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
@@ -26,14 +27,18 @@ import (
 
 // Config holds shell configuration.
 type Config struct {
-	MeshID          string        // Mesh network identity (required, cannot be empty)
-	AgentID         string        // Local agent identity (e.g., "pi-local", "pi-emitter")
-	WorkspaceDir    string        // Working directory for command execution
-	ChainDBPath     string        // Path to SQLite receipt chain database
-	EvalTimeout     time.Duration // Maximum time for a single assertion evaluation
-	MaxRemediations     int           // Maximum number of remediation loops
-	RemoteURL           string        // Remote executor URL (empty = local mode)
+	MeshID              string                // Mesh network identity (required, cannot be empty)
+	AgentID             string                // Local agent identity (e.g., "pi-local", "pi-emitter")
+	WorkspaceDir        string                // Working directory for command execution
+	ChainDBPath         string                // Path to SQLite receipt chain database
+	EvalTimeout         time.Duration         // Maximum time for a single assertion evaluation
+	MaxRemediations     int                   // Maximum number of remediation loops
+	RemoteURL           string                // Remote executor URL (empty = local mode)
 	GrantedCapabilities []envelope.Capability // Granted capabilities under S3 (deny-by-default)
+	// EnvAllow names extra host variables the assertion commands may see, on top
+	// of settlement's strict allowlist. Empty (the default) keeps the allowlist
+	// closed; an operator opts in explicitly, the same shape as -local-fallback.
+	EnvAllow []string
 }
 
 // Shell is a contract-aware shell execution layer.
@@ -64,7 +69,7 @@ func New(cfg Config) (*Shell, error) {
 	}
 
 	// Create evaluator.
-	evaluator := settlement.NewEvaluator(cfg.WorkspaceDir)
+	evaluator := settlement.NewEvaluator(cfg.WorkspaceDir).WithEnvAllow(cfg.EnvAllow...)
 	if cfg.EvalTimeout > 0 {
 		evaluator = evaluator.WithTimeout(cfg.EvalTimeout)
 	}
@@ -176,7 +181,12 @@ func (s *Shell) evalPrecondition(ctx context.Context, p envelope.Precondition) e
 	case envelope.PreconditionGitCleanWorktree:
 		ctx2, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx2, "git", "-C", s.config.WorkspaceDir, "status", "--porcelain")
+		cmd, buildErr := gitsafe.Command(ctx2, s.config.WorkspaceDir, "status", "--porcelain")
+		if buildErr != nil {
+			result.Passed = false
+			result.Message = fmt.Sprintf("git status error: %v", buildErr)
+			break
+		}
 		out, err := cmd.Output()
 		if err != nil {
 			result.Passed = false

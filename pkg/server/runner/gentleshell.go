@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gentleman-programming/gentle-mesh/pkg/gitsafe"
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 )
 
@@ -30,6 +31,34 @@ const (
 	// file under the task directory and exposed via diff_url.
 	gentleShellDiffInlineLimit = 256 << 10
 )
+
+// hostGit builds a git invocation safe to run outside the sandbox against the
+// RepoCache and its worktrees. See pkg/gitsafe for what "safe" covers: the cache
+// config is writable by the sandboxed agent, so it neutralizes every
+// config-driven program path git honours, including the dynamically named filter
+// drivers a blanket -c flag cannot reach.
+func hostGit(ctx context.Context, dir string, args ...string) (*exec.Cmd, error) {
+	return gitsafe.Command(ctx, dir, args...)
+}
+
+// gitMust is hostGit for cleanup paths that cannot propagate an error. Building
+// the command is the only fallible part (it refuses to guess when the filter
+// drivers cannot be enumerated), and a bare /bin/false stands in for it so the
+// caller's Run() simply fails, exactly as an unhardened git would have.
+func gitMust(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	cmd, err := hostGit(ctx, dir, args...)
+	if err == nil {
+		return cmd
+	}
+	fallback := exec.CommandContext(ctx, "false")
+	return fallback
+}
+
+// gitRun is gitMust with the command already run, for callers that ignore the
+// outcome entirely.
+func gitRun(ctx context.Context, dir string, args ...string) error {
+	return gitMust(ctx, dir, args...).Run()
+}
 
 // GentleShellRunnerOptions configures a GentleShellRunner.
 //
@@ -570,19 +599,50 @@ func (r *GentleShellRunner) resolveWorktreeDir(taskID string) (string, error) {
 // the resulting worktree cannot push anywhere unless a remote is added
 // explicitly, which the agent cannot do because /home/rafael/.gitconfig is
 // hidden by the bwrap sandbox.
+//
+// The worktree is built in two phases on purpose. `git worktree add -b <branch>`
+// moves HEAD to the new branch *before* it checks files out, and the cache config
+// can make a filter driver conditional on the current branch
+// (`includeIf "onbranch:proposal/*"`). Enumerating the drivers before that point
+// sees the cache with HEAD still on the base branch, where such an include is
+// inactive, so the enumeration would report no driver while the checkout then
+// runs it on the host. So the worktree is created with --no-checkout (which
+// checks nothing out, so no filter can fire), the drivers are enumerated *inside
+// the new worktree* where git will actually read them, and only then are the
+// files materialized with that enumeration's neutralization in place.
 func (r *GentleShellRunner) prepareWorktree(ctx context.Context, worktreeDir, branch string) error {
 	if err := os.MkdirAll(filepath.Dir(worktreeDir), 0755); err != nil {
 		return fmt.Errorf("failed to create worktrees root: %w", err)
 	}
-	// Add the worktree. --force would mask a stale directory; we explicitly
-	// refuse to overwrite so two concurrent tasks do not stomp on each other.
-	cmd := r.opts.commandFactory(ctx, "git",
-		"-C", r.opts.RepoCache,
-		"worktree", "add", "-b", branch, worktreeDir, r.opts.BaseRef,
-	)
+	// --force would mask a stale directory; we explicitly refuse to overwrite so
+	// two concurrent tasks do not stomp on each other.
+	gitArgs, gitEnv, err := gitsafe.Plan(r.opts.RepoCache,
+		"worktree", "add", "--no-checkout", "-b", branch, worktreeDir, r.opts.BaseRef)
+	if err != nil {
+		return fmt.Errorf("build git worktree add: %w", err)
+	}
+	cmd := r.opts.commandFactory(ctx, "git", gitArgs...)
+	if cmd == nil {
+		return errors.New("build git worktree add: command factory returned no command")
+	}
+	cmd.Env = append(gitsafe.Sanitize(os.Environ()), gitEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git worktree add failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	// Second phase: enumerate where git will read the config, then materialize
+	// the files with that enumeration neutralized. read-tree is plumbing, so it
+	// populates the working tree without moving HEAD and without the
+	// "HEAD is now at ..." output reset --hard would print.
+	argv, env, err := gitsafe.Plan(worktreeDir, "read-tree", "-m", "-u", "HEAD")
+	if err != nil {
+		return fmt.Errorf("build git read-tree for %s: %w", worktreeDir, err)
+	}
+	populate := exec.CommandContext(ctx, "git", argv...)
+	populate.Env = append(gitsafe.Sanitize(os.Environ()), env...)
+	if out, err := populate.CombinedOutput(); err != nil {
+		return fmt.Errorf("git read-tree failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -607,13 +667,15 @@ func (r *GentleShellRunner) cleanupWorktree(worktreeDir string) {
 	cachePath := strings.TrimPrefix(pointer, "gitdir: ")
 
 	// Use git's own machinery to remove the worktree, falling back to a raw
-	// recursive remove if git itself fails.
+	// recursive remove if git itself fails. This runs from a defer on the
+	// task's way out, so it gets its own context rather than the task's.
+	ctx := context.Background()
 	if cachePath != "" && cachePath != gitFile {
-		remove := exec.Command("git", "-C", cachePath, "worktree", "remove", "--force", worktreeDir)
+		remove := gitMust(ctx, cachePath, "worktree", "remove", "--force", worktreeDir)
 		if err := remove.Run(); err != nil {
 			_ = os.RemoveAll(worktreeDir)
 		}
-		_ = exec.Command("git", "-C", cachePath, "worktree", "prune").Run()
+		_ = gitRun(ctx, cachePath, "worktree", "prune")
 	} else {
 		_ = os.RemoveAll(worktreeDir)
 	}
@@ -623,14 +685,21 @@ func (r *GentleShellRunner) cleanupWorktree(worktreeDir string) {
 // and the HEAD commit hash. It runs in the worker daemon's filesystem, not
 // inside the sandbox, so the agent's output is read-only and trusted.
 func (r *GentleShellRunner) collectDiff(worktreeDir string) (string, string, error) {
-	diffCmd := exec.Command("git", "-C", worktreeDir, "diff", r.opts.BaseRef+"..HEAD")
+	diffCmd, err := hostGit(context.Background(), worktreeDir,
+		"diff", "--no-ext-diff", "--no-textconv", r.opts.BaseRef+"..HEAD")
+	if err != nil {
+		return "", "", fmt.Errorf("build git diff: %w", err)
+	}
 	var diffOut bytes.Buffer
 	diffCmd.Stdout = &diffOut
 	if err := diffCmd.Run(); err != nil {
 		return "", "", fmt.Errorf("git diff failed: %w", err)
 	}
 
-	revCmd := exec.Command("git", "-C", worktreeDir, "rev-parse", "HEAD")
+	revCmd, err := hostGit(context.Background(), worktreeDir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", "", fmt.Errorf("build git rev-parse: %w", err)
+	}
 	revOut, err := revCmd.Output()
 	if err != nil {
 		return "", "", fmt.Errorf("git rev-parse failed: %w", err)
@@ -651,7 +720,10 @@ func (r *GentleShellRunner) verifyCommitProduced(worktreeDir, headCommit string)
 	if headCommit == baseSHA {
 		return fmt.Errorf("agent reported done but no new commit was produced on branch (HEAD still at base ref %s)", shortSHA(baseSHA))
 	}
-	statusCmd := exec.Command("git", "-C", worktreeDir, "status", "--porcelain")
+	statusCmd, err := hostGit(context.Background(), worktreeDir, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("build git status: %w", err)
+	}
 	var statusOut bytes.Buffer
 	statusCmd.Stdout = &statusOut
 	if err := statusCmd.Run(); err != nil {
@@ -666,7 +738,10 @@ func (r *GentleShellRunner) verifyCommitProduced(worktreeDir, headCommit string)
 // resolveBaseSHA returns the SHA-1 of BaseRef as resolved against the
 // local bare RepoCache.
 func (r *GentleShellRunner) resolveBaseSHA() (string, error) {
-	cmd := exec.Command("git", "-C", r.opts.RepoCache, "rev-parse", r.opts.BaseRef)
+	cmd, err := hostGit(context.Background(), r.opts.RepoCache, "rev-parse", r.opts.BaseRef)
+	if err != nil {
+		return "", fmt.Errorf("build git rev-parse %s: %w", r.opts.BaseRef, err)
+	}
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse %s: %w", r.opts.BaseRef, err)
