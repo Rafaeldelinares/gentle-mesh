@@ -718,31 +718,105 @@ type WorkspaceFileResponse struct {
 	Content string `json:"content"`
 }
 
+// withinRoot reports whether p is the root itself or lives under it.
+func withinRoot(root, p string) bool {
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
+// resolveExistingPrefix resolves symlinks on the deepest existing ancestor of
+// path and re-appends the components that do not exist yet, so a symlink whose
+// target does not exist is still judged by where it points.
+func resolveExistingPrefix(path string) (string, error) {
+	remainder := ""
+	current := path
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			if remainder == "" {
+				return resolved, nil
+			}
+			return filepath.Join(resolved, remainder), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("resolve %q: %w", current, err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("no existing ancestor for %q", path)
+		}
+		remainder = filepath.Join(filepath.Base(current), remainder)
+		current = parent
+	}
+}
+
 // resolveWorkspacePath resolves a client-supplied path inside the workspace root.
-// It returns ok=false when the path escapes the root so callers can answer 403.
-// The returned rel is the cleaned path relative to the workspace root.
-func (s *Server) resolveWorkspacePath(subPath string) (fullPath, rel string, ok bool) {
+//
+// It returns:
+//   - fullPath, rel, nil when the path is safe to serve.
+//   - "", "", nil when the path is outside the workspace root (caller answers 403).
+//   - "", "", err on a real failure (caller answers 500).
+//
+// Containment is verified twice: once on the lexical path (to reject obvious
+// traversal without I/O) and once on the symlink-resolved path (to reject a
+// link that sits inside the workspace and points out of it). The resolution
+// stops at the deepest existing ancestor so a path that does not exist yet is
+// still judged by where its prefix actually points.
+func (s *Server) resolveWorkspacePath(subPath string) (fullPath, rel string, err error) {
 	cleaned := filepath.Clean(subPath)
 	if cleaned == "." {
-		return s.workspaceRoot, ".", true
+		return s.workspaceRoot, ".", nil
 	}
-	// Reject explicit traversal before normalization so requests such as
+	// Reject obvious traversal before any I/O so requests such as
 	// "../../etc" can never be silently folded back into the workspace root.
 	if filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
-		return "", "", false
+		return "", "", nil
 	}
 
-	fullPath = filepath.Join(s.workspaceRoot, filepath.Clean("/"+subPath))
-	rel, err := filepath.Rel(s.workspaceRoot, fullPath)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return "", "", false
+	root, err := filepath.EvalSymlinks(s.workspaceRoot)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", "", fmt.Errorf("resolve workspace root: %w", err)
+		}
+		root = filepath.Clean(s.workspaceRoot)
 	}
-	return fullPath, rel, true
+	joined := filepath.Join(root, cleaned)
+	if !withinRoot(root, joined) {
+		return "", "", nil
+	}
+	resolved, err := resolveExistingPrefix(joined)
+	if err != nil {
+		return "", "", err
+	}
+	if !withinRoot(root, resolved) {
+		return "", "", nil
+	}
+	out, err := filepath.Rel(root, resolved)
+	if err != nil || strings.HasPrefix(out, "..") {
+		return "", "", fmt.Errorf("compute relative path: %w", err)
+	}
+	// Return the resolved path so the caller opens the real file, not the link.
+	// The containment check above guarantees the resolved path is still under
+	// the workspace root, so a link pointing outside is caught here and never
+	// reaches the file system call. The check-then-use sequence has a narrow
+	// TOCTOU window (swapping the link between resolution and open); opening
+	// the resolved path keeps the window small but does not eliminate it.
+	return resolved, out, nil
 }
 
 func (s *Server) handleWorkspaceTree(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	fullPath, relDir, ok := s.resolveWorkspacePath(r.URL.Query().Get("path"))
-	if !ok {
+	fullPath, relDir, err := s.resolveWorkspacePath(r.URL.Query().Get("path"))
+	if err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if fullPath == "" {
 		writeJSON(w, stdhttp.StatusForbidden, map[string]string{"error": "access denied: path outside workspace root"})
 		return
 	}
@@ -808,8 +882,12 @@ func (s *Server) handleWorkspaceFile(w stdhttp.ResponseWriter, r *stdhttp.Reques
 		return
 	}
 
-	fullPath, relPath, ok := s.resolveWorkspacePath(subPath)
-	if !ok {
+	fullPath, relPath, err := s.resolveWorkspacePath(subPath)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if fullPath == "" {
 		writeJSON(w, stdhttp.StatusForbidden, map[string]string{"error": "access denied: path outside workspace root"})
 		return
 	}
