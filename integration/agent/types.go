@@ -31,6 +31,12 @@ type Config struct {
 	KeyResolver  PublicKeyResolver // Resolver for agent public keys (S2)
 	KeystoreDir  string            // Keystore directory path for persistent Ed25519 keys (optional)
 
+	// EnvAllow names extra host variables the assertion commands may see, on top
+	// of settlement's strict allowlist. Empty (the default) keeps the allowlist
+	// closed; an operator opts in explicitly (for example GOPROXY, HTTPS_PROXY
+	// behind a proxy, or GOPRIVATE for a private module registry).
+	EnvAllow []string
+
 	// TLS configuration. If CertFile and KeyFile are set, the server
 	// runs HTTPS instead of HTTP.
 	TLSCertFile string

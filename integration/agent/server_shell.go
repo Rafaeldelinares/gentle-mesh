@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
+	"github.com/gentleman-programming/gentle-mesh/pkg/gitsafe"
 	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
 	"github.com/gentleman-programming/gentle-mesh/pkg/settlement"
 	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
@@ -43,6 +44,21 @@ type ShellServer struct {
 type shellWrapper struct {
 	workspace   string
 	evalTimeout time.Duration
+	envAllow    []string
+}
+
+// SetEnvAllow names extra host variables the assertion commands of this server
+// may see, on top of settlement's strict allowlist.
+//
+// It is a method rather than a constructor parameter so the existing signature
+// stays untouched, and it is called before the server starts serving. Without it
+// the allowlist stays closed, which is the default: an operator opts in on
+// purpose, the same shape as -local-fallback.
+func (s *ShellServer) SetEnvAllow(names ...string) {
+	if s == nil || s.shell == nil {
+		return
+	}
+	s.shell.envAllow = append([]string{}, names...)
 }
 
 // NewShellServer creates a shell-based HTTP server.
@@ -185,7 +201,12 @@ func (s *ShellServer) evalPrecondition(ctx context.Context, p envelope.Precondit
 		}
 
 	case envelope.PreconditionGitCleanWorktree:
-		cmd := exec.CommandContext(ctx, "git", "-C", s.shell.workspace, "status", "--porcelain")
+		cmd, buildErr := gitsafe.Command(ctx, s.shell.workspace, "status", "--porcelain")
+		if buildErr != nil {
+			result.Passed = false
+			result.Message = fmt.Sprintf("git status error: %v", buildErr)
+			break
+		}
 		out, err := cmd.Output()
 		if err != nil {
 			result.Passed = false
@@ -288,7 +309,7 @@ func (s *ShellServer) handleExecuteLocal(w http.ResponseWriter, r *http.Request)
 func (s *ShellServer) executeLocal(ctx context.Context, assertions []envelope.Assertion) (*receipt.SettlementReceipt, error) {
 	settledAssertions := convertAssertions(assertions)
 
-	eval := settlement.NewEvaluator(s.shell.workspace)
+	eval := settlement.NewEvaluator(s.shell.workspace).WithEnvAllow(s.shell.envAllow...)
 	if s.shell.evalTimeout > 0 {
 		eval = eval.WithTimeout(s.shell.evalTimeout)
 	}
