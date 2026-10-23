@@ -773,11 +773,17 @@ func (r *GentleShellRunner) persistOversizedDiff(taskID, diff string) (string, e
 }
 
 // buildPrompt wraps the user prompt with the strict tool-call budget
-// directive. The agent must emit a summary and stop after MaxToolCalls
-// actions, which the runtime enforces in parallel.
+// directive and with the completion contract. The agent must emit a
+// summary and stop after MaxToolCalls actions, which the runtime enforces
+// in parallel, and it must leave its work as a commit on the proposal
+// branch: the harness verifies HEAD against the base ref deterministically
+// and fails the task with NO_COMMIT_PRODUCED when the proposal is empty,
+// however confident the agent's final message sounds.
 func (r *GentleShellRunner) buildPrompt(userPrompt, taskID string) string {
 	constraint := fmt.Sprintf(
-		"\n\n[runner directive] task_id=%s: you have a hard budget of %d tool calls. After that budget is exhausted, emit a single final summary text and stop.",
+		"\n\n[runner directive] task_id=%s: you have a hard budget of %d tool calls. After that budget is exhausted, emit a single final summary text and stop."+
+			"\n\n[runner directive] commit before you finish: `git add` your changes and create a commit with `git commit -m` on the current branch (the proposal branch is already checked out)."+
+			" The harness only accepts work that exists as a commit; if you stop without one the task fails with NO_COMMIT_PRODUCED no matter what you say in your final message.",
 		taskID, r.opts.MaxToolCalls,
 	)
 	return userPrompt + constraint
@@ -787,6 +793,15 @@ func (r *GentleShellRunner) buildPrompt(userPrompt, taskID string) string {
 // the filesystem whitelist, hides the user's HOME and the host's git
 // credentials, sets the worktree as the working directory, and finally
 // launches gentle-shell with the structured prompt.
+// sandboxGitIdentityName and sandboxGitIdentityEmail are the fixed identity
+// exported into every sandbox. They are deliberately not the host user's
+// name or address: the sandbox never sees the host git configuration, and
+// the proposal commit is attributed to the agent, not to the operator.
+const (
+	sandboxGitIdentityName  = "gentle-mesh-agent"
+	sandboxGitIdentityEmail = "agent@gentle-mesh.invalid"
+)
+
 func (r *GentleShellRunner) buildBwrapArgs(worktreeDir, prompt, sessionID string) []string {
 	args := []string{}
 
@@ -798,6 +813,22 @@ func (r *GentleShellRunner) buildBwrapArgs(worktreeDir, prompt, sessionID string
 	args = append(args, "--bind", worktreeDir, worktreeDir)
 	args = append(args, "--chdir", worktreeDir)
 	args = append(args, "--unshare-pid")
+
+	// The sandbox hides the user's HOME under a tmpfs and mounts /etc
+	// read-only, and hosts commonly ship no /etc/gitconfig, so `git commit`
+	// inside the sandbox would otherwise fail with "Author identity
+	// unknown" and the agent could never satisfy the completion contract.
+	// A fixed, non-personal identity is exported instead: the sandbox has no
+	// credentials to leak and the harness does not attribute the commit to a
+	// person, it only needs HEAD to move past the base ref.
+	args = append(args,
+		"--setenv", "GIT_AUTHOR_NAME", sandboxGitIdentityName,
+		"--setenv", "GIT_AUTHOR_EMAIL", sandboxGitIdentityEmail,
+		"--setenv", "GIT_COMMITTER_NAME", sandboxGitIdentityName,
+		"--setenv", "GIT_COMMITTER_EMAIL", sandboxGitIdentityEmail,
+		// Never let the agent push: the cache has no remotes on purpose.
+		"--setenv", "GIT_TERMINAL_PROMPT", "0",
+	)
 
 	args = append(args, "--")
 
