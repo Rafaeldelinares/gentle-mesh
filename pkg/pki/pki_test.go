@@ -2,12 +2,17 @@ package pki
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 )
 
 func TestGenerateCA(t *testing.T) {
@@ -500,6 +505,74 @@ func TestGenerateServerCertSANs(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("IPAddresses must contain %s, got %v", raw, cert.Cert.IPAddresses)
+		}
+	}
+}
+
+// TestSignCSRPreservesSubjectAltNameAndServerAuth verifies that signing a CSR
+// keeps every subjectAltName entry from the request (DNS and IP) and grants
+// ServerAuth alongside ClientAuth so the same cert can be presented as a TLS
+// server cert when the coordinator calls back to the worker for dispatch.
+func TestSignCSRPreservesSubjectAltNameAndServerAuth(t *testing.T) {
+	ca, err := GenerateCA("Gentle Mesh Test", "signcsr-san", 0)
+	if err != nil {
+		t.Fatalf("GenerateCA: %v", err)
+	}
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa key: %v", err)
+	}
+	// The enrollment path has to keep the requested IP SAN: the coordinator
+	// dials the worker back over HTTPS, and Go rejects a peer certificate whose
+	// SANs do not cover the address it dialed.
+	csrTpl := &x509.CertificateRequest{
+		Subject:     pkix.Name{CommonName: "w-dev-2"},
+		DNSNames:    []string{"alt.w-dev-2"},
+		IPAddresses: []net.IP{net.ParseIP("192.168.1.18")},
+	}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, csrTpl, key)
+	if err != nil {
+		t.Fatalf("CreateCertificateRequest: %v", err)
+	}
+	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
+
+	signed, err := ca.SignCSR(string(csrPEM), "w-dev-2", time.Hour)
+	if err != nil {
+		t.Fatalf("SignCSR: %v", err)
+	}
+
+	wantIP := net.ParseIP("192.168.1.18").To4()
+	if wantIP == nil {
+		t.Fatalf("net.ParseIP 192.168.1.18")
+	}
+	foundIP := false
+	for _, got := range signed.IPAddresses {
+		if got.Equal(wantIP) {
+			foundIP = true
+			break
+		}
+	}
+	if !foundIP {
+		t.Errorf("IPAddresses must include 192.168.1.18, got %v", signed.IPAddresses)
+	}
+
+	hasClient, hasServer := false, false
+	for _, u := range signed.ExtKeyUsage {
+		if u == x509.ExtKeyUsageClientAuth {
+			hasClient = true
+		}
+		if u == x509.ExtKeyUsageServerAuth {
+			hasServer = true
+		}
+	}
+	if !hasClient || !hasServer {
+		t.Errorf("ExtKeyUsage must include both ClientAuth and ServerAuth, got %v", signed.ExtKeyUsage)
+	}
+
+	for _, want := range []string{"w-dev-2", "alt.w-dev-2"} {
+		if !slices.Contains(signed.DNSNames, want) {
+			t.Errorf("DNSNames must include %q, got %v", want, signed.DNSNames)
 		}
 	}
 }
