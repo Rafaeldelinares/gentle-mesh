@@ -46,25 +46,25 @@ type ServerConfig struct {
 	TerritoryMode        protocol.TerritoryMode
 	WorkspaceRoot        string
 	// Host & CORS configuration
-	CORSOrigins          []string
-	AllowedHosts         []string
-	InsecureNoAuth       bool
-	LocalFallback        *bool
+	CORSOrigins    []string
+	AllowedHosts   []string
+	InsecureNoAuth bool
+	LocalFallback  *bool
 	// TLS configuration
-	TLSEnabled     bool
-	TLSCertFile    string
-	TLSKeyFile     string
-	MeshCA         *pki.MeshCA
-	MeshCAPemFile  string
+	TLSEnabled    bool
+	TLSCertFile   string
+	TLSKeyFile    string
+	MeshCA        *pki.MeshCA
+	MeshCAPemFile string
 	// mTLS configuration
-	RequireMTLS    bool // Require client certificates for all connections
+	RequireMTLS bool // Require client certificates for all connections
 	// Enrollment configuration
-	TokenStore  store.TokenStore // For enrollment token validation
-	CertStore   store.CertStore  // For node certificate tracking and revocation
+	TokenStore store.TokenStore // For enrollment token validation
+	CertStore  store.CertStore  // For node certificate tracking and revocation
 	// Webhook configuration
 	WebhookStore store.WebhookStore // For webhook notifications
 	// Rate limiting configuration
-	RateLimitRequests  int           // Requests per window (0 = disabled)
+	RateLimitRequests int           // Requests per window (0 = disabled)
 	RateLimitWindow   time.Duration // Time window
 	RateLimitBurst    int           // Max burst size
 }
@@ -203,13 +203,16 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 
 	revCache := newRevocationCache()
 	if cfg.CertStore != nil {
-		certs, err := cfg.CertStore.ListCerts(context.Background())
+		// Warm from the authoritative ledger, not from node_certs: a node holds
+		// one row there, so a rotated node's previous (revoked) serial is only
+		// recorded in the ledger.
+		revoked, err := cfg.CertStore.RevokedSerials(context.Background())
 		if err != nil {
 			return nil, fmt.Errorf("failed to warm up certificate revocation cache: %w", err)
 		}
-		for _, c := range certs {
-			if c.Revoked && c.Serial != "" {
-				revCache.Add(c.Serial)
+		for _, r := range revoked {
+			if r.Serial != "" {
+				revCache.Add(r.Serial)
 			}
 		}
 	}
@@ -307,13 +310,21 @@ func (s *Server) RevokeCertWithCount(ctx context.Context, nodeID string) (int, e
 	return cancelledTasks, nil
 }
 
-// IsCertRevoked checks if a certificate is revoked by serial number against the in-memory blocklist.
-// Absence in the in-memory blocklist indicates the certificate is not revoked, without querying SQLite.
+// IsCertRevoked answers whether a certificate serial is revoked.
+//
+// The database is the source of truth and the in-memory blocklist is the fast
+// path in front of it: a cache hit settles the answer, a miss falls through to
+// the revocation ledger. A ledger error is returned as an error, never as
+// "not revoked", so a broken store fails the handshake closed instead of
+// opening it.
 func (s *Server) IsCertRevoked(ctx context.Context, serial string) (bool, error) {
-	if s.revocationCache != nil {
-		return s.revocationCache.IsRevoked(serial), nil
+	if s.certStore == nil {
+		return false, errors.New("cert store is not configured")
 	}
-	return false, nil
+	if s.revocationCache != nil && s.revocationCache.IsRevoked(serial) {
+		return true, nil
+	}
+	return s.certStore.IsCertRevoked(ctx, serial)
 }
 
 // revocationCache provides atomic in-memory lookups and updates of revoked certificate serials.
