@@ -801,7 +801,34 @@ func (ca *MeshCA) SignCSR(csrPEM string, nodeID string, validFor time.Duration) 
 		return nil, fmt.Errorf("%w: failed to generate serial: %v", ErrGenerationFailed, err)
 	}
 
-	// Create certificate template
+	// Build the certificate template, copying the subjectAltName from the CSR
+	// and adding ServerAuth to ExtKeyUsage so the same cert can also serve
+	// the dispatch callback (the coordinator connects to the worker over TLS
+	// and the worker presents this cert). Without the SAN from the CSR a
+	// worker with `subjectAltName=IP:<lan-ip>` would only get a DNS SAN
+	// for its node_id and the dispatch callback would fail with a hostname
+	// mismatch.
+	//
+	// Residual risk, documented on purpose: nothing here binds a requested
+	// SAN to the node identity. A node may ask for any name or IP and the CA
+	// signs it, so a node certificate is a server credential for whatever
+	// name it asked for. That is inert today because no production path
+	// verifies an enrolled node certificate as a server certificate (the
+	// coordinator dispatches with http.DefaultClient and no mesh CA), but any
+	// future HTTPS dispatch path must pin the worker's expected name instead
+	// of trusting the SAN the worker chose.
+	dnsNames := make([]string, 0, len(csr.DNSNames)+1)
+	dnsNames = append(dnsNames, csr.DNSNames...)
+	hasNodeID := false
+	for _, d := range dnsNames {
+		if d == nodeID {
+			hasNodeID = true
+			break
+		}
+	}
+	if !hasNodeID {
+		dnsNames = append(dnsNames, nodeID)
+	}
 	certTemplate := &x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
@@ -809,10 +836,11 @@ func (ca *MeshCA) SignCSR(csrPEM string, nodeID string, validFor time.Duration) 
 		},
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().Add(validFor),
-		KeyUsage:             x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:          []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-		BasicConstraintsValid: true,
-		DNSNames:             []string{nodeID},
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid:  true,
+		DNSNames:              dnsNames,
+		IPAddresses:           csr.IPAddresses,
 	}
 
 	// Sign the certificate with the CA
