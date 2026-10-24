@@ -79,6 +79,7 @@ func ApplyDevInsecure(cfg *tls.Config, explicitFlag bool) error {
 	if err != nil {
 		return err
 	}
+	// #nosec G402 -- value taken from DevInsecureConfig, which already refuses to build the config in production unless the explicit flag is set.
 	cfg.InsecureSkipVerify = devCfg.InsecureSkipVerify
 	return nil
 }
