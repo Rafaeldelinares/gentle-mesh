@@ -405,6 +405,29 @@ gentle-mesh worker \
   -key /tmp/mesh/tls/worker-alpha.key
 ```
 
+El certificado de servidor se emite siempre con `localhost` y los loopbacks como
+SAN. Para servir sobre una IP de LAN hay que pedirla explícitamente, o cualquier
+cliente que verifique el nombre falla con `x509: certificate is valid for
+localhost, not <ip>`:
+
+```bash
+gentle-mesh server -tls -tls-dir /var/mesh/tls -require-mtls \
+  -addr 192.168.1.26:8630 -tls-san 192.168.1.26
+```
+
+`server` y `worker` toman su token Bearer de `$GENTLE_MESH_TOKEN` cuando no se
+pasa `-token`, de modo que la credencial no aparezca nunca en la lista de
+argumentos del proceso (que cualquier usuario local puede leer con `ps`). Un
+flag explícito gana sobre la variable:
+
+```bash
+export GENTLE_MESH_TOKEN="$(cat /var/mesh/.token)"   # archivo 0600
+gentle-mesh server -tls -tls-dir /var/mesh/tls -require-mtls -addr 192.168.1.26:8630
+gentle-mesh worker -coordinator https://192.168.1.26:8630 -node-id worker-alpha \
+  -cert /var/mesh/tls/worker-alpha.pem -key /var/mesh/tls/worker-alpha.key \
+  -ca /var/mesh/tls/gentle-mesh-ca.pem
+```
+
 #### 3.1.5 Comandos de Gestión de Certificados
 
 ```bash
