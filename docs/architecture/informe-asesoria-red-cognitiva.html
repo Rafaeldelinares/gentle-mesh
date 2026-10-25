@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Informe de Asesoría Técnica: Red Cognitiva de Agentes (RFC-002) — Gentle Mesh</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --bg-card: #131c2e;
+      --bg-card-subtle: #0d1524;
+      --border: #1e293b;
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-glow: rgba(56, 189, 248, 0.15);
+      --success: #10b981;
+      --warning: #f59e0b;
+      --code-bg: #070b12;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+    [data-theme="light"] {
+      --bg: #f8fafc;
+      --bg-card: #ffffff;
+      --bg-card-subtle: #f1f5f9;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --accent: #0284c7;
+      --accent-glow: rgba(2, 132, 199, 0.1);
+      --success: #059669;
+      --warning: #d97706;
+      --code-bg: #f8fafc;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      line-height: 1.65;
+      padding: 2.5rem 1.5rem;
+      display: flex;
+      justify-content: center;
+    }
+    .container {
+      max-width: 880px;
+      width: 100%;
+    }
+    .header-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      background: var(--accent-glow);
+      color: var(--accent);
+      border: 1px solid var(--accent);
+    }
+    .actions {
+      display: flex;
+      gap: 0.75rem;
+    }
+    button {
+      background: var(--bg-card);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 500;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    button:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    button.primary {
+      background: var(--accent);
+      color: #0b0f19;
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    button.primary:hover {
+      opacity: 0.9;
+    }
+    h1 {
+      font-size: 2rem;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      margin-bottom: 0.5rem;
+      line-height: 1.25;
+      color: var(--text);
+    }
+    .subtitle {
+      font-size: 1.1rem;
+      color: var(--accent);
+      margin-bottom: 1.5rem;
+    }
+    .meta-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      margin-bottom: 2.5rem;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      font-size: 0.875rem;
+    }
+    .meta-item strong {
+      display: block;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.25rem;
+    }
+    h2 {
+      font-size: 1.4rem;
+      margin-top: 2.5rem;
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    h3 {
+      font-size: 1.15rem;
+      margin-top: 1.75rem;
+      margin-bottom: 0.75rem;
+      color: var(--text);
+    }
+    p { margin-bottom: 1.1rem; }
+    ul, ol {
+      margin-bottom: 1.25rem;
+      padding-left: 1.5rem;
+    }
+    li { margin-bottom: 0.4rem; }
+    strong { color: var(--text); font-weight: 600; }
+    code {
+      font-family: var(--font-mono);
+      font-size: 0.875em;
+      background: var(--code-bg);
+      padding: 0.15rem 0.35rem;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      overflow-x: auto;
+      margin: 1.25rem 0;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      line-height: 1.5;
+    }
+    pre code {
+      background: transparent;
+      padding: 0;
+      border: none;
+    }
+    .callout {
+      background: var(--bg-card);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 8px 8px 0;
+      padding: 1rem 1.25rem;
+      margin: 1.5rem 0;
+    }
+    .callout.warning {
+      border-left-color: var(--warning);
+    }
+    .dilemma-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    .dilemma-card h3 {
+      margin-top: 0;
+      color: var(--accent);
+    }
+    .question-box {
+      background: var(--bg-card-subtle);
+      border: 1px dashed var(--accent);
+      border-radius: 6px;
+      padding: 1rem;
+      margin-top: 1rem;
+      font-style: italic;
+    }
+    footer {
+      margin-top: 4rem;
+      padding-top: 2rem;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      font-size: 0.875rem;
+      color: var(--text-muted);
+    }
+    @media print {
+      body { background: #fff; color: #000; padding: 0; }
+      .header-bar button, .actions { display: none; }
+      .meta-box, pre, .dilemma-card { border-color: #ccc; }
+      a { color: #000; text-decoration: underline; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header-bar">
+      <span class="badge">RFC-002 Advisory Paper</span>
+      <div class="actions">
+        <button onclick="copyMarkdown()" id="btn-copy">📋 Copiar Markdown</button>
+        <button onclick="window.print()">🖨️ Imprimir / Guardar PDF</button>
+        <button onclick="toggleTheme()" id="btn-theme">🌓 Tema</button>
+      </div>
+    </div>
+
+    <h1>Informe de Asesoría Técnica: Evolución de Gentle Mesh hacia una Red Cognitiva de Agentes (RFC-002)</h1>
+    <div class="subtitle">De Runner Distribuido a Malla de Cooperación Basada en Recursos y Liquidación Verificable (Task Settlement)</div>
+
+    <div class="meta-box">
+      <div class="meta-item">
+        <strong>Destinatarios</strong>
+        Arquitectos de software, ingenieros de sistemas distribuidos y arneses de IA
+      </div>
+      <div class="meta-item">
+        <strong>Autoría</strong>
+        Rafael De Linares & el Gentleman (Gentle AI)
+      </div>
+      <div class="meta-item">
+        <strong>Versión de Referencia</strong>
+        v1.0.1 (Producción Go / Zero-Dependency)
+      </div>
+      <div class="meta-item">
+        <strong>Proyecto</strong>
+        Gentle Mesh (github.com/Rafaeldelinares/gentle-mesh)
+      </div>
+    </div>
+
+    <h2>1. Resumen Ejecutivo (TL;DR)</h2>
+    <p><strong>Gentle Mesh</strong> nació como una solución de infraestructura (RFC-001) para desacoplar el cómputo de la máquina local del desarrollador en el ecosistema Pi / Gentle AI. Mediante un binario único en Go (~11MB, sin dependencias de C/CGO), provee streaming HTTPS/SSE de pensamientos y tokens, persistencia dual (SQLite en modo WAL + JSONL append-only), semáforos territoriales en Git (<code>repo:branch</code>) y seguridad Zero-Trust (mTLS, CSR enrollment y rate limiting).</p>
+    
+    <div class="callout warning">
+      <strong>El Límite Detectado:</strong> Al operar con subagentes LLM autónomos en hardware real, descubrimos que los modelos tradicionales de balanceo de carga (round-robin o servidores ociosos) <strong>fracasan con agentes de IA</strong>. Despachar una tarea como un simple string (<code>task: "hacer X"</code>) genera falta de afinidad con las herramientas/datos del nodo y la peligrosa falacia del "Green Checkbox".
+    </div>
+
+    <p><strong>La Propuesta (RFC-002):</strong> Convertir a Gentle Mesh en una <strong>Red Cognitiva de Agentes</strong> basada en:</p>
+    <ol>
+      <li><strong>Cognitive Task Envelope:</strong> Contrato explícito con requerimientos de recursos, precondiciones y aserciones de éxito.</li>
+      <li><strong>Pre-flight Handshake:</strong> Negociación previa entre nodos para garantizar idoneidad técnica antes de consumir cómputo o tokens.</li>
+      <li><strong>Task Settlement (Liquidación Determinista):</strong> Verificación matemática/falsable de resultados por parte del arnés (independiente de la opinión del LLM) con emisión de un <strong>Recibo de Liquidación</strong> inmutable.</li>
+    </ol>
+
+    <h2>2. Dónde estamos hoy: Gentle Mesh v1.0.1 (Capa de Infraestructura)</h2>
+    <pre><code>┌─────────────────────────────────────────────────────────────┐
+│                      GENTLE MESH v1.0.1                     │
+│               Arquitectura Actual (Nivel Transporte)        │
+└─────────────────────────────────────────────────────────────┘
+
+       Cliente (Laptop / Open Pi Viewer / CLI)
+                         │
+                         │ HTTPS REST + Streaming SSE (Zero-Trust / mTLS)
+                         ▼
+       Coordinador Gentle Mesh (Binario Go Estático)
+       ┌──────────────────────────────────────────────────────┐
+       │ • SQLite WAL Embebido (crash recovery & reanudación) │
+       │ • Logs JSONL append-only (reproducción con Last-ID)  │
+       │ • TerritoryScheduler (bloqueo semafórico repo:branch)│
+       │ • Dispatcher de Webhooks (HMAC-SHA256)               │
+       │ • Token Bucket Rate Limiting per-IP                  │
+       └──────────────────────────┬───────────────────────────┘
+                                  │
+                 ┌────────────────┴────────────────┐
+                 ▼                                 ▼
+           PiRunner (Local)                 Worker Nodes
+       Subproceso Pi headless           Nodos remotos conectados
+       (con memoria Engram)             con auto-enrollment mTLS</code></pre>
+    <ul>
+      <li><strong>Estado de Código:</strong> 21.000 líneas de Go (13.300 de tests, ratio 1.7x test-to-code, <code>-race</code> safe).</li>
+      <li><strong>Despliegues reales:</strong> Operativo en clústeres locales y hardware dedicado remoto (nodo <em>La Fábrica</em> bajo Tailscale WireGuard).</li>
+      <li><strong>Conectores:</strong> Integrado de forma nativa en <code>open-pi-viewer</code> (PR #1) y conector stdio JSON-RPC (<code>gentle-mesh rpc</code>).</li>
+    </ul>
+
+    <h2>3. Diagnóstico de Campo: Por qué falla la distribución ingenua de Agentes</h2>
+    <h3>A. La falacia del cómputo homogéneo (Context & Tool Locality)</h3>
+    <p>En microservicios estándar, cualquier pod de Kubernetes procesa un request HTTP idéntico. En agentes autónomos, <strong>el contexto es el recurso</strong>: acceso a repositorios clonados, GPU con VRAM para inferencia local o herramientas instaladas en el SO. Si el despachador trata a los nodos como "cómputo intercambiable", la tarea fracasa o colapsa la red transfiriendo gigabytes.</p>
+
+    <h3>B. El costo del fallo tardío (Falta de Pre-flight Handshake)</h3>
+    <p>Despachar a ciegas y descubrir a los 3 minutos de razonamiento LLM que el nodo carecía de <code>weasyprint</code> o <code>docker</code> en PATH quema tokens, desperdicia tiempo y degrada la experiencia del desarrollador.</p>
+
+    <h3>C. La falacia del "Green Checkbox" (Ausencia de Settlement)</h3>
+    <p>Los LLMs sufren de complacencia conversacional. Frente a un error complejo, es común que un agente haga un bypass improvisado, afirme <em>"He implementado todo exitosamente"</em> y devuelva exit code 0. <strong>La finalización no puede depender del testimonio del propio agente.</strong></p>
+
+    <h2>4. La Arquitectura Propuesta: Red Cognitiva (RFC-002)</h2>
+    <pre><code>┌──────────────────┐
+│  Agente Emisor   │
+└────────┬─────────┘
+         │ 1. Emite CognitiveTaskEnvelope
+         ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. Pre-flight Handshake                                      │
+│    • ¿Tenés acceso al repo X en branch Y?                   │
+│    • ¿Disponés de GPU >= 8GB VRAM?                          │
+│    • ¿Tenés las herramientas [git, go, docker] en PATH?     │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ├─ [RECHAZO EXPLICATIVO] ──► Re-enrutar a otro nodo
+                         ▼ [ACEPTADO / LEASE ASIGNADO]
+┌─────────────────────────────────────────────────────────────┐
+│ 3. Ejecución de la Tarea (Streaming HTTPS/SSE)              │
+└────────────────────────┬────────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. Task Settlement (Liquidación Invariable por el Arnés)   │
+│    • FileHash(pkg/auth/jwt.go) != initial_hash              │
+│    • Command("go test ./pkg/auth") == ExitCode 0            │
+└────────────────────────┬────────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 5. Emisión de Recibo de Liquidación (Settlement Receipt)    │
+│    • Estado final inmutable persistido en SQLite            │
+│    • Recibo criptográfico entregado al emisor               │
+└─────────────────────────────────────────────────────────────┘</code></pre>
+
+    <h3>Ejemplo del Contrato CognitiveTaskEnvelope:</h3>
+    <pre><code>{
+  "task_id": "tsk-091f6a57",
+  "intent": "Implementar middleware de autenticación JWT y tests",
+  "territory": {
+    "repository": "github.com/org/repo",
+    "branch": "feature/auth-jwt"
+  },
+  "required_resources": [
+    { "type": "tool", "name": "go", "version": ">=1.22" },
+    { "type": "filesystem", "path": "/workspace/repo", "writeable": true },
+    { "type": "vram_mb", "min": 0 }
+  ],
+  "preconditions": [
+    { "type": "git_clean_worktree", "expected": true },
+    { "type": "port_available", "port": 8443 }
+  ],
+  "settlement": {
+    "strategy": "strict_all",
+    "assertions": [
+      {
+        "id": "code_modified",
+        "type": "file_modified",
+        "path": "pkg/auth/jwt.go"
+      },
+      {
+        "id": "tests_passing",
+        "type": "command_exit_code",
+        "command": "go test ./pkg/auth/...",
+        "expected_code": 0
+      }
+    ],
+    "timeout_seconds": 300
+  }
+}</code></pre>
+
+    <h2>5. Preguntas Clave para los Asesores Técnicos</h2>
+
+    <div class="dilemma-card">
+      <h3>Dilema 1: Protocolo de Handshake (Síncrono vs. Two-Phase Leases)</h3>
+      <p><strong>Escenario A (Síncrono RPC):</strong> <code>POST /v1/tasks/negotiate</code>; el nodo responde <code>200 OK</code> o <code>412 Precondition Failed</code>. Simple y rápido, pero con riesgo de contención si múltiples clientes compiten por el mismo recurso.</p>
+      <p><strong>Escenario B (Lease Temporal / 2PC):</strong> Reserva de recursos con TTL (30s) confirmada posteriormente con un ID de lease.</p>
+      <div class="question-box">
+        <strong>Pregunta:</strong> Para una red de agentes heterogénea (3 a 50 nodos), ¿justifica la complejidad de un modelo con Leases o un handshake síncrono atómico dentro de SQLite con busy timeout es suficiente?
+      </div>
+    </div>
+
+    <div class="dilemma-card">
+      <h3>Dilema 2: El Lenguaje de las Aserciones de Liquidación (Settlement DSL)</h3>
+      <p><strong>Alternativa 1 (DSL Declarativo en Go):</strong> Conjunto cerrado de invariantes seguros (<code>file_modified</code>, <code>file_hash_equals</code>, <code>command_exit_code</code> con timeout estricto de 10s).</p>
+      <p><strong>Alternativa 2 (Script Embebido Hermético):</strong> Ejecutar un evaluador de aserciones en Lua o Starlark embebido.</p>
+      <div class="question-box">
+        <strong>Pregunta:</strong> ¿Cuál es el balance adecuado entre expresividad de verificación y seguridad/hermeticidad para evitar que la fase de settlement se vuelva un vector de ataque o inestabilidad?
+      </div>
+    </div>
+
+    <div class="dilemma-card">
+      <h3>Dilema 3: Manejo de Liquidación Parcial y Ciclos de Reparación</h3>
+      <p>Si un agente cumple 4 de 5 aserciones (modificó los archivos pero falló 1 test unitario):</p>
+      <ul>
+        <li>¿Debe la tarea abortarse y descartarse por completo?</li>
+        <li>¿O el arnés debe reinyectar el fallo de settlement como un nuevo turno al mismo agente (<em>remediation loop</em>), con presupuesto acotado de 1-2 intentos antes de marcar <code>SETTLEMENT_FAILED</code>?</li>
+      </ul>
+      <div class="question-box">
+        <strong>Pregunta:</strong> En su experiencia con pipelines de desarrollo, ¿cuál es la mejor estrategia de remediación automática en sistemas multiagente sin caer en bucles infinitos de consumo de tokens?
+      </div>
+    </div>
+
+    <div class="dilemma-card">
+      <h3>Dilema 4: Anuncio de Capacidades vs. Descubrimiento P2P</h3>
+      <p>Actualmente los workers envían un heartbeat con etiquetas básicas a SQLite. Al requerir recursos cognitivos más ricos (herramientas locales, repositorios clonados, modelos LLM locales):</p>
+      <div class="question-box">
+        <strong>Pregunta:</strong> ¿Conviene mantener un registro centralizado de capacidades en el nodo Coordinador (aprovechando SQLite WAL), o transicionar hacia un protocolo de gossip / descubrimiento federado? ¿A partir de qué escala de nodos el modelo centralizado se vuelve un cuello de botella?
+      </div>
+    </div>
+
+    <h2>6. Formato de Devolución Sugerido</h2>
+    <ol>
+      <li><strong>Puntos Ciegos:</strong> ¿Qué problemas obvios no estamos viendo en el diseño del <code>TaskEnvelope</code> o el <code>Settlement</code>?</li>
+      <li><strong>Recomendaciones de Simplicidad:</strong> ¿Qué partes de la propuesta recortarías por ser sobreingeniería prematura?</li>
+      <li><strong>Casos Análogos:</strong> ¿Conocés estándares, RFCs o proyectos abiertos (en sistemas distribuidos, blockchain o workflows tipo Temporal/Cadence) que hayan resuelto este problema de manera elegante?</li>
+    </ol>
+
+    <footer>
+      Gentle Mesh — Ecosistema Gentle AI & Gentleman Programming<br>
+      Repositorio: <a href="https://github.com/Rafaeldelinares/gentle-mesh" style="color:var(--accent);">github.com/Rafaeldelinares/gentle-mesh</a>
+    </footer>
+  </div>
+
+  <script id="raw-markdown" type="text/plain"># Informe de Asesoría Técnica: Evolución de Gentle Mesh hacia una Red Cognitiva de Agentes (RFC-002)
+
+> **Destinatarios:** Arquitectos de software, ingenieros de sistemas distribuidos y especialistas en arneses de IA / agentes autónomos.  
+> **Autor:** Rafael De Linares & el Gentleman (Ecosistema Gentle AI)  
+> **Proyecto:** Gentle Mesh (`gentle-mesh`)  
+> **Versión Actual de Referencia:** v1.0.1 (Producción en Go / Zero-Dependency)  
+> **Objetivo del Documento:** Someter a juicio y asesoría externa la transición de un modelo de *transporte de ejecución remota pasiva* hacia una *malla de agentes conscientes de recursos con liquidación determinista (Task Settlement)*.
+
+---
+
+## 1. Resumen Ejecutivo (TL;DR)
+
+**Gentle Mesh** nació como una solución de infraestructura (RFC-001) para desacoplar el cómputo de la máquina local del desarrollador en el ecosistema Pi / Gentle AI. Mediante un binario único en Go (~11MB, sin dependencias de C/CGO), provee streaming HTTPS/SSE de pensamientos y tokens, persistencia dual (SQLite en modo WAL + JSONL append-only), semáforos territoriales en Git (`repo:branch`) y seguridad Zero-Trust (mTLS, CSR enrollment y rate limiting).
+
+**El Límite Detectado:** Al operar con subagentes LLM autónomos en hardware real, descubrimos que los modelos tradicionales de balanceo de carga (*round-robin* o servidores ociosos) **fracasan con agentes de IA**. Despachar una tarea como un simple string (`task: "hacer X"`) genera dos patologías graves:
+1. **Falta de afinidad y fallos ciegos:** Tareas enviadas a nodos que carecen de los datos locales, herramientas específicas, GPU o contexto de repositorio adecuado.
+2. **La falacia del "Green Checkbox":** El agente concluye con exit code 0 y afirma *"Tarea completada exitosamente"*, pero en la práctica no modificó los archivos correctos, alucinó la respuesta o no satisfizo los invariantes de negocio.
+
+**La Propuesta (RFC-002):** Convertir a Gentle Mesh en una **Red Cognitiva de Agentes** basada en:
+1. **Cognitive Task Envelope:** Contrato explícito con requerimientos de recursos, precondiciones y aserciones de éxito.
+2. **Pre-flight Handshake:** Negociación previa entre nodos para garantizar idoneidad técnica antes de consumir cómputo o tokens.
+3. **Task Settlement (Liquidación Determinista):** Verificación matemática/falsable de resultados por parte del arnés (independiente de la opinión del LLM) con emisión de un **Recibo de Liquidación** inmutable.
+
+---
+
+## 2. Dónde estamos hoy: Gentle Mesh v1.0.1 (Capa de Infraestructura)
+
+- 21.000 líneas de Go (13.300 de tests, ratio 1.7x test-to-code, -race safe).
+- Despliegues reales: Clústeres locales y hardware dedicado remoto (nodo La Fábrica bajo Tailscale WireGuard).
+- Conectores: Integrado de forma nativa en open-pi-viewer (PR #1) y conector stdio JSON-RPC (gentle-mesh rpc).
+
+---
+
+## 3. Diagnóstico de Campo: Por qué falla la distribución ingenua de Agentes
+
+### A. La falacia del cómputo homogéneo (Context & Tool Locality)
+En agentes autónomos, el contexto es el recurso: acceso a repositorios clonados, GPUs específicas o herramientas locales. Tratar los nodos como "cómputo intercambiable" hace fracasar la tarea.
+
+### B. El costo del fallo tardío (Falta de Pre-flight Handshake)
+Descubrir a los 3 minutos de razonamiento que el nodo carecía de una dependencia quema tokens y degrada la experiencia.
+
+### C. La falacia del "Green Checkbox" (Ausencia de Settlement)
+Un LLM puede alucinar éxito o devolver exit code 0 tras un bypass impropio. La finalización no puede depender del testimonio del propio agente.
+
+---
+
+## 4. La Arquitectura Propuesta: Red Cognitiva (RFC-002)
+
+1. **CognitiveTaskEnvelope:** Payload con contrato explícito de recursos requeridos, precondiciones y aserciones de liquidación.
+2. **Pre-flight Handshake:** Negociación y diagnóstico previo entre nodos para rechazar o re-enrutar antes de gastar un solo token.
+3. **Task Settlement & Receipts:** El arnés de Gentle Mesh valida de forma determinista las aserciones de verdad en Go (hashes de archivos, invariantes de base de datos, tests) y emite un recibo inmutable persistido en SQLite.
+
+---
+
+## 5. Preguntas Clave para los Asesores Técnicos
+
+### Dilema 1: Protocolo de Handshake (Síncrono vs. Two-Phase Leases)
+¿Para una red de 3 a 50 nodos heterogéneos, justifica la complejidad de un modelo con Leases o un handshake síncrono atómico dentro de SQLite con busy timeout es suficiente?
+
+### Dilema 2: El Lenguaje de las Aserciones de Liquidación (Settlement DSL)
+¿DSL declarativo estricto y cerrado en Go (file_modified, command_exit_code) o script embebido hermético tipo Starlark/Lua?
+
+### Dilema 3: Manejo de Liquidación Parcial y Ciclos de Reparación
+Si un agente cumple 4 de 5 aserciones, ¿aborto total o bucle de remediación acotado (máximo 1-2 turnos) reinyectando el fallo al agente?
+
+### Dilema 4: Anuncio de Capacidades vs. Descubrimiento P2P
+¿Registro centralizado en el Coordinador con SQLite WAL o transición hacia un protocolo de gossip / descubrimiento federado?
+
+---
+
+## 6. Formato de Devolución Sugerido
+1. Puntos Ciegos
+2. Recomendaciones de Simplicidad
+3. Casos Análogos en la Industria
+</script>
+
+  <script>
+    function toggleTheme() {
+      const html = document.documentElement;
+      const current = html.getAttribute('data-theme');
+      const next = current === 'dark' ? 'light' : 'dark';
+      html.setAttribute('data-theme', next);
+    }
+    function copyMarkdown() {
+      const text = document.getElementById('raw-markdown').textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = document.getElementById('btn-copy');
+        btn.textContent = '✅ ¡Copiado!';
+        setTimeout(() => { btn.textContent = '📋 Copiar Markdown'; }, 2000);
+      });
+    }
+  </script>
+</body>
+</html>

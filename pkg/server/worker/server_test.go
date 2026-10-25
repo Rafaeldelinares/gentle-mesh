@@ -16,6 +16,80 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/worker"
 )
 
+func TestWorkerServer_SimulatedRunnerEmitsWarning(t *testing.T) {
+	simRunner := runner.NewSimulatedRunner(runner.SimulatedOptions{})
+	srv := worker.NewServer(worker.ServerConfig{
+		Addr:   "127.0.0.1:0",
+		Runner: simRunner,
+	})
+
+	if err := srv.Listen(); err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	go func() { _ = srv.Start() }()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}()
+
+	taskReq := protocol.TaskRequest{Agent: "worker", Task: "test simulation warning"}
+	body, _ := json.Marshal(taskReq)
+	req, err := http.NewRequest(http.MethodPost, "http://"+srv.Addr()+"/v1/execute", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("http.NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/execute: %v", err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	var events []*protocol.Event
+	var blockLines []string
+	for {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil && readErr != io.EOF {
+			break
+		}
+		cleanLine := strings.TrimRight(line, "\r\n")
+		if cleanLine == "" {
+			if len(blockLines) > 0 {
+				raw := []byte(strings.Join(blockLines, "\n"))
+				if evt, err := protocol.ParseSSE(raw); err == nil {
+					events = append(events, evt)
+				}
+				blockLines = blockLines[:0]
+			}
+		} else {
+			blockLines = append(blockLines, cleanLine)
+		}
+		if readErr == io.EOF {
+			break
+		}
+	}
+
+	// Must contain a status or thought event explicitly warning about SIMULATED mode
+	var sawSimulatedWarning bool
+	for _, evt := range events {
+		if evt.Type == protocol.EventStatus {
+			var sp protocol.StatusPayload
+			if err := evt.UnmarshalPayload(&sp); err == nil {
+				if strings.Contains(strings.ToUpper(sp.Message), "SIMULATED") {
+					sawSimulatedWarning = true
+					break
+				}
+			}
+		}
+	}
+	if !sawSimulatedWarning {
+		t.Errorf("expected worker executing simulated runner to emit status event with SIMULATED warning message, got events: %+v", events)
+	}
+}
+
 func TestWorkerServer_ExecuteAndStreamSSE(t *testing.T) {
 	// Configure simulated runner with slight token delay to verify active tasks during execution
 	simRunner := runner.NewSimulatedRunner(runner.SimulatedOptions{
@@ -160,8 +234,8 @@ func TestWorkerServer_ExecuteAndStreamSSE(t *testing.T) {
 
 func TestWorkerServer_Healthz(t *testing.T) {
 	srv := worker.NewServer(worker.ServerConfig{
-		Addr:        "127.0.0.1:0",
-		BearerToken: "my-secret-token",
+		Addr:         "127.0.0.1:0",
+		BearerTokens: []string{"my-secret-token"},
 	})
 
 	if err := srv.Listen(); err != nil {
@@ -336,8 +410,8 @@ func TestWorkerServer_InteractiveReply(t *testing.T) {
 
 func TestWorkerServer_AuthAndValidation(t *testing.T) {
 	srv := worker.NewServer(worker.ServerConfig{
-		Addr:        "127.0.0.1:0",
-		BearerToken: "auth-secret",
+		Addr:         "127.0.0.1:0",
+		BearerTokens: []string{"auth-secret"},
 	})
 
 	if err := srv.Listen(); err != nil {
@@ -399,5 +473,139 @@ func TestWorkerServer_AuthAndValidation(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 for empty query_id in reply, got %d", resp.StatusCode)
+	}
+}
+
+// The worker API must reject a missing or wrong bearer token and accept the
+// configured one (compared in constant time).
+func TestWorkerServer_AuthToken(t *testing.T) {
+	srv := worker.NewServer(worker.ServerConfig{
+		Addr:         "127.0.0.1:0",
+		BearerTokens: []string{"worker-secret"},
+	})
+	if err := srv.Listen(); err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	go func() { _ = srv.Start() }()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}()
+
+	url := "http://" + srv.Addr() + "/v1/execute"
+	body := `{"agent":"worker","task":"auth-test"}`
+
+	tests := []struct {
+		name       string
+		authHeader string
+		wantStatus int
+	}{
+		{"sin cabecera", "", http.StatusUnauthorized},
+		{"token incorrecto", "Bearer wrong-secret", http.StatusUnauthorized},
+		{"token correcto", "Bearer worker-secret", http.StatusOK},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+			if err != nil {
+				t.Fatalf("failed to build request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if tc.authHeader != "" {
+				req.Header.Set("Authorization", tc.authHeader)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			_, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("got status %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+		})
+	}
+}
+
+// The worker API accepts every configured credential: its own and the
+// coordinator's, compared in constant time against the whole list.
+func TestWorkerServer_AcceptsMultipleTokens(t *testing.T) {
+	tests := []struct {
+		name       string
+		tokens     []string
+		authHeader string
+		wantStatus int
+	}{
+		{"token solo: sin cabecera", []string{"coord-secret"}, "", http.StatusUnauthorized},
+		{"token solo: correcto", []string{"coord-secret"}, "Bearer coord-secret", http.StatusOK},
+		{"worker-token solo: sin cabecera", []string{"worker-secret"}, "", http.StatusUnauthorized},
+		{"worker-token solo: correcto", []string{"worker-secret"}, "Bearer worker-secret", http.StatusOK},
+		{"dos credenciales: la primera", []string{"coord-secret", "worker-secret"}, "Bearer coord-secret", http.StatusOK},
+		{"dos credenciales: la segunda", []string{"coord-secret", "worker-secret"}, "Bearer worker-secret", http.StatusOK},
+		{"dos credenciales: una tercera", []string{"coord-secret", "worker-secret"}, "Bearer otra", http.StatusUnauthorized},
+		{"entradas vacias se ignoran", []string{"", "coord-secret"}, "Bearer coord-secret", http.StatusOK},
+		{"sin credenciales: abierto", nil, "", http.StatusOK},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := worker.NewServer(worker.ServerConfig{
+				Addr:         "127.0.0.1:0",
+				BearerTokens: tc.tokens,
+			})
+			if err := srv.Listen(); err != nil {
+				t.Fatalf("failed to listen: %v", err)
+			}
+			go func() { _ = srv.Start() }()
+			defer func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = srv.Shutdown(ctx)
+			}()
+
+			req, err := http.NewRequest(http.MethodPost, "http://"+srv.Addr()+"/v1/execute",
+				strings.NewReader(`{"agent":"worker","task":"multi-token"}`))
+			if err != nil {
+				t.Fatalf("failed to build request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if tc.authHeader != "" {
+				req.Header.Set("Authorization", tc.authHeader)
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			_, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("got status %d, want %d", resp.StatusCode, tc.wantStatus)
+			}
+		})
+	}
+
+	// /healthz keeps bypassing authentication even with credentials configured.
+	srv := worker.NewServer(worker.ServerConfig{Addr: "127.0.0.1:0", BearerTokens: []string{"coord-secret"}})
+	if err := srv.Listen(); err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	go func() { _ = srv.Start() }()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}()
+	resp, err := http.Get("http://" + srv.Addr() + "/healthz")
+	if err != nil {
+		t.Fatalf("healthz request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /healthz: got %d, want 200", resp.StatusCode)
 	}
 }

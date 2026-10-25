@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"log"
@@ -25,11 +26,11 @@ const corsExposeHeaders = "Content-Type, Last-Event-ID, X-Accel-Buffering"
 
 // RateLimiter implements a simple token-bucket rate limiter per IP.
 type RateLimiter struct {
-	mu       sync.Mutex
-	clients  map[string]*clientLimiter
-	limit    int           // requests per window
-	window   time.Duration // time window
-	burst    int           // max burst size
+	mu      sync.Mutex
+	clients map[string]*clientLimiter
+	limit   int           // requests per window
+	window  time.Duration // time window
+	burst   int           // max burst size
 }
 
 type clientLimiter struct {
@@ -258,16 +259,42 @@ func HostMiddleware(allowed []string, next stdhttp.Handler) stdhttp.Handler {
 	})
 }
 
+// AuthConfig holds credentials for the coordinator authentication middleware.
+type AuthConfig struct {
+	AdminToken string
+	NodeToken  string
+}
+
 // AuthMiddleware validates incoming HTTP requests using a Bearer token.
 // If token is empty, the middleware is a no-op and returns next.
-// Requests to /healthz (and /healthz/) bypass authentication.
+// Requests to /healthz (and /healthz/) bypass authentication, and so does the
+// POST /v1/certs/enroll bootstrap route, whose only credential is the enrollment
+// token validated by its handler (MTLSMiddleware already exempts it).
 // CORS preflight OPTIONS requests bypass authentication so browsers can negotiate the request.
 // Missing or invalid tokens result in HTTP 401 Unauthorized with {"error":"unauthorized"}.
 func AuthMiddleware(token string, next stdhttp.Handler) stdhttp.Handler {
-	if token == "" {
+	return AuthMiddlewareWithConfig(AuthConfig{AdminToken: token}, next)
+}
+
+// AuthMiddlewareWithConfig validates incoming requests against the admin token or node-scoped token.
+// The admin token is valid across all routes. The node-scoped token is strictly restricted to
+// node registration and heartbeat (POST /v1/mesh/join, POST /v1/mesh/heartbeat); any other route
+// with the node token returns HTTP 403 Forbidden with {"error":"forbidden"}.
+// Requests without a valid token return HTTP 401 Unauthorized with {"error":"unauthorized"}.
+func AuthMiddlewareWithConfig(cfg AuthConfig, next stdhttp.Handler) stdhttp.Handler {
+	if cfg.AdminToken == "" && cfg.NodeToken == "" {
 		return next
 	}
-	expectedAuth := "Bearer " + token
+
+	expectedAdminAuth := ""
+	if cfg.AdminToken != "" {
+		expectedAdminAuth = "Bearer " + cfg.AdminToken
+	}
+	expectedNodeAuth := ""
+	if cfg.NodeToken != "" {
+		expectedNodeAuth = "Bearer " + cfg.NodeToken
+	}
+
 	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		if r.Method == stdhttp.MethodOptions {
 			next.ServeHTTP(w, r)
@@ -279,34 +306,99 @@ func AuthMiddleware(token string, next stdhttp.Handler) stdhttp.Handler {
 			return
 		}
 
-		authHeader := r.Header.Get("Authorization")
-		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedAuth)) != 1 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(stdhttp.StatusUnauthorized)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
-}
-
-// MTLSMiddleware validates that incoming HTTPS requests present a verified client certificate.
-// The bootstrap routes ("/healthz", "/healthz/", "/v1/mesh/ca", "/v1/certs/enroll") bypass this check.
-// If no verified client certificate is present, it responds with HTTP 401 and {"error":"client certificate required"}.
-func MTLSMiddleware(next stdhttp.Handler) stdhttp.Handler {
-	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-		if r.URL.Path == "/healthz" || r.URL.Path == "/healthz/" ||
-			r.URL.Path == "/v1/mesh/ca" || r.URL.Path == "/v1/certs/enroll" {
+		// Certificate enrollment is a bootstrap route: a node has no bearer
+		// token yet, so the enrollment token in the body is its only credential.
+		// Only this exact method and path are exempt; other methods and
+		// neighbouring routes keep requiring the bearer.
+		if r.Method == stdhttp.MethodPost && r.URL.Path == "/v1/certs/enroll" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 {
+		authHeader := r.Header.Get("Authorization")
+
+		// Constant-time check for admin token
+		adminMatched := 0
+		if expectedAdminAuth != "" {
+			adminMatched = subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedAdminAuth))
+		}
+		if adminMatched == 1 {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Constant-time check for node-scoped token
+		nodeMatched := 0
+		if expectedNodeAuth != "" {
+			nodeMatched = subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedNodeAuth))
+		}
+		if nodeMatched == 1 {
+			if r.Method == stdhttp.MethodPost && (r.URL.Path == "/v1/mesh/join" || r.URL.Path == "/v1/mesh/join/" ||
+				r.URL.Path == "/v1/mesh/heartbeat" || r.URL.Path == "/v1/mesh/heartbeat/") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(stdhttp.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "forbidden"})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(stdhttp.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+	})
+}
+
+// CertRevocationChecker checks whether a certificate serial is revoked.
+type CertRevocationChecker interface {
+	IsCertRevoked(ctx context.Context, serial string) (bool, error)
+}
+
+// MTLSMiddleware validates that incoming HTTPS requests present a verified client certificate.
+// The bootstrap routes ("/healthz", "/healthz/", "/v1/mesh/ca", "/v1/certs/enroll", "/v1/certs/revoke") bypass this check.
+// If no verified client certificate is present, it responds with HTTP 401 and {"error":"client certificate required"}.
+func MTLSMiddleware(next stdhttp.Handler) stdhttp.Handler {
+	return MTLSMiddlewareWithRevocation(nil, next)
+}
+
+// MTLSMiddlewareWithRevocation validates that incoming HTTPS requests present a verified client certificate
+// and checks revocation status against the provided checker (e.g. in-memory revocation cache + cert store).
+// If the certificate is revoked, it responds with HTTP 403 Forbidden, sets Connection: close to tear down
+// any reused keep-alive TCP connections, and responds with {"error":"certificate revoked"}.
+func MTLSMiddlewareWithRevocation(checker CertRevocationChecker, next stdhttp.Handler) stdhttp.Handler {
+	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/healthz/" ||
+			r.URL.Path == "/v1/mesh/ca" || r.URL.Path == "/v1/certs/enroll" ||
+			r.URL.Path == "/v1/certs/revoke" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(stdhttp.StatusUnauthorized)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "client certificate required"})
 			return
+		}
+
+		if checker != nil {
+			clientCert := r.TLS.VerifiedChains[0][0]
+			serial := clientCert.SerialNumber.String()
+			revoked, err := checker.IsCertRevoked(r.Context(), serial)
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(stdhttp.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to verify certificate status"})
+				return
+			}
+			if revoked {
+				w.Header().Set("Connection", "close")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(stdhttp.StatusForbidden)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "certificate revoked"})
+				return
+			}
 		}
 
 		next.ServeHTTP(w, r)

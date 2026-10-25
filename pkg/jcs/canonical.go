@@ -1,0 +1,523 @@
+package jcs
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"reflect"
+	"sort"
+	"strconv"
+	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
+)
+
+// ErrNotValidJSON is returned when the input is not valid JSON or violates JCS rules.
+var ErrNotValidJSON = errors.New("invalid JSON")
+
+const invalidPattern uint64 = 0x7ff0000000000000
+
+// Canonicalize takes any JSON-encoded bytes and returns the JCS-canonical
+// representation according to RFC 8785. The output is deterministic regardless
+// of how the input was originally serialized.
+//
+// Canonicalization steps:
+//   - JSON is parsed strictly using encoding/json Decoder with UseNumber,
+//     rejecting trailing characters or malformed tokens.
+//   - Object members are sorted by key in UTF-16 code unit lexicographic order.
+//   - Numbers are represented in ECMAScript canonical form (RFC 8785 §3.2.2.3),
+//     including converting -0 to 0 and rejecting NaN/Infinity.
+//   - Strings are escaped per RFC 8785 §3.2.2.2 (lone surrogates rejected).
+//   - Only syntactically required whitespace is emitted.
+func Canonicalize(input []byte) ([]byte, error) {
+	if err := checkUnicodeAndSurrogates(input); err != nil {
+		return nil, err
+	}
+
+	v, err := parseStrict(input)
+	if err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := serializeCanonical(v, &buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// Hash returns the SHA-256 digest of the JCS-canonical form of input.
+func Hash(input []byte) ([]byte, error) {
+	canon, err := Canonicalize(input)
+	if err != nil {
+		return nil, err
+	}
+	return sha256Hash(canon), nil
+}
+
+// HashHex returns the hex-encoded SHA-256 digest of the JCS-canonical form.
+func HashHex(input []byte) (string, error) {
+	h, err := Hash(input)
+	if err != nil {
+		return "", err
+	}
+	return hexEncode(h), nil
+}
+
+// MustCanonicalize is like Canonicalize but panics on error.
+func MustCanonicalize(input []byte) []byte {
+	out, err := Canonicalize(input)
+	if err != nil {
+		panic(err)
+	}
+	return out
+}
+
+// Marshal is a drop-in json.Marshal that returns JCS-canonical bytes.
+func Marshal(v interface{}) ([]byte, error) {
+	if err := validateUTF8Value(v); err != nil {
+		return nil, err
+	}
+	std, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return Canonicalize(std)
+}
+
+// MarshalIndent is like Marshal. Note: JCS produces compact output without indentation.
+func MarshalIndent(v interface{}, prefix, indent string) ([]byte, error) {
+	if err := validateUTF8Value(v); err != nil {
+		return nil, err
+	}
+	std, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return Canonicalize(std)
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Strict Parser with Duplicate Key and Unicode Validation
+// ─────────────────────────────────────────────────────────────────
+
+// checkUnicodeAndSurrogates validates that data is valid UTF-8 and does not contain
+// lone surrogates or unescaped ASCII control characters in JSON strings (RFC 8785 §3.2.2.2 & RFC 7493).
+func checkUnicodeAndSurrogates(data []byte) error {
+	if !utf8.Valid(data) {
+		return ErrNotValidJSON
+	}
+
+	inString := false
+	n := len(data)
+	for i := 0; i < n; i++ {
+		b := data[i]
+		if !inString {
+			if b == '"' {
+				inString = true
+			}
+			continue
+		}
+
+		// Inside string
+		if b == '"' {
+			inString = false
+			continue
+		}
+
+		if b < 0x20 {
+			// Unescaped control character in JSON string is prohibited
+			return ErrNotValidJSON
+		}
+
+		if b == '\\' {
+			i++
+			if i >= n {
+				return ErrNotValidJSON
+			}
+			esc := data[i]
+			switch esc {
+			case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+				continue
+			case 'u':
+				if i+4 >= n {
+					return ErrNotValidJSON
+				}
+				hexStr := string(data[i+1 : i+5])
+				val, err := strconv.ParseUint(hexStr, 16, 16)
+				if err != nil {
+					return ErrNotValidJSON
+				}
+				i += 4 // consumed 4 hex digits
+
+				cp := uint16(val)
+				if cp >= 0xD800 && cp <= 0xDBFF {
+					// High surrogate: must be followed immediately by \uDC00-\uDFFF
+					if i+6 >= n || data[i+1] != '\\' || data[i+2] != 'u' {
+						return ErrNotValidJSON
+					}
+					lowHex := string(data[i+3 : i+7])
+					lowVal, err := strconv.ParseUint(lowHex, 16, 16)
+					if err != nil {
+						return ErrNotValidJSON
+					}
+					lowCp := uint16(lowVal)
+					if lowCp < 0xDC00 || lowCp > 0xDFFF {
+						return ErrNotValidJSON
+					}
+					i += 6 // consumed \uYYYY
+				} else if cp >= 0xDC00 && cp <= 0xDFFF {
+					// Lone low surrogate
+					return ErrNotValidJSON
+				}
+			default:
+				return ErrNotValidJSON
+			}
+		}
+	}
+
+	if inString {
+		return ErrNotValidJSON // unclosed string
+	}
+	return nil
+}
+
+// parseStrict parses input strictly, rejecting duplicate keys at any nesting level (RFC 7493 / I-JSON).
+func parseStrict(input []byte) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(input))
+	dec.UseNumber()
+
+	v, err := parseValue(dec)
+	if err != nil {
+		return nil, err
+	}
+
+	// Reject trailing garbage or extra tokens after the top-level value.
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, ErrNotValidJSON
+	}
+	return v, nil
+}
+
+func parseValue(dec *json.Decoder) (any, error) {
+	t, err := dec.Token()
+	if err != nil {
+		return nil, ErrNotValidJSON
+	}
+	switch val := t.(type) {
+	case json.Delim:
+		switch val {
+		case '{':
+			return parseObject(dec)
+		case '[':
+			return parseArray(dec)
+		default:
+			return nil, ErrNotValidJSON
+		}
+	case bool, string, json.Number, nil:
+		return val, nil
+	default:
+		return nil, ErrNotValidJSON
+	}
+}
+
+func parseObject(dec *json.Decoder) (map[string]any, error) {
+	obj := make(map[string]any)
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			return nil, ErrNotValidJSON
+		}
+		key, ok := t.(string)
+		if !ok {
+			return nil, ErrNotValidJSON
+		}
+		if _, exists := obj[key]; exists {
+			return nil, ErrNotValidJSON // Duplicate key!
+		}
+		val, err := parseValue(dec)
+		if err != nil {
+			return nil, err
+		}
+		obj[key] = val
+	}
+	t, err := dec.Token()
+	if err != nil {
+		return nil, ErrNotValidJSON
+	}
+	delim, ok := t.(json.Delim)
+	if !ok || delim != '}' {
+		return nil, ErrNotValidJSON
+	}
+	return obj, nil
+}
+
+func parseArray(dec *json.Decoder) ([]any, error) {
+	var arr []any
+	for dec.More() {
+		elem, err := parseValue(dec)
+		if err != nil {
+			return nil, err
+		}
+		arr = append(arr, elem)
+	}
+	t, err := dec.Token()
+	if err != nil {
+		return nil, ErrNotValidJSON
+	}
+	delim, ok := t.(json.Delim)
+	if !ok || delim != ']' {
+		return nil, ErrNotValidJSON
+	}
+	return arr, nil
+}
+
+// validateUTF8Value recursively ensures all strings in Go data structures are valid UTF-8.
+func validateUTF8Value(v any) error {
+	if v == nil {
+		return nil
+	}
+	return checkReflectValue(reflect.ValueOf(v))
+}
+
+func checkReflectValue(val reflect.Value) error {
+	switch val.Kind() {
+	case reflect.String:
+		if !utf8.ValidString(val.String()) {
+			return ErrNotValidJSON
+		}
+	case reflect.Slice, reflect.Array:
+		if val.Type().Elem().Kind() == reflect.Uint8 {
+			return nil // byte slices are serialized as base64 in json.Marshal
+		}
+		for i := 0; i < val.Len(); i++ {
+			if err := checkReflectValue(val.Index(i)); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		for _, key := range val.MapKeys() {
+			if err := checkReflectValue(key); err != nil {
+				return err
+			}
+			if err := checkReflectValue(val.MapIndex(key)); err != nil {
+				return err
+			}
+		}
+	case reflect.Struct:
+		for i := 0; i < val.NumField(); i++ {
+			f := val.Field(i)
+			if f.CanInterface() {
+				if err := checkReflectValue(f); err != nil {
+					return err
+				}
+			}
+		}
+	case reflect.Pointer, reflect.Interface:
+		if !val.IsNil() {
+			return checkReflectValue(val.Elem())
+		}
+	}
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Canonical Serializer
+// ─────────────────────────────────────────────────────────────────
+
+func serializeCanonical(v any, buf *bytes.Buffer) error {
+	if v == nil {
+		buf.WriteString("null")
+		return nil
+	}
+
+	switch val := v.(type) {
+	case bool:
+		if val {
+			buf.WriteString("true")
+		} else {
+			buf.WriteString("false")
+		}
+		return nil
+
+	case json.Number:
+		f, err := val.Float64()
+		if err != nil {
+			return ErrNotValidJSON
+		}
+		s, err := numberToJSON(f)
+		if err != nil {
+			return ErrNotValidJSON
+		}
+		buf.WriteString(s)
+		return nil
+
+	case string:
+		return serializeString(val, buf)
+
+	case []any:
+		buf.WriteByte('[')
+		for i, elem := range val {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			if err := serializeCanonical(elem, buf); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte(']')
+		return nil
+
+	case map[string]any:
+		buf.WriteByte('{')
+		type member struct {
+			key   string
+			u16   []uint16
+			value any
+		}
+		members := make([]member, 0, len(val))
+		for k, v := range val {
+			if !utf8.ValidString(k) {
+				return ErrNotValidJSON
+			}
+			for _, r := range k {
+				if r >= 0xD800 && r <= 0xDFFF {
+					return ErrNotValidJSON
+				}
+			}
+			members = append(members, member{
+				key:   k,
+				u16:   utf16.Encode([]rune(k)),
+				value: v,
+			})
+		}
+		sort.Slice(members, func(i, j int) bool {
+			return utf16Less(members[i].u16, members[j].u16)
+		})
+		for i, m := range members {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			if err := serializeString(m.key, buf); err != nil {
+				return err
+			}
+			buf.WriteByte(':')
+			if err := serializeCanonical(m.value, buf); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte('}')
+		return nil
+
+	default:
+		return fmt.Errorf("unexpected json value type: %T", v)
+	}
+}
+
+// serializeString escapes and quotes a JSON string per RFC 8785 §3.2.2.2.
+func serializeString(s string, buf *bytes.Buffer) error {
+	if !utf8.ValidString(s) {
+		return ErrNotValidJSON
+	}
+	buf.WriteByte('"')
+	for i := 0; i < len(s); {
+		b := s[i]
+		switch b {
+		case '"':
+			buf.WriteString(`\"`)
+			i++
+		case '\\':
+			buf.WriteString(`\\`)
+			i++
+		case '\b':
+			buf.WriteString(`\b`)
+			i++
+		case '\f':
+			buf.WriteString(`\f`)
+			i++
+		case '\n':
+			buf.WriteString(`\n`)
+			i++
+		case '\r':
+			buf.WriteString(`\r`)
+			i++
+		case '\t':
+			buf.WriteString(`\t`)
+			i++
+		default:
+			if b < 0x20 {
+				// Lowercase \u00xx escape for ASCII control chars.
+				buf.WriteString(fmt.Sprintf("\\u%04x", b))
+				i++
+			} else {
+				r, size := utf8.DecodeRuneInString(s[i:])
+				if r == utf8.RuneError && size == 1 {
+					return ErrNotValidJSON
+				}
+				// RFC 8785: Lone surrogates (U+D800 - U+DFFF) are prohibited.
+				if r >= 0xD800 && r <= 0xDFFF {
+					return ErrNotValidJSON
+				}
+				buf.WriteString(s[i : i+size])
+				i += size
+			}
+		}
+	}
+	buf.WriteByte('"')
+	return nil
+}
+
+// numberToJSON formats an IEEE-754 double precision float per ECMAScript / RFC 8785 §3.2.2.3.
+func numberToJSON(ieeeF64 float64) (string, error) {
+	ieeeU64 := math.Float64bits(ieeeF64)
+
+	// Special case: NaN and Infinity are invalid in JSON.
+	if (ieeeU64 & invalidPattern) == invalidPattern {
+		return "", errors.New("invalid JSON number: " + strconv.FormatUint(ieeeU64, 16))
+	}
+
+	// Special case: eliminate "-0" as mandated by RFC 8785 §3.2.2.3.
+	if ieeeF64 == 0 {
+		return "0", nil
+	}
+
+	var sign string = ""
+	if ieeeF64 < 0 {
+		ieeeF64 = -ieeeF64
+		sign = "-"
+	}
+
+	// ECMAScript unique format rules:
+	// Format as fixed if >= 1e-6 and < 1e+21, otherwise exponential.
+	var format byte = 'e'
+	if ieeeF64 < 1e+21 && ieeeF64 >= 1e-6 {
+		format = 'f'
+	}
+
+	es6Formatted := strconv.FormatFloat(ieeeF64, format, -1, 64)
+
+	// Minor cleanup for exponential format: Go outputs "1e+09", ECMAScript requires "1e+9".
+	exponent := strings.IndexByte(es6Formatted, 'e')
+	if exponent > 0 && len(es6Formatted) > exponent+2 && es6Formatted[exponent+2] == '0' {
+		es6Formatted = es6Formatted[:exponent+2] + es6Formatted[exponent+3:]
+	}
+
+	return sign + es6Formatted, nil
+}
+
+// utf16Less compares two UTF-16 slices lexicographically (RFC 8785 §3.2.3).
+func utf16Less(a, b []uint16) bool {
+	min := len(a)
+	if len(b) < min {
+		min = len(b)
+	}
+	for i := 0; i < min; i++ {
+		if a[i] != b[i] {
+			return a[i] < b[i]
+		}
+	}
+	return len(a) < len(b)
+}
