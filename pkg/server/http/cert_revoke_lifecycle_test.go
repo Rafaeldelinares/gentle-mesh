@@ -199,5 +199,3 @@ func TestServer_HTTP_CertsRevoke_NoBearerConfigured_Returns503(t *testing.T) {
 		t.Errorf("expected 503 Service Unavailable when no bearer token configured, got %d: %s", resp.StatusCode, string(body))
 	}
 }
-
-

@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -67,6 +68,12 @@ func runServe(args []string) {
 	keystoreDir := fs.String("keystore-dir", "", "Path to keystore directory for persistent agent keys (optional)")
 	leaseReaper := fs.Duration("lease-reaper-interval", 30*time.Second, "Lease expiration monitor interval; emits SETTLEMENT_TIMEOUT receipts for expired leases (RFC-002 R2). 0 disables the monitor")
 
+	// Assertions run with a strict environment allowlist. This is the operator
+	// escape hatch, for a worker that legitimately needs one: GOPROXY or
+	// HTTPS_PROXY behind a proxy, GOPRIVATE for a private module registry.
+	// Empty (the default) keeps the allowlist closed.
+	envAllow := fs.String("env-allow", "", "Comma-separated extra host variables the assertion commands may see, on top of settlement's strict allowlist (e.g. GOPROXY,HTTPS_PROXY)")
+
 	// TLS flags.
 	tlsCert := fs.String("tls-cert", "", "TLS certificate file (enables HTTPS)")
 	tlsKey := fs.String("tls-key", "", "TLS private key file")
@@ -98,6 +105,7 @@ func runServe(args []string) {
 		ClientCAFile: *clientCA,
 
 		LeaseReaperInterval: *leaseReaper,
+		EnvAllow:            splitEnvAllow(*envAllow),
 	}
 
 	if *keystoreDir == "" {
@@ -183,4 +191,20 @@ func runHealth(args []string) {
 	}
 	fmt.Printf("Agent: %s | Role: %s | Status: %s | Time: %s\n",
 		h.AgentID, h.Role, h.Status, h.Timestamp.Format(time.RFC3339))
+}
+
+// splitEnvAllow parses the comma-separated -env-allow value into names,
+// discarding empty entries so a trailing comma cannot smuggle in a blank name.
+func splitEnvAllow(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
