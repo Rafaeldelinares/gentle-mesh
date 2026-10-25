@@ -53,6 +53,8 @@
 
 **Hoy:** RFC-001 (transporte distribuido) y el perfil mínimo conforme RFC-002 (12/12 requisitos de liquidación y recibos firmados) en main.
 
+**Próximo:** dos piezas de cobertura automatizada siguen pendientes: un test de enrollment de extremo a extremo corriendo en CI (ver [#62](https://github.com/Rafaeldelinares/gentle-mesh/issues/62)) y tests del disparador de webhooks, con su firma y su payload HMAC (ver [#63](https://github.com/Rafaeldelinares/gentle-mesh/issues/63)). La tercera pieza de ese roadmap —la respuesta de error explícita a los comandos RPC no soportados— ya está resuelta en `main` ([#56](https://github.com/Rafaeldelinares/gentle-mesh/pull/56)).
+
 **Seguridad por defecto y certificados:** la escucha por defecto es segura en loopback (`127.0.0.1:8080`; ver [#57](https://github.com/Rafaeldelinares/gentle-mesh/issues/57)), y la revocación de certificados mTLS está implementada con desconexión atómica de nodos y cancelación de tareas en vuelo vía `cert-revoke` y `POST /v1/certs/revoke` (ver [#25](https://github.com/Rafaeldelinares/gentle-mesh/issues/25)).
 
 **Nota sobre plazos:** este proyecto es impulsado por la comunidad; no se ofrecen fechas de entrega.
