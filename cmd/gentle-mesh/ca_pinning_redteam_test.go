@@ -36,7 +36,7 @@ func setupTestTLSServer(t *testing.T) (*httptest.Server, *pki.MeshCA, *bool, *sy
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
 
-	serverCert, err := ca.GenerateServerCert([]string{"localhost", "127.0.0.1"}, 0)
+	serverCert, err := ca.GenerateServerCert([]string{"localhost", "127.0.0.1"}, nil, 0)
 	if err != nil {
 		t.Fatalf("GenerateServerCert failed: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestRedTeam_CAPinning_ServerDifferentCARejectionAtHandshake(t *testing.T) {
 	victimHash := pki.CertFingerprint(victimCA.Cert)
 
 	// Server runs with otherCA
-	serverCert, err := otherCA.GenerateServerCert([]string{"localhost", "127.0.0.1"}, 0)
+	serverCert, err := otherCA.GenerateServerCert([]string{"localhost", "127.0.0.1"}, nil, 0)
 	if err != nil {
 		t.Fatalf("GenerateServerCert failed: %v", err)
 	}
@@ -437,7 +437,7 @@ func TestRedTeam_CAPinning_AttackerUntrustedLeafWithRealCAInChain(t *testing.T) 
 	if err != nil {
 		t.Fatalf("GenerateCA failed: %v", err)
 	}
-	attackerServerCert, err := attackerCA.GenerateServerCert([]string{"localhost", "127.0.0.1"}, 0)
+	attackerServerCert, err := attackerCA.GenerateServerCert([]string{"localhost", "127.0.0.1"}, nil, 0)
 	if err != nil {
 		t.Fatalf("GenerateServerCert failed: %v", err)
 	}

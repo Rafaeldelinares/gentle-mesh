@@ -1,0 +1,58 @@
+# Security Policy
+
+> ⚠️ **Status: Experimental — NOT Audited**
+>
+> This project is a proof-of-concept / RFC proposal actively under development and has
+> **not** undergone an independent security audit. The implementation must not be described
+> as "secure" or "production-ready" in public documentation, READMEs, or releases until a
+> formal audit is completed.
+
+## Reporting a vulnerability
+
+Please do **not** open a public GitHub issue for a security report.
+
+Report privately through GitHub Security Advisories:
+
+→ https://github.com/Rafaeldelinares/gentle-mesh/security/advisories/new
+
+Include as much detail as you can:
+
+- Description of the vulnerability
+- Steps to reproduce (anonymized if needed)
+- Affected version(s)
+- Potential impact
+- Any suggested fixes (optional)
+
+## Supported versions
+
+Only the latest `1.0.x` release receives security fixes. Older releases are unsupported.
+
+## Scope and expectations
+
+This project is a community proof-of-concept / RFC proposal, not an audited product.
+
+- No independent security audit has been performed.
+- Do not rely on it for production workloads or to protect sensitive data.
+- Security fixes are applied to the latest release at the maintainer's discretion.
+- Reports are handled on a best-effort basis; there is no guaranteed response timeline.
+
+## Known limitations
+
+- **Node certificate revocation is now authoritative on disk** (#25, merged via PR #149): a revoked
+  serial is recorded in an append-only `revoked_serials` ledger, keyed by the serial
+  a TLS handshake actually presents, so the fact survives certificate rotation
+  and coordinator restarts. `Server.IsCertRevoked` consults the ledger with the
+  in-memory blocklist in front, and fails the handshake closed on a store error.
+  A Certificate Revocation List is still not distributed to third parties that
+  do not talk to the coordinator; the disk ledger is the only revocation source.
+- **No authentication or loopback binding by default**: the coordinator listens on every interface
+  without a token by default. Starting with `-runner pi` on a non-loopback address without `-token`
+  or `-require-mtls` is **rejected** at startup (v1.0.3); other runners only log a warning.
+  Full loopback binding by default is tracked for v1.1.0 (#57).
+- **CLI clients without a client certificate**: `nodes`, `radar`, `run` and `rpc` cannot reach a
+  coordinator started with `-require-mtls`; TLS client flags are planned for v1.0.4.
+
+## Acknowledgements
+
+Security researchers who report issues responsibly will be acknowledged here (with
+permission) once a fix is publicly released.

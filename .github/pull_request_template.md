@@ -41,4 +41,24 @@
 - [ ] Revisión RDD completada y aprobada (o excepción explícita documentada).
 
 ---
+
+## Declaración de asistencia de IA
+
+<!-- Completa esta sección si usaste herramientas o modelos de IA para asistir en este PR -->
+
+**Herramienta o modelo:** <!-- ej: Claude (Anthropic), Copilot, GPT-4, Gentle-AI, otro -->
+
+**Alcance de la asistencia:** <!-- Marca las que apliquen -->
+- [ ] Investigación y planificación
+- [ ] Escritura de código o tests
+- [ ] Revisión y verificación
+- [ ] Documentación
+- [ ] Corrección ortográfica, formato o transformaciones mecánicas menores (no hace falta declarar)
+
+**Verificación realizada:** <!-- Describe brevemente qué hiciste para verificar que el resultado es correcto -->
+
+**Responsable:** Quien suscribe este PR confirma que entiende, ha revisado y puede defender todo el contenido enviado. La IA no reemplaza la responsabilidad humana.
+
+---
+
 [![Built with Gentle-AI](https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/brand/built-with-gentle-ai.png)](https://github.com/Gentleman-Programming/gentle-ai)

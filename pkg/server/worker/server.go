@@ -19,9 +19,14 @@ import (
 
 // ServerConfig defines configuration parameters for the gentle-mesh worker HTTP daemon.
 type ServerConfig struct {
-	Addr        string
-	Runner      runner.Runner
-	BearerToken string
+	Addr   string
+	Runner runner.Runner
+	// BearerTokens lists every accepted inbound credential: an empty list
+	// disables authentication, and empty entries are ignored.
+	BearerTokens []string
+	Concurrency  int           // Maximum concurrent executing tasks (default 2)
+	QueueSize    int           // Maximum queued tasks waiting for an execution slot (default equal to Concurrency)
+	QueueTimeout time.Duration // Maximum wait time in queue before timing out (default 30s)
 }
 
 // Server executes delegated tasks locally on a mesh worker node and streams events via SSE.
@@ -30,6 +35,9 @@ type Server struct {
 	httpServer  *http.Server
 	runner      runner.Runner
 	activeTasks atomic.Int32
+	queuedTasks atomic.Int32
+	sem         chan struct{}
+	queueSem    chan struct{}
 	queriesMu   sync.Mutex
 	queries     map[string]chan string
 	listener    net.Listener
@@ -40,11 +48,22 @@ func NewServer(cfg ServerConfig) *Server {
 	if cfg.Runner == nil {
 		cfg.Runner = runner.NewSimulatedRunner(runner.SimulatedOptions{})
 	}
+	if cfg.Concurrency <= 0 {
+		cfg.Concurrency = 2
+	}
+	if cfg.QueueSize <= 0 {
+		cfg.QueueSize = cfg.Concurrency
+	}
+	if cfg.QueueTimeout <= 0 {
+		cfg.QueueTimeout = 30 * time.Second
+	}
 
 	s := &Server{
-		config:  cfg,
-		runner:  cfg.Runner,
-		queries: make(map[string]chan string),
+		config:   cfg,
+		runner:   cfg.Runner,
+		queries:  make(map[string]chan string),
+		sem:      make(chan struct{}, cfg.Concurrency),
+		queueSem: make(chan struct{}, cfg.QueueSize),
 	}
 
 	mux := http.NewServeMux()
@@ -52,16 +71,28 @@ func NewServer(cfg ServerConfig) *Server {
 	mux.HandleFunc("POST /v1/reply", s.handleReply)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
+	var expectedAuths []string
+	for _, tok := range cfg.BearerTokens {
+		if tok != "" {
+			expectedAuths = append(expectedAuths, "Bearer "+tok)
+		}
+	}
+
 	var handler http.Handler = mux
-	if cfg.BearerToken != "" {
-		expectedAuth := "Bearer " + cfg.BearerToken
+	if len(expectedAuths) > 0 {
 		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/healthz" || r.URL.Path == "/healthz/" {
 				mux.ServeHTTP(w, r)
 				return
 			}
 			auth := r.Header.Get("Authorization")
-			if subtle.ConstantTimeCompare([]byte(auth), []byte(expectedAuth)) != 1 {
+			// Compare against every accepted credential in constant time, without
+			// stopping at the first match.
+			matched := 0
+			for _, expectedAuth := range expectedAuths {
+				matched |= subtle.ConstantTimeCompare([]byte(auth), []byte(expectedAuth))
+			}
+			if matched != 1 {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
@@ -135,6 +166,11 @@ func (s *Server) ActiveTasks() int {
 	return int(s.activeTasks.Load())
 }
 
+// QueuedTasks returns the current number of tasks waiting in queue for an execution slot.
+func (s *Server) QueuedTasks() int {
+	return int(s.queuedTasks.Load())
+}
+
 // Addr returns the bound network address of the worker server.
 func (s *Server) Addr() string {
 	s.queriesMu.Lock()
@@ -163,6 +199,31 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 1. Try to acquire execution slot directly
+	acquiredExec := false
+	select {
+	case s.sem <- struct{}{}:
+		acquiredExec = true
+	default:
+	}
+
+	if !acquiredExec {
+		// Execution capacity full; attempt to enqueue
+		select {
+		case s.queueSem <- struct{}{}:
+			s.queuedTasks.Add(1)
+		default:
+			// Both execution slots and queue are full: reject with 429 BEFORE accepting anything
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "5")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"error": "node queue full, concurrency limit reached",
+			})
+			return
+		}
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -171,10 +232,10 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	s.activeTasks.Add(1)
-	defer s.activeTasks.Add(-1)
-
-	taskID := req.IdempotencyKey
+	taskID := req.TaskID
+	if taskID == "" {
+		taskID = req.IdempotencyKey
+	}
 	if taskID == "" {
 		taskID = fmt.Sprintf("worker-task-%d", time.Now().UnixNano())
 	}
@@ -182,7 +243,58 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	sink := newWorkerEventSink(r.Context(), taskID, s, w, flusher)
 	defer sink.cleanup()
 
+	if !acquiredExec {
+		// Emit initial queued status event so the coordinator attributes the task to this node immediately
+		_, _ = sink.EmitEvent(protocol.EventStatus, protocol.StatusPayload{
+			Status:  protocol.TaskStatusQueued,
+			Message: "task queued waiting for execution slot",
+		})
+
+		timer := time.NewTimer(s.config.QueueTimeout)
+		defer timer.Stop()
+
+		select {
+		case s.sem <- struct{}{}:
+			// Execution slot acquired from queue
+			<-s.queueSem
+			s.queuedTasks.Add(-1)
+			acquiredExec = true
+		case <-timer.C:
+			// Queue wait time exceeded
+			<-s.queueSem
+			s.queuedTasks.Add(-1)
+			_, _ = sink.EmitEvent(protocol.EventError, protocol.ErrorPayload{
+				Code:    "QUEUE_TIMEOUT",
+				Message: "queue timeout: exceeded wait time",
+				Fatal:   true,
+			})
+			return
+		case <-r.Context().Done():
+			// Request canceled by client while queued
+			<-s.queueSem
+			s.queuedTasks.Add(-1)
+			return
+		}
+	} else {
+		// Acquired execution slot immediately: emit running status event for immediate node attribution
+		_, _ = sink.EmitEvent(protocol.EventStatus, protocol.StatusPayload{
+			Status: protocol.TaskStatusRunning,
+		})
+	}
+
+	defer func() {
+		if acquiredExec {
+			<-s.sem
+		}
+	}()
+
+	s.activeTasks.Add(1)
+	defer s.activeTasks.Add(-1)
+
 	log.Printf("[worker] executing task %q (agent: %q, tags: %v)", taskID, req.Agent, req.Tags)
+	if _, isSim := s.runner.(*runner.SimulatedRunner); isSim {
+		log.Printf("[worker] WARNING: task %q is running in SIMULATED mode", taskID)
+	}
 	err := s.runner.Run(r.Context(), req, sink)
 	if err != nil {
 		log.Printf("[worker] task %q execution error: %v", taskID, err)
@@ -241,6 +353,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":       "ok",
 		"active_tasks": s.ActiveTasks(),
+		"queued_tasks": s.QueuedTasks(),
 	})
 }
 
