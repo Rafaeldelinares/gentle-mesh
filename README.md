@@ -241,7 +241,7 @@ Con `-runner=mesh`, si no hay ningún nodo elegible la tarea **falla con `DISPAT
 
 1. Crea un **worktree efímero** a partir de un cache bare local **sin remotos** (`-gentle-shell-repo-cache`), bajo `-gentle-shell-worktrees`.
 2. Ejecuta `gentle-shell` dentro de `bwrap` (`-bwrap-bin`), montando solo lo necesario para el toolchain y el worktree.
-3. Commitea los cambios del agente en una rama **`proposal/<task_id>`** del cache bare, y devuelve el diff (inline si cabe, o como archivo en `-gentle-shell-tasks-dir`).
+3. El agente deja su trabajo **commiteado en la rama `proposal/<task_id>`** del cache bare: el runner le exige el commit en su prompt y después verifica, de forma determinista, que HEAD se movió más allá del ref base. Si el agente termina sin commit, la tarea falla con `NO_COMMIT_PRODUCED`, por más confiado que suene su mensaje final. El runner devuelve el diff (inline si cabe, o como archivo en `-gentle-shell-tasks-dir`).
 4. Elimina el worktree al terminar; la rama de propuesta queda lista para que el operador la revise con `gentle-mesh apply`.
 
 Flags requeridos (típicamente obligatorios) y presupuestos:
@@ -264,6 +264,7 @@ La ejecución real está verificada empíricamente, no descrita:
 * Captura de uso de tokens y costo del paralelismo frente a la ejecución serial ([#121](https://github.com/Rafaeldelinares/gentle-mesh/pull/121)).
 * Worker físico en LAN (Debian 13) resolviendo DNS dentro de `bwrap` ([#124](https://github.com/Rafaeldelinares/gentle-mesh/pull/124)).
 * Tarea sintética resuelta con un ciclo TDD propio dentro del sandbox, 21/21 tests en verde con `-race` ([#128](https://github.com/Rafaeldelinares/gentle-mesh/pull/128)).
+* Validación de inter-host con dos máquinas distintas —una como coordinador, otra como ejecutor— completando una tarea de principio a fin con un agente real dentro del entorno aislado, con el binario de ambas verificado como idéntico byte a byte antes de confiar en el resultado (ver [`docs/PROJECT_HISTORY.md`](docs/PROJECT_HISTORY.md)).
 
 Los E2E viven en `integration/f2/`. La relación entre RFC-001 y RFC-002 en uso: RFC-001 mueve y aísla la tarea (transporte HTTPS/SSE, worktree, territory); RFC-002 la obliga a un contrato verificable (`CognitiveTaskEnvelope`, liquidación con recibos firmados) antes y después de ejecutarla.
 

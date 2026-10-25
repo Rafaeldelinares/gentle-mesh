@@ -13,7 +13,7 @@ Esta demo es de **coordinacion territorial**: repostar tareas, detectar solapami
 Lo que **no** mide:
 
 * **No ejecuta agentes reales.** El binario `pi` del contenedor es `docs/demo/fake-pi`, un script que duerme 8 segundos y devuelve texto. No hay modelo, no hay tokens, no hay edicion de codigo.
-* **No hay aislamiento.** El coordinador corre con `-runner pi`, que lanza el subproceso local **sin sandbox y sin worktree**. El runner de produccion es `-runner gentle-shell`, que ejecuta `gentle-shell` dentro de `bwrap` sobre un worktree efimero y deja la propuesta en una rama `proposal/<task_id>` de un cache bare. Nada de eso aparece aqui.
+* **No hay aislamiento.** El coordinador corre con `-runner pi`, que lanza el subproceso local **sin sandbox y sin worktree**. El runner de produccion es `-runner gentle-shell`, que ejecuta `gentle-shell` dentro de `bwrap` sobre un worktree efimero y verifica que el agente haya dejado la propuesta commiteada en una rama `proposal/<task_id>` de un cache bare. Nada de eso aparece aqui.
 * **No es la validacion de la Fase 2.** La ejecucion real con agentes dentro de `bwrap` (worktrees efimeros, caida de worker con `NODE_LOST`, contabilidad de tokens y costo, worker fisico en LAN, y una tarea TDD resuelta de punta a punta) esta verificada en los E2E de `integration/f2/`, documentada en el apartado 2.5 del `README.md`.
 
 Si lo que queres verificar es que el sistema ejecuta trabajo real de forma aislada, no uses esta demo: usa `-runner gentle-shell` con un cache bare y revisa la propuesta con `gentle-mesh apply`.
