@@ -38,3 +38,11 @@ Con el perfil mínimo de la RFC-002 cerrado de verdad (12/12), el proyecto abre 
 Como candidato de alcance adicional: un modelo de capacidades en dos capas separadas — la capa AGENTE (modelo, skills, presupuestos de ejecución) y la capa NODO/WORKER (hardware, sandbox, toolchains, red, identidad) — para que las fallas de un worker por carencia de algo (una herramienta no instalada, por ejemplo) se reporten con su causa real en vez de perderse como un error genérico.
 
 Ninguno de estos dos frentes es un plazo ni un compromiso — son los próximos pasos razonables dado lo que ya está construido, no una promesa de cuándo estará terminado.
+
+## Un ciclo de auditoría externa, con la misma disciplina
+
+En octubre de 2026, una auditoría independiente sobre el repositorio encontró 50 hallazgos de seguridad y arquitectura. Ninguno se aceptó sin verificación propia contra el código real: de los 12 hallazgos más graves, 9 se confirmaron (varios con un mecanismo distinto al descrito originalmente), 2 no se pudieron reproducir, y 1 tenía la severidad sobrestimada.
+
+El cierre se hizo con cinco pasadas adversariales por frente, reproduciendo cada fallo antes de escribir el arreglo. En uno de los casos, el propio proceso de cierre introdujo una condición de carrera nueva — y la misma verificación que cerró el hallazgo original la encontró y la corrigió en la misma sesión, antes de darla por buena.
+
+El resultado: identidad de nodos con revocación de certificados respaldada por el propio almacenamiento persistente (no por una copia en memoria que podía desincronizarse), aislamiento de ejecución reforzado contra fugas del sandbox, y una primera validación real, con dos máquinas distintas — una como coordinador, otra como ejecutor — completando una tarea de principio a fin con un agente real dentro del entorno aislado. El binario desplegado en ambas máquinas se verificó como idéntico, byte a byte, antes de confiar en el resultado.
