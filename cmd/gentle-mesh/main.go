@@ -1409,7 +1409,7 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) error 
 	agent := fs.String("agent", "worker", "Target subagent name")
 	taskFlag := fs.String("task", "", "Subagent task prompt (required)")
 	repo := fs.String("repo", "", "Optional Git repository URL")
-	branch := fs.String("branch", "", "Git branch this task is booked on: the key of the exclusive branch lock, not a checkout (no runner runs git)")
+	branch := fs.String("branch", "", "Git branch this task is booked on: the key of the exclusive branch lock, not a checkout; the coordinator never touches git (only the gentle-shell runner does, on its own proposal branch)")
 	idempotencyKey := fs.String("idempotency-key", "", "Optional idempotency deduplication key")
 	domain := fs.String("domain", "", "Architectural domain (e.g. auth, database, ui)")
 	blastRadius := fs.String("blast-radius", "isolated-branch", "Blast radius scope (e.g. isolated-branch, read-only, shared-schema, breaking-change)")
@@ -2258,7 +2258,7 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	taskID := fs.String("task", "", "Task ID whose proposal/<task_id> branch to apply (required)")
-	cache := fs.String("cache", "/home/rafael/a2a-golang/cache.git", "Path to the worker bare cache (RepoCache)")
+	cache := fs.String("cache", "", "Path to the worker bare cache (RepoCache); required (the same path the worker uses in -gentle-shell-repo-cache)")
 	repo := fs.String("repo", "", "Target repo to apply the proposal into (default: cwd)")
 	base := fs.String("base", "main", "Base ref to create the merge branch from")
 	if err := fs.Parse(args); err != nil {
@@ -2266,6 +2266,9 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	}
 	if *taskID == "" {
 		return errors.New("-task is required (the proposal/<task_id> branch to apply)")
+	}
+	if *cache == "" {
+		return errors.New("-cache is required (the bare cache where the runner left the proposal branch)")
 	}
 	if *repo == "" {
 		cwd, err := os.Getwd()

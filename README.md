@@ -51,13 +51,9 @@
 
 ## Estado y hoja de ruta
 
-**Hoy:** RFC-001 (transporte distribuido) en main, versión v1.0.3.
+**Hoy:** RFC-001 (transporte distribuido) y el perfil mínimo conforme RFC-002 (12/12 requisitos de liquidación y recibos firmados) en main.
 
-**Próximo (v1.0.4):** está previsto que incluya flags TLS en los clientes de la CLI, una respuesta de error explícita a los comandos RPC no soportados y tests de enrollment de extremo a extremo y de webhooks.
-
-**Después (v1.1.0):** está previsto que la configuración por defecto sea segura (ver [#57](https://github.com/Rafaeldelinares/gentle-mesh/issues/57)) y que haya revocación de certificados (ver [#25](https://github.com/Rafaeldelinares/gentle-mesh/issues/25)).
-
-**Limitaciones conocidas:** no existe revocación de certificados (la validez es de 1 año; ver [#25](https://github.com/Rafaeldelinares/gentle-mesh/issues/25)); el servidor escucha en todas las interfaces de red sin autenticación por defecto (ver [#57](https://github.com/Rafaeldelinares/gentle-mesh/issues/57)).
+**Seguridad por defecto y certificados:** la escucha por defecto es segura en loopback (`127.0.0.1:8080`; ver [#57](https://github.com/Rafaeldelinares/gentle-mesh/issues/57)), y la revocación de certificados mTLS está implementada con desconexión atómica de nodos y cancelación de tareas en vuelo vía `cert-revoke` y `POST /v1/certs/revoke` (ver [#25](https://github.com/Rafaeldelinares/gentle-mesh/issues/25)).
 
 **Nota sobre plazos:** este proyecto es impulsado por la comunidad; no se ofrecen fechas de entrega.
 
@@ -156,7 +152,7 @@ Los worktrees aíslan los ficheros pero el conflicto aparece al integrar; Gentle
 * **Persistencia Dual y Resiliencia ante Caídas (Crash Recovery):**
   * **Streaming de Eventos:** Append-only logs en formato **JSONL** (`<tasks-dir>/{id}.jsonl`). Permite reconexión histórica instantánea vía el header estándar `Last-Event-ID` con consumo de RAM constante $O(1)$.
   * **Estado Maestro y Rehidratación:** Base de datos embebida **SQLite en Go puro** (`modernc.org/sqlite`, `CGO_ENABLED=0`) con modo **WAL** (*Write-Ahead Logging*). Si el servidor se apaga o reinicia, rehidrata automáticamente el catálogo de tareas sin pérdida de estado.
-* **Supervisión Autónoma (parcial):** el runner `pi` detecta inactividad (5 minutos sin salida → `TASK_INACTIVITY_TIMEOUT`). La detección de bucles y el auto-commit WIP **están planificados** (RFC-001 §8) y **no están implementados**.
+* **Ejecución y Supervisión:** cuatro motores (`mesh`, `gentle-shell`, `pi`, `simulated`, ver 2.4). El runner `pi` detecta inactividad (5 minutos sin salida → `TASK_INACTIVITY_TIMEOUT`); el runner `gentle-shell` aplica además presupuestos de tiempo, límite de `tool_call` y aislamiento Bubblewrap. La detección de bucles y el auto-commit WIP **están planificados** (RFC-001 §8) y **no están implementados**.
 
 ```text
 gentle-mesh/
@@ -169,7 +165,7 @@ gentle-mesh/
 │   │   ├── registry/         # Catálogo de nodos, branch locking e idempotencia
 │   │   ├── store/            # TaskStore: MemoryStore y SQLiteStore embebido (WAL mode)
 │   │   ├── task/             # Gestor de tareas, state machine, crash recovery y logger JSONL
-│   │   ├── runner/           # Abstracción Runner, MeshRunner (rol/etiquetas) y SimulatedRunner
+│   │   ├── runner/           # Motores: MeshRunner (routing), GentleShellRunner (bwrap+worktree), PiRunner y SimulatedRunner
 │   │   ├── federation/       # Peering M2M y TerritoryManager para colisiones compartidas
 │   │   └── worker/           # Servidor worker autónomo con despacho remoto HTTP
 ├── docs/
@@ -228,11 +224,57 @@ Gentle Mesh está diseñado para interoperar de forma nativa con interfaces grá
 4. **Conector Nativo HTTPS/SSE (`open-pi-viewer`):**
    * El visor `open-pi-viewer` incorpora soporte de primera clase para `connectionType: 'mesh'`, conectándose directamente por HTTPS/SSE a Gentle Mesh mediante `GentleMeshClient`, traduciendo eventos remotos en tiempo real al bus del visor sin requerir binarios locales de Node.js o Pi CLI.
 
+### 2.4 Motores de ejecución (`-runner`): de la simulación al sandbox
+
+El coordinador no ejecuta agentes: elige un motor de ejecución y delega. Los cuatro valores del flag `-runner` no son equivalentes, y confundirlos es la causa habitual de "creo que el agente está trabajando" cuando en realidad nada se ejecutó.
+
+| `-runner` | Dónde corre | Qué ejecuta | Aislamiento |
+|-----------|-------------|-------------|-------------|
+| `mesh` (default del `server`) | el nodo que el registry elige por rol y etiquetas | lo que ese nodo tenga configurado | el del nodo receptor |
+| `simulated` (default del `worker`) | en memoria | **nada**: emite `tool_call`/`completion` sintéticos y un `thought` con `WARNING: running in SIMULATED mode` | ninguno (no toca el disco) |
+| `pi` | subproceso local | el binario `pi` en el directorio de trabajo | **ninguno**: sin sandbox ni worktree |
+| `gentle-shell` | subproceso aislado | `gentle-shell` (que a su vez invoca `pi`) dentro de `bwrap`, sobre un worktree efímero | **Bubblewrap**, con `HOME` fuera del namespace |
+
+Con `-runner=mesh`, si no hay ningún nodo elegible la tarea **falla con `DISPATCH_FAILED`**: el fallback local simulado está desactivado por defecto (`-local-fallback=true` lo vuelve a habilitar, y solo afecta a `mesh`).
+
+**`gentle-shell` es el runner de producción.** Por cada tarea:
+
+1. Crea un **worktree efímero** a partir de un cache bare local **sin remotos** (`-gentle-shell-repo-cache`), bajo `-gentle-shell-worktrees`.
+2. Ejecuta `gentle-shell` dentro de `bwrap` (`-bwrap-bin`), montando solo lo necesario para el toolchain y el worktree.
+3. El agente deja su trabajo **commiteado en la rama `proposal/<task_id>`** del cache bare: el runner le exige el commit en su prompt y después verifica, de forma determinista, que HEAD se movió más allá del ref base. Si el agente termina sin commit, la tarea falla con `NO_COMMIT_PRODUCED`, por más confiado que suene su mensaje final. El runner devuelve el diff (inline si cabe, o como archivo en `-gentle-shell-tasks-dir`).
+4. Elimina el worktree al terminar; la rama de propuesta queda lista para que el operador la revise con `gentle-mesh apply`.
+
+Flags requeridos (típicamente obligatorios) y presupuestos:
+
+* `-gentle-shell-repo-cache <path>` (**requerido**) — cache bare sin remotos que sirve de base a los worktrees.
+* `-gentle-shell-worktrees <path>` (**requerido**) — directorio padre de los worktrees efímeros.
+* `-gentle-shell-base-ref <ref>` (default `main`) — ref base de la rama de propuesta.
+* `-gentle-shell-total-timeout` (default `15m`) y `-gentle-shell-idle-timeout` (default `5m`) — presupuestos de reloj de pared y de inactividad.
+* `-gentle-shell-max-tool-calls` (default `15`) — corta la tarea si emite más `tool_call` de los permitidos.
+* `-gentle-shell-bin`, `-bwrap-bin`, `-gentle-shell-thinking`, `-gentle-shell-provider`, `-gentle-shell-model`, `-gentle-shell-tasks-dir` — binarios y parámetros que se reenvían a `pi`.
+
+Los worktrees efímeros y las ramas `proposal/*` de intentos fallidos **no se recolectan automáticamente todavía** ([#120](https://github.com/Rafaeldelinares/gentle-mesh/issues/120)).
+
+### 2.5 Validación con agentes y hardware reales (Fase 2)
+
+La ejecución real está verificada empíricamente, no descrita:
+
+* Ejecución de Pi dentro de `bwrap` sobre worktrees efímeros ([#118](https://github.com/Rafaeldelinares/gentle-mesh/pull/118)).
+* Caída de worker bajo sandbox: detección `NODE_LOST`, reaper de leases y re-despacho ([#119](https://github.com/Rafaeldelinares/gentle-mesh/pull/119)).
+* Captura de uso de tokens y costo del paralelismo frente a la ejecución serial ([#121](https://github.com/Rafaeldelinares/gentle-mesh/pull/121)).
+* Worker físico en LAN (Debian 13) resolviendo DNS dentro de `bwrap` ([#124](https://github.com/Rafaeldelinares/gentle-mesh/pull/124)).
+* Tarea sintética resuelta con un ciclo TDD propio dentro del sandbox, 21/21 tests en verde con `-race` ([#128](https://github.com/Rafaeldelinares/gentle-mesh/pull/128)).
+* Validación de inter-host con dos máquinas distintas —una como coordinador, otra como ejecutor— completando una tarea de principio a fin con un agente real dentro del entorno aislado, con el binario de ambas verificado como idéntico byte a byte antes de confiar en el resultado (ver [`docs/PROJECT_HISTORY.md`](docs/PROJECT_HISTORY.md)).
+
+Los E2E viven en `integration/f2/`. La relación entre RFC-001 y RFC-002 en uso: RFC-001 mueve y aísla la tarea (transporte HTTPS/SSE, worktree, territory); RFC-002 la obliga a un contrato verificable (`CognitiveTaskEnvelope`, liquidación con recibos firmados) antes y después de ejecutarla.
+
 ---
 
 ## 3. Demostración Rápida en Local (Entorno Seguro)
 
 > **Demo en vivo:** [docs/DEMO.md](docs/DEMO.md) — coordinator local sin TLS, dos tareas con superficies solapadas que demuestra la cola automática.
+
+> ⚠️ **Qué demuestra esta sección, y qué no.** La demo levanta el coordinador con `-runner pi` (subproceso local, **sin sandbox ni worktree**) usando `docs/demo/fake-pi`, un script que duerme y devuelve texto: sirve para ver el territorio y la cola, **no** para juzgar el aislamiento ni la calidad de la ejecución. Para ejecución real con agentes dentro de `bwrap` sobre worktrees efímeros, mira el runner `gentle-shell` (2.4), sus flags y los E2E de `integration/f2/`.
 
 ### Requisitos
 * Go 1.26.9+ (mínimo declarado en `go.mod`) o Docker / Docker Compose.
@@ -287,12 +329,13 @@ go run ./cmd/gentle-mesh run -coordinator http://localhost:8080 \
   -surfaces "pkg/auth/jwt.go"
 ```
 
-> **`-branch` / `git_branch` no es un checkout.** El campo `git_branch` de `POST /v1/tasks` (y el flag `-branch` del CLI)
+> **`-branch` / `git_branch` es una reserva, no un checkout.** El campo `git_branch` de `POST /v1/tasks` (y el flag `-branch` del CLI)
 > es la **clave del lock de rama**: reserva en exclusiva el par `repo`+`rama` para que dos tareas no trabajen el mismo
 > branch a la vez, y entra en el territorio (conflicto `branch_locked`, `HTTP 409`; en modo `queue` la segunda tarea
-> espera). **Ningún runner ejecuta git**, así que la rama nunca se crea, no se hace checkout ni se valida que exista:
-> sólo se guarda en la columna `branch` de la tarea y en el lock, que vive **en memoria** del coordinador y no sobrevive
-> a un reinicio.
+> espera). El coordinador **nunca hace checkout ni valida que la rama exista**: sólo guarda el valor en la columna `branch`
+> de la tarea y en el lock, que vive **en memoria** y no sobrevive a un reinicio. El único motor que toca Git es
+> `-runner gentle-shell`, y lo hace **en el worker**, sobre un cache bare local y un worktree efímero, creando su propia
+> rama `proposal/<task_id>` (ver 2.4).
 
 ### Aplicar la propuesta de una tarea con `apply`
 
@@ -305,7 +348,7 @@ go run ./cmd/gentle-mesh apply -task <task_id> \
 ```
 
 - `-task` (required): ID de la tarea cuya rama `proposal/<task_id>` se aplica.
-- `-cache` (default `/home/rafael/a2a-golang/cache.git`): ruta al cache bare donde el runner deja la propuesta.
+- `-cache` (**requerido**): ruta al cache bare donde el runner deja la propuesta (el mismo valor que el worker usa en `-gentle-shell-repo-cache`).
 - `-repo` (default: cwd): ruta al repo donde se crea la rama local.
 - `-base` (default `main`): ref base desde la que se crea la rama merge.
 
@@ -438,9 +481,15 @@ gentle-mesh cert-issue -tls-dir /tmp/mesh/tls -node-id worker-alpha \
 # Listar certificados emitidos
 gentle-mesh cert-list -tls-dir /tmp/mesh/tls
 
-# Revocar certificado (futuro: CRL)
-gentle-mesh cert-revoke -node-id worker-alpha
+# Revocar certificado contra el almacén local
+gentle-mesh cert-revoke -node-id worker-alpha -db-path /tmp/mesh/gentle-mesh.db
+
+# Revocar contra un coordinador remoto (requiere el token de administración)
+gentle-mesh cert-revoke -node-id worker-alpha \
+  -coordinator https://coordinator:8443 -token <token-admin>
 ```
+
+La revocación está implementada, no pendiente: el coordinador expone `POST /v1/certs/revoke` (token de administración; sin él responde `503` en modo fail-closed), marca el certificado en su almacén, **desregistra el nodo** y **cancela sus tareas en vuelo** con el código `NODE_REVOKED`, de forma atómica ([#25](https://github.com/Rafaeldelinares/gentle-mesh/issues/25)). Lo que aún no hay es distribución de una **CRL** descargable por un tercero que no hable con el coordinador.
 
 #### 3.1.6 Flags TLS/mTLS
 
@@ -455,6 +504,7 @@ gentle-mesh cert-revoke -node-id worker-alpha
 
 **Worker/Cliente:**
 - `-ca <path>` — CA para verificar el servidor
+- `-ca-cert-hash sha256:<hex>` — huella fijada del CA: el worker lo descarga de `GET /v1/mesh/ca` y lo rechaza si no coincide
 - `-cert <path>` — Certificado de cliente (mTLS)
 - `-key <path>` — Clave del certificado (mTLS)
 - `-insecure-skip-tls-verify` — Para desarrollo (NO usar en producción)
