@@ -1,5 +1,7 @@
 # Gentle Mesh 🌐
 
+[![CI](https://github.com/Rafaeldelinares/gentle-mesh/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Rafaeldelinares/gentle-mesh/actions/workflows/ci.yml)
+
 > **Transporte Distribuido Federado, Ejecución Remota de Subagentes y Consciencia Situacional para el Ecosistema Pi & Gentle AI.**
 
 <p align="center">
@@ -33,7 +35,7 @@
 - No sustituye a las sesiones remotas de pi: pi te conecta a un agente en otra máquina; Gentle Mesh coordina a varios.
 - La parte de recibos firmados (RFC-002) es experimental y no está en el binario.
 
-**RFC-002 (experimental).** El protocolo de liquidación entre agentes con recibos Ed25519 firmados y cadena SHA-256 es una extensión separada. No está integrada en el binario actual. A fecha de hoy, ningún nodo del repositorio cumple el perfil mínimo conforme (solo 2 de los 12 requisitos están demostrados por tests automatizados). El estado de conformidad vive en la rama [`feat/rfc-002-settlement`](https://github.com/Rafaeldelinares/gentle-mesh/tree/feat/rfc-002-settlement) y en el issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70).
+**RFC-002.** El protocolo de liquidación entre agentes con recibos Ed25519 firmados y cadena SHA-256 está implementado y probado en `main`, cumpliendo el 100% (12/12) de los requisitos del perfil mínimo conforme respaldado por tests automatizados y cerrado bajo el issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70). Ver la matriz completa en [`docs/rfcs/002-objectives-and-non-goals.md`](docs/rfcs/002-objectives-and-non-goals.md).
 
 ---
 
@@ -59,7 +61,28 @@
 
 **Nota sobre plazos:** este proyecto es impulsado por la comunidad; no se ofrecen fechas de entrega.
 
-**Sobre RFC-002:** el protocolo de recibos firmados es experimental, no está integrado en el binario y ningún nodo cumple hoy el perfil mínimo conforme (solo 2 de los 12 requisitos están demostrados por tests automatizados). Ver el estado de conformidad en la rama `feat/rfc-002-settlement` y en el issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70).
+**Sobre RFC-002:** el protocolo de recibos firmados y liquidación contractual entre agentes cumple el 100% (12/12) de los requisitos del perfil mínimo conforme en `main`, verificado con tests automatizados continuos.
+
+#### Conformidad del Perfil Mínimo RFC-002 (12/12)
+
+| Requisito | Qué significa | Estado | Test representativo |
+|-----------|---------------|--------|---------------------|
+| **S1** — Identidad fuerte mTLS ligada a agent_id | Cada agente se autentica con un certificado criptográfico propio, no con una contraseña o token que se pueda copiar fácilmente. El certificado está atado a su identidad, así que nadie puede hacerse pasar por otro agente. | cumplido | `integration/agent/s1_mtls_identity_test.go:44` |
+| **S2** — Verificación de firma Ed25519 antes de mutar | Antes de que un agente pueda cambiar algo en el sistema, se comprueba que la orden viene firmada con su clave privada. Si la firma no cuadra, la operación se rechaza — evita que alguien inyecte comandos falsos. | cumplido | `integration/agent/s2_signature_verification_test.go:42` |
+| **S3** — Capacidades deny-by-default y perfil mínimo | Por defecto un agente no puede hacer nada; solo tiene permiso para las acciones concretas que se le han habilitado explícitamente. Es el principio de "mínimo privilegio" aplicado estrictamente. | cumplido | `integration/agent/s3_capabilities_test.go:40` |
+| **S6** — Cero subshells y sandbox allowlist en precondiciones | El sistema no ejecuta comandos de shell arbitrarios (que podrían usarse para escapar del sandbox), y solo permite las operaciones que están en una lista blanca explícita. | cumplido | `integration/agent/s6_preconditions_test.go:20` |
+| **S7** — Cadena inviolable y contrafirmas con dominio separado | Los recibos/eventos se encadenan criptográficamente (como un mini-blockchain) y cada contraparte firma con su propia clave en un "dominio" separado, para que nadie pueda falsificar o reordenar el historial. | cumplido | `pkg/receipt/chain_adversarial_test.go:30` |
+| **S9** — Estricto protocolo v2 sin downgrade | El sistema rechaza intentos de usar una versión antigua del protocolo (que podría tener vulnerabilidades ya corregidas) para forzar un comportamiento menos seguro. | cumplido | `pkg/envelope/version_test.go:11` |
+| **R1** — Idempotencia determinista por envelope_id | Si la misma petición llega duplicada (por un reintento de red, por ejemplo), el sistema la reconoce y no la ejecuta dos veces. | cumplido | `integration/agent/r1_idempotence_test.go:44` |
+| **R2** — Leases con expiración y reaper autónomo | Cuando un agente "reserva" una tarea, esa reserva caduca sola si el agente se cuelga o desconecta, y un proceso de limpieza automático ("reaper") libera esas tareas abandonadas. | cumplido | `integration/agent/r2_lease_expiration_test.go:35` |
+| **R5** — Estados terminales claros y absorción CAS (RESOLVED) | Una tarea, una vez resuelta, queda en un estado final e inmutable; el mecanismo que la marca como resuelta evita condiciones de carrera (dos procesos intentando resolverla a la vez). | cumplido | `pkg/envelope/contract_state_test.go:15` |
+| **R7** — Firmas deterministas (1000 iteraciones SQLite) | Firmar el mismo dato siempre produce la misma firma, sin aleatoriedad — se probó 1000 veces contra la base SQLite para asegurar que no hay variabilidad que rompa la verificación. | cumplido | `pkg/envelope/signer_test.go:241` |
+| **A1** — Seguro por defecto sin configurar (minimal profile) | Si no configuras nada, el sistema arranca ya en modo seguro (sin permisos abiertos), no al revés. | cumplido | `integration/agent/a1_zero_config_test.go:57` |
+| **A2** — Descubrimiento por intento vía /preflight estructurado | Un agente puede preguntar de antemano, mediante un endpoint /preflight, si una acción que quiere hacer sería aceptada o no — sin tener que intentarla a ciegas. | cumplido | `integration/agent/a2_preflight_test.go:51` |
+
+Ver la matriz completa de todos los objetivos en [docs/rfcs/002-objectives-and-non-goals.md](docs/rfcs/002-objectives-and-non-goals.md) y el histórico en el issue [#70](https://github.com/Rafaeldelinares/gentle-mesh/issues/70).
+
+**Para la historia y el horizonte del proyecto, ver [docs/PROJECT_HISTORY.md](docs/PROJECT_HISTORY.md).**
 
 **Roadmap completo y lo que no haremos:** [ROADMAP.md](ROADMAP.md).
 
@@ -222,9 +245,9 @@ go test -v -race ./...
 
 ### Levantar el coordinador en local (sin TLS, desarrollo)
 ```bash
-go run ./cmd/gentle-mesh server -addr :8080 -workspace . -territory-mode queue
+go run ./cmd/gentle-mesh server -workspace . -territory-mode queue
 ```
-*(La primera compilación con `go run` puede tardar más que la ejecución de un binario ya compilado. No es un benchmark.)*
+*(Por defecto escucha de forma segura en `127.0.0.1:8080`. La primera compilación con `go run` puede tardar más que la ejecución de un binario ya compilado. No es un benchmark.)*
 El flag `-territory-mode` acepta `queue` (por defecto), `warn`, `strict` o `disabled`; consulta el semáforo inteligente en la sección 2.2.
 
 Para el camino TLS/mTLS usa `server -addr :8443 -tls -tls-init -require-mtls`. Ten en cuenta que los clientes CLI (`nodes`, `radar`, `run`, `rpc`) todavía **no** presentan certificado de cliente, así que no alcanzan un coordinador con `-require-mtls` hasta la v1.0.4.
@@ -270,6 +293,30 @@ go run ./cmd/gentle-mesh run -coordinator http://localhost:8080 \
 > espera). **Ningún runner ejecuta git**, así que la rama nunca se crea, no se hace checkout ni se valida que exista:
 > sólo se guarda en la columna `branch` de la tarea y en el lock, que vive **en memoria** del coordinador y no sobrevive
 > a un reinicio.
+
+### Aplicar la propuesta de una tarea con `apply`
+
+Después de que un worker termina una tarea y produce una rama `proposal/<task_id>` en el cache bare (`RepoCache`), el operador puede **materializarla como una rama local** en el repo de destino para revisarla con `git log` / `git diff` normales y decidir el merge final a mano. **Nunca se hace push, nunca se mergea a `main`, nunca se modifica un remoto**: el resultado es siempre una rama local nombrada `proposal-merge/<task_id>` lista para inspección.
+
+```bash
+go run ./cmd/gentle-mesh apply -task <task_id> \
+  -cache /path/to/worker-cache.git \
+  -repo /path/to/target-repo
+```
+
+- `-task` (required): ID de la tarea cuya rama `proposal/<task_id>` se aplica.
+- `-cache` (default `/home/rafael/a2a-golang/cache.git`): ruta al cache bare donde el runner deja la propuesta.
+- `-repo` (default: cwd): ruta al repo donde se crea la rama local.
+- `-base` (default `main`): ref base desde la que se crea la rama merge.
+
+El subcomando:
+1. Añade el cache como **remote temporal** `apply-cache-<task_id>` (se elimina siempre, incluso en error).
+2. Hace **fetch** solo del refspec `proposal/<task_id>:proposal/<task_id>` (forzado, sobreescribe la rama local si ya existía de un apply anterior).
+3. Verifica que la propuesta tiene **al menos un commit ahead** de la base y que el **working tree** del repo está limpio.
+4. Crea la rama `proposal-merge/<task_id>` desde la base y mergea la propuesta con `--no-ff` (commit de merge explícito).
+5. Reporta qué hacer a continuación (`git log` / `git diff` para inspeccionar, `git checkout main && git branch -D proposal-merge/<task_id>` para descartar).
+
+**No se hace push** bajo ningún concepto. La rama vive solo en el repo del operador hasta que él decida qué hacer con ella.
 
 ### Puente Drop-in JSON-RPC (`rpc`) para Open Pi Viewer
 
@@ -356,6 +403,29 @@ gentle-mesh worker \
   -ca /tmp/mesh/tls/gentle-mesh-ca.pem \
   -cert /tmp/mesh/tls/worker-alpha.pem \
   -key /tmp/mesh/tls/worker-alpha.key
+```
+
+El certificado de servidor se emite siempre con `localhost` y los loopbacks como
+SAN. Para servir sobre una IP de LAN hay que pedirla explícitamente, o cualquier
+cliente que verifique el nombre falla con `x509: certificate is valid for
+localhost, not <ip>`:
+
+```bash
+gentle-mesh server -tls -tls-dir /var/mesh/tls -require-mtls \
+  -addr 192.168.1.26:8630 -tls-san 192.168.1.26
+```
+
+`server` y `worker` toman su token Bearer de `$GENTLE_MESH_TOKEN` cuando no se
+pasa `-token`, de modo que la credencial no aparezca nunca en la lista de
+argumentos del proceso (que cualquier usuario local puede leer con `ps`). Un
+flag explícito gana sobre la variable:
+
+```bash
+export GENTLE_MESH_TOKEN="$(cat /var/mesh/.token)"   # archivo 0600
+gentle-mesh server -tls -tls-dir /var/mesh/tls -require-mtls -addr 192.168.1.26:8630
+gentle-mesh worker -coordinator https://192.168.1.26:8630 -node-id worker-alpha \
+  -cert /var/mesh/tls/worker-alpha.pem -key /var/mesh/tls/worker-alpha.key \
+  -ca /var/mesh/tls/gentle-mesh-ca.pem
 ```
 
 #### 3.1.5 Comandos de Gestión de Certificados
@@ -786,6 +856,37 @@ Este repositorio se desarrolla con ayuda de agentes de IA (flujo de Gentle-AI) b
 
 ---
 
-## 6. Licencia
+## ¿Qué es RFC-002?
 
-Código abierto bajo licencia MIT; ver [LICENSE](LICENSE). Si el proyecto se integra en la organización Gentleman-Programming, cualquier cambio de licencia se acordaría con sus mantenedores.
+Si **Gentle Mesh v1 (RFC-001)** es el *sistema circulatorio* (transporte HTTPS/SSE, persistencia SQLite WAL y semáforos Git), **RFC-002** es el *sistema cognitivo y contractual*.
+
+Resuelve tres problemas críticos en la colaboración autónoma entre agentes:
+1. **Contratos en lugar de strings libres:** Mediante `CognitiveTaskEnvelope`.
+2. **Negociación previa de idoneidad:** Mediante `Pre-flight Handshake` de recursos (herramientas, GPU, repositorios).
+3. **Liquidación verificable:** Mediante `Task Settlement` determinista, eliminando la falacia del "Green Checkbox".
+
+---
+
+## Documentación Canónica
+
+* 🎯 **[Objetivos y No-Objetivos (Criterio de Decisión)](docs/rfcs/002-objectives-and-non-goals.md)**
+* 📄 **[Especificación Técnica RFC-002](docs/rfcs/002-cognitive-agent-network.md)**
+* 📋 **[Informe de Asesoría Técnica para Terceros](docs/architecture/informe-asesoria-red-cognitiva.md)**
+* 🌐 **[Informe Interactivo HTML](docs/architecture/informe-asesoria-red-cognitiva.html)**
+* 🏛️ **[Convenciones y Competencias de Desarrollo](AGENTS.md)**
+
+---
+
+## Recuperación de tareas: NODE_LOST y re-dispatch del emisor
+
+Cuando un worker muere durante la ejecución de una tarea (validado por el E2E de recuperación de la Fase 2, con el runner real y pi ejecutando dentro del sandbox):
+
+1. **El coordinador NO re-despacha automáticamente.** La tarea en vuelo queda `failed` con código `NODE_LOST` y el territorio deja de ser despachable: el registry marca al worker muerto `offline` a los 3× heartbeat-timeout (`PruneStaleNodes` no borra el nodo — un nodo `offline` nunca recibe work). La reintención es una decisión del emisor.
+2. **El re-dispatch es responsabilidad del emisor y debe ser un contrato nuevo** (nuevo `EnvelopeID`). El `contract_id` del intento fallido ya lleva su liquidación: si el lease venció, el reaper de expiración emite el recibo `SETTLEMENT_TIMEOUT` de forma autónoma, y la idempotencia por `contract_id` (R1) impide liquidar un segundo intento del mismo contrato como `SETTLED_CLEAN`. Cadena final observada: `[SETTLEMENT_TIMEOUT(intento A), SETTLED_CLEAN(intento B)]` — sin recibos fantasma ni liquidaciones dobles.
+3. **Residuos del intento muerto**: el sandbox bwrap muere con el worker (el kill del proceso derriba el árbol completo); quedan un worktree efímero y una branch `proposal/<taskID>` sin commit en el repo cache. No hay colisión (cada intento es dueño de su `proposal/<taskID>`), pero acumulan sin GC — tracked en issue aparte.
+
+---
+
+## Licencia
+
+Código abierto bajo licencia MIT; ver [LICENSE](LICENSE).

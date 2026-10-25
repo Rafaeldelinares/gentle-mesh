@@ -257,11 +257,23 @@ func (s *SQLiteTokenStore) UseToken(ctx context.Context, token, nodeID string) (
 	if nodeID != "" {
 		usedBy = nodeID
 	}
-	query := `UPDATE enrollment_tokens 
-		SET uses = uses + 1, used_at = ?, used_by = COALESCE(?, used_by) 
+	// #7b: used_by must accumulate every node that consumed a multi-use
+	// token, not just the last one. When the caller has no nodeID (e.g.
+	// anonymous coordinator operations) we preserve the existing used_by
+	// instead of clearing it; otherwise we concatenate the new node_id
+	// with a comma separator, skipping the separator when used_by was
+	// previously empty. The display layer (token-list) joins the cells
+	// back into a single comma-separated string.
+	query := `UPDATE enrollment_tokens
+		SET uses = uses + 1, used_at = ?,
+		    used_by = CASE
+		        WHEN COALESCE(?, '') = '' THEN used_by
+		        WHEN used_by IS NULL OR used_by = '' THEN ?
+		        ELSE used_by || ',' || ?
+		    END
 		WHERE token = ? AND uses < max_uses AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at >= ?)`
 
-	res, err := s.db.ExecContext(ctx, query, now, usedBy, token, now)
+	res, err := s.db.ExecContext(ctx, query, now, usedBy, usedBy, usedBy, token, now)
 	if err != nil {
 		return nil, fmt.Errorf("failed to use token: %w", err)
 	}

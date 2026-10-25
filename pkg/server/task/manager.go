@@ -170,6 +170,7 @@ func (m *TaskManager) CreateTask(req protocol.TaskRequest) (*ManagedTask, error)
 		return nil, fmt.Errorf("failed to initialize task logger: %w", err)
 	}
 
+	req.TaskID = taskID
 	task := NewManagedTask(taskID, req, ctx, cancel, logger)
 
 	if m.store != nil {
@@ -468,6 +469,38 @@ func (m *TaskManager) CleanupExpired() {
 	}
 }
 
+// FailTasksOfNode finalizes as failed NODE_LOST every running task attributed to
+// nodeID, cancelling its context so the runner releases the connection. It respects
+// the first cause (tasks already terminal are skipped). Returns the number of tasks
+// finalized.
+func (m *TaskManager) FailTasksOfNode(nodeID, code, message string) int {
+	if nodeID == "" {
+		return 0
+	}
+	m.mu.RLock()
+	tasks := make([]*ManagedTask, 0, len(m.tasks))
+	for _, t := range m.tasks {
+		if t == nil {
+			continue
+		}
+		t.mu.RLock()
+		match := t.NodeID == nodeID && t.Status == protocol.TaskStatusRunning
+		t.mu.RUnlock()
+		if match {
+			tasks = append(tasks, t)
+		}
+	}
+	m.mu.RUnlock()
+
+	finalized := 0
+	for _, t := range tasks {
+		if err := m.FailTask(t.TaskID, code, message); err == nil {
+			finalized++
+		}
+	}
+	return finalized
+}
+
 // TrackRunner increments the active runner WaitGroup and returns a release func to be deferred by the runner goroutine.
 func (m *TaskManager) TrackRunner() func() {
 	m.runnerWg.Add(1)
@@ -580,8 +613,18 @@ func (m *TaskManager) rehydrateTask(rec *store.TaskRecord) *ManagedTask {
 	}
 
 	if rec.ResultSummary != "" || rec.Status == protocol.TaskStatusCompleted {
-		task.Completion = &protocol.CompletionPayload{
-			Result: rec.ResultSummary,
+		// #9c: the executed_locally flag is persisted in its own column
+		// (store.TaskRecord.ExecutedLocally) and read back here. We do
+		// #9c: the executed_locally flag is persisted in its own column
+		// (store.TaskRecord.ExecutedLocally) and read back here. We do
+		// NOT touch rec.ResultSummary at all, so a real ResultSummary
+		// that happens to end with the literal string "\n[executed_locally=true]"
+		// stays intact and does not get interpreted as a marker.
+		if rec.ResultSummary != "" || rec.Status == protocol.TaskStatusCompleted {
+			task.Completion = &protocol.CompletionPayload{
+				Result:          rec.ResultSummary,
+				ExecutedLocally: rec.ExecutedLocally,
+			}
 		}
 	}
 
@@ -624,27 +667,34 @@ func (m *TaskManager) syncTaskToStore(t *ManagedTask) {
 		errMsg = t.Error.Message
 	}
 	var summary string
+	var executedLocally bool
 	if t.Completion != nil {
 		summary = t.Completion.Result
+		// #9c: the executed_locally flag is persisted in its own column
+		// (store.TaskRecord.ExecutedLocally). We do NOT touch
+		// t.Completion.Result, so a real ResultSummary that happens to
+		// end with the literal marker string stays intact.
+		executedLocally = t.Completion.ExecutedLocally
 	}
 
 	record := &store.TaskRecord{
-		TaskID:        t.TaskID,
-		Branch:        t.Request.GitBranch,
-		Repository:    t.Request.GitRepo,
-		Domain:        t.Domain,
-		BlastRadius:   t.BlastRadius,
-		Phase:         t.Phase,
-		CurrentAction: t.CurrentAction,
-		Status:        t.Status,
-		WorkerID:      t.NodeID,
-		Tags:          append([]string(nil), t.Request.Tags...),
-		EditSurfaces:  append([]string(nil), t.EditSurfaces...),
-		CreatedAt:     t.CreatedAt,
-		StartedAt:     t.StartedAt,
-		FinishedAt:    t.FinishedAt,
-		ErrorMessage:  errMsg,
-		ResultSummary: summary,
+		TaskID:          t.TaskID,
+		Branch:          t.Request.GitBranch,
+		Repository:      t.Request.GitRepo,
+		Domain:          t.Domain,
+		BlastRadius:     t.BlastRadius,
+		Phase:           t.Phase,
+		CurrentAction:   t.CurrentAction,
+		Status:          t.Status,
+		WorkerID:        t.NodeID,
+		Tags:            append([]string(nil), t.Request.Tags...),
+		EditSurfaces:    append([]string(nil), t.EditSurfaces...),
+		CreatedAt:       t.CreatedAt,
+		StartedAt:       t.StartedAt,
+		FinishedAt:      t.FinishedAt,
+		ErrorMessage:    errMsg,
+		ResultSummary:   summary,
+		ExecutedLocally: executedLocally,
 	}
 	taskID := t.TaskID
 	status := t.Status

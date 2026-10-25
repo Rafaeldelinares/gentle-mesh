@@ -296,6 +296,16 @@ func (s *TerritoryScheduler) drainUnderLock() []*task.ManagedTask {
 	return toStart
 }
 
+// finishTask runs the cleanup every ending shares: webhook notification and complete(), which
+// releases the branch lock and the territory. Calling it twice is harmless: the lock release is
+// checked against the task that owns it and the queue drain is idempotent.
+func (s *TerritoryScheduler) finishTask(mt *task.ManagedTask) {
+	if s.webhookDispatcher != nil {
+		s.notifyWebhooks(mt)
+	}
+	s.complete(mt)
+}
+
 // startRunner launches the configured runner asynchronously, guarding it with a panic
 // recovery that emits a RUNNER_PANIC error and always releasing scheduler resources.
 func (s *TerritoryScheduler) startRunner(mt *task.ManagedTask) {
@@ -305,8 +315,13 @@ func (s *TerritoryScheduler) startRunner(mt *task.ManagedTask) {
 	}
 
 	r := s.runner
+
 	go func() {
+		// One slot for the whole life of the task, retries included: the WaitGroup never goes back
+		// to zero between attempts, so a shutdown always waits for the pending retry.
 		defer done()
+		// And one cleanup for the real end: webhooks + complete (which releases the branch lock
+		// and the territory), whether the task completes, fails, times out or panics.
 		defer func() {
 			if rec := recover(); rec != nil {
 				log.Printf("scheduler runner panic on task %s: %v\n%s", mt.TaskID, rec, debug.Stack())
@@ -318,27 +333,45 @@ func (s *TerritoryScheduler) startRunner(mt *task.ManagedTask) {
 				// A panicking runner leaves the task running forever otherwise.
 				s.failTask(mt, "RUNNER_PANIC", fmt.Sprintf("runner panicked: %v", rec))
 			}
-			// Notify webhooks if dispatcher is configured
-			if s.webhookDispatcher != nil {
-				s.notifyWebhooks(mt)
-			}
-			s.complete(mt)
+			s.finishTask(mt)
 		}()
 
-		if r == nil {
-			return
-		}
-		err := r.Run(mt.Context(), mt.Request, mt)
-		if err != nil {
-			// Task failed - handle retry if configured
-			if mt.Request.MaxRetries > 0 {
-				s.handleRetry(mt, err)
-				return // Don't call complete, retry will do it
+		for {
+			if r == nil {
+				return
 			}
-			// No retry configured: fail the task with an explicit cause, so the state, the
-			// SSE error event and the store all carry the reason.
-			code, message := failureCause(err)
-			s.failTask(mt, code, message)
+			err := r.Run(mt.Context(), mt.Request, mt)
+			if err == nil {
+				return
+			}
+			// A runner may have finalized the task itself (for example by emitting an error
+			// event): a terminal task must not be retried, and the recorded cause wins.
+			switch mt.CurrentStatus() {
+			case protocol.TaskStatusCompleted, protocol.TaskStatusFailed, protocol.TaskStatusCanceled:
+				return
+			}
+			delay, retry := s.handleRetry(mt, err)
+			if !retry {
+				// Not retryable, or the retry budget is exhausted: fail the task with the cause of
+				// the last attempt, so the state, the SSE event and the store all carry it.
+				code, message := failureCause(err)
+				s.failTask(mt, code, message)
+				return
+			}
+			// The retry happens here, in this same goroutine: the task keeps running and keeps its
+			// branch lock and its territory until it really finishes.
+			timer := time.NewTimer(delay)
+			select {
+			case <-mt.Context().Done():
+				timer.Stop()
+				// Cancelled, shutting down, or out of time while waiting: never call the runner
+				// again. A timeout is finalized with its own cause and the same cleanup.
+				if errors.Is(mt.Context().Err(), context.DeadlineExceeded) {
+					s.failTask(mt, "TASK_TIMEOUT", "task timeout")
+				}
+				return
+			case <-timer.C:
+			}
 		}
 	}()
 }
@@ -367,67 +400,52 @@ func failureCause(err error) (string, string) {
 		return "TASK_TIMEOUT", "task timeout"
 	case errors.Is(err, context.Canceled):
 		return "TASK_CANCELED", "task canceled"
+	case errors.Is(err, runner.ErrNodeLost):
+		// The node accepted the task and its stream ended without a result: the node is lost.
+		// The task is never retried (at-most-once), so the client decides whether to resend it.
+		return "NODE_LOST", "node lost: stream ended without a result"
 	default:
 		return "DISPATCH_FAILED", fmt.Sprintf("dispatch failed: %v", err)
 	}
 }
 
-// handleRetry schedules a retry for the task if retries remain.
-func (s *TerritoryScheduler) handleRetry(mt *task.ManagedTask, lastErr error) {
-	// Track retry count in request (stored in request for persistence)
-	currentRetry := 0
-	if mt.Request.Context != "" {
-		// Extract retry count from context if stored
-		if n, _ := fmt.Sscanf(mt.Request.Context, "retry:%d:", &currentRetry); n == 0 {
-			currentRetry = 0
+// retryableCause reports whether a runner error is worth retrying. Only DISPATCH_FAILED (an
+// unclassified runner or dispatch failure) is retried: TASK_TIMEOUT, TASK_CANCELED and NODE_LOST
+// are terminal, and RUNNER_PANIC never reaches here (it is handled where the panic is recovered).
+func retryableCause(err error) bool {
+	code, _ := failureCause(err)
+	return code == "DISPATCH_FAILED"
+}
+
+// handleRetry schedules a retry when the cause is retryable and retries remain, and reports whether
+// the task will be retried. The task keeps running (no state transition), keeps its branch lock and
+// its territory, and the runner is called again after the delay; the lock and the territory are
+// released once, when the task really finishes.
+func (s *TerritoryScheduler) handleRetry(mt *task.ManagedTask, lastErr error) (time.Duration, bool) {
+	currentRetry := mt.RetryAttempts()
+	if !retryableCause(lastErr) || currentRetry >= mt.Request.MaxRetries {
+		if mt.Request.MaxRetries > 0 {
+			log.Printf("scheduler: task %s finished after %d/%d retries: %v", mt.TaskID, currentRetry, mt.Request.MaxRetries, lastErr)
 		}
+		return 0, false
 	}
 
-	if currentRetry >= mt.Request.MaxRetries {
-		// Max retries reached - fail with the cause of the last attempt
-		log.Printf("scheduler: task %s failed after %d retries: %v", mt.TaskID, currentRetry, lastErr)
-		code, message := failureCause(lastErr)
-		s.failTask(mt, code, message)
-		return
-	}
-
-	// Calculate delay
 	retryDelay := mt.Request.RetryDelay
 	if retryDelay <= 0 {
 		retryDelay = 30 // default 30 seconds
 	}
 
-	nextRetry := currentRetry + 1
+	nextRetry := mt.IncRetryAttempts()
 	log.Printf("scheduler: task %s will retry %d/%d in %ds: %v", mt.TaskID, nextRetry, mt.Request.MaxRetries, retryDelay, lastErr)
 
-	// Schedule retry
-	go func() {
-		time.Sleep(time.Duration(retryDelay) * time.Second)
+	_, _ = mt.EmitEvent(protocol.EventRetry, protocol.RetryPayload{
+		RetryNumber:   nextRetry,
+		MaxRetries:    mt.Request.MaxRetries,
+		RetryAfterSec: retryDelay,
+		LastError:     lastErr.Error(),
+	})
 
-		// Re-enqueue the task for scheduling
-		s.mu.Lock()
-		defer s.mu.Unlock()
-
-		// Reset task status to queued
-		if err := mt.TransitionTo(protocol.TaskStatusQueued); err != nil {
-			log.Printf("scheduler: failed to re-queue task %s for retry: %v", mt.TaskID, err)
-			return
-		}
-
-		// Update context to track retry count
-		mt.Request.Context = fmt.Sprintf("retry:%d:", nextRetry)
-
-		// Add to queue (by priority)
-		s.enqueueByPriorityLocked(mt)
-
-		// Emit retry event
-		_, _ = mt.EmitEvent(protocol.EventRetry, protocol.RetryPayload{
-			RetryNumber:   nextRetry,
-			MaxRetries:    mt.Request.MaxRetries,
-			RetryAfterSec: retryDelay,
-			LastError:     lastErr.Error(),
-		})
-	}()
+	return time.Duration(retryDelay) * time.Second, true
 }
 
 // notifyWebhooks sends webhook notifications based on task final status.

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
+	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
 )
 
 func TestCLI_UsageAndHelp(t *testing.T) {
@@ -356,6 +358,9 @@ func TestServer_StartupAndGracefulShutdown(t *testing.T) {
 
 	if !strings.Contains(stdout.String(), "Coordinator stopped gracefully") {
 		t.Errorf("expected shutdown log in stdout, got: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "rate limiting is DISABLED") {
+		t.Errorf("expected notice that rate limiting is DISABLED in stdout, got: %s", stdout.String())
 	}
 }
 
@@ -1584,16 +1589,100 @@ func TestServer_RunnerFlag(t *testing.T) {
 	})
 }
 
-func TestCLI_CertRevoke_ReturnsError(t *testing.T) {
+func TestCLI_CertRevoke_DirectDBAndRemote(t *testing.T) {
 	ctx := context.Background()
-	var stdout, stderr bytes.Buffer
-	err := runCLI(ctx, []string{"cert-revoke", "-node-id", "test-node"}, &stdout, &stderr)
-	if err == nil {
-		t.Fatal("expected cert-revoke to return error, got nil")
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "mesh.db")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
 	}
-	expectedMsg := "la revocación de certificados no está implementada en esta versión; ver issue #25"
-	if !strings.Contains(err.Error(), expectedMsg) {
-		t.Fatalf("expected error containing %q, got: %v", expectedMsg, err)
+	defer db.Close()
+	if err := store.InitCertSchema(db); err != nil {
+		t.Fatalf("InitCertSchema failed: %v", err)
+	}
+	certStore := store.NewSQLiteCertStore(db)
+	defer certStore.Close()
+
+	// Seed certificate in database
+	rec := &store.CertRecord{
+		NodeID:    "worker-cli-test",
+		Serial:    "1234567890",
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+		IssuedAt:  time.Now(),
+	}
+	if err := certStore.IssueCert(ctx, rec); err != nil {
+		t.Fatalf("IssueCert failed: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+
+	// Revoke cert via direct DB
+	revokeArgs := []string{
+		"cert-revoke",
+		"-node-id", "worker-cli-test",
+		"-db-path", dbPath,
+	}
+	if err := runCLI(ctx, revokeArgs, &stdout, &stderr); err != nil {
+		t.Fatalf("cert-revoke direct DB failed: %v, stderr: %s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "revoked in database") {
+		t.Errorf("expected confirmation in stdout, got: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "WARNING: Direct database revocation does not update the in-memory cache") {
+		t.Errorf("expected warning in stdout for direct db revocation, got: %s", stdout.String())
+	}
+
+	// Verify directly in store that it is revoked
+	c, err := certStore.GetCert(ctx, "worker-cli-test")
+	if err != nil || c == nil || !c.Revoked {
+		t.Errorf("expected cert to be marked revoked, got: %+v, err: %v", c, err)
+	}
+
+	// Test CLI remote revocation through mock coordinator server
+	mockCoord := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/certs/revoke" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer secret-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var req struct {
+			NodeID string `json:"node_id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.NodeID != "remote-node-1" {
+			http.Error(w, "node not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":          "revoked",
+			"node_id":         req.NodeID,
+			"tasks_cancelled": 2,
+		})
+	}))
+	defer mockCoord.Close()
+
+	stdout.Reset()
+	stderr.Reset()
+	remoteRevokeArgs := []string{
+		"cert-revoke",
+		"-node-id", "remote-node-1",
+		"-coordinator", mockCoord.URL,
+		"-token", "secret-token",
+	}
+	if err := runCLI(ctx, remoteRevokeArgs, &stdout, &stderr); err != nil {
+		t.Fatalf("cert-revoke via coordinator failed: %v, stderr: %s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "successfully revoked via coordinator") {
+		t.Errorf("expected coordinator success message, got: %s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Active tasks cancelled: 2") {
+		t.Errorf("expected cancelled tasks count in stdout, got: %s", stdout.String())
 	}
 }
 

@@ -43,6 +43,7 @@ func (s *Server) registerRoutes(mux *stdhttp.ServeMux) {
 	mux.HandleFunc("GET /v1/workspace/tree", s.handleWorkspaceTree)
 	mux.HandleFunc("GET /v1/workspace/file", s.handleWorkspaceFile)
 	mux.HandleFunc("POST /v1/certs/enroll", s.handleCertsEnroll)
+	mux.HandleFunc("POST /v1/certs/revoke", s.handleCertsRevoke)
 	// Webhook management
 	mux.HandleFunc("POST /v1/webhooks", s.handleCreateWebhook)
 	mux.HandleFunc("GET /v1/webhooks", s.handleListWebhooks)
@@ -149,7 +150,7 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 	// Everything that does not depend on the token is validated before
 	// consuming it: a request that is going to be rejected must not burn an
 	// enrollment use.
-	nodeID := req.NodeID
+	nodeID := strings.TrimSpace(req.NodeID)
 	if nodeID == "" {
 		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "node_id is required"})
 		return
@@ -161,6 +162,32 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 	if _, err := pki.ValidateCSR(req.CSR); err != nil {
 		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to sign certificate: %v", err)})
 		return
+	}
+
+	// Enrollment is the bootstrap of a node that does not exist yet. The node id
+	// arrives in the body and the token is not bound to any identity, so without
+	// this check any valid token mints a CA-signed certificate for ANY node in
+	// the mesh, and because issuance clears revoked to 0, that also resurrects
+	// revoked nodes. Rotation is a different door: `gentle-mesh cert-issue`, a
+	// local operator command that needs no token at all.
+	//
+	// This runs before UseToken so refusing an identity does not burn an invite.
+	// It is only a pre-check, not the arbiter: two requests can both observe
+	// "no certificate", so the insert below is what actually decides.
+	//
+	// With no certificate store there is no persisted identity to take over and
+	// no revocation state to corrupt, so the check has nothing to defend; the
+	// coordinator in that configuration also wires no revocation checker at all.
+	if s.certStore != nil {
+		existing, certErr := s.certStore.GetCert(r.Context(), nodeID)
+		if certErr != nil {
+			writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to verify node identity: %v", certErr)})
+			return
+		}
+		if existing != nil {
+			writeJSON(w, stdhttp.StatusConflict, map[string]string{"error": fmt.Sprintf("node_id %q already has a certificate: enrollment is only for new nodes, use `gentle-mesh cert-issue` to rotate", nodeID)})
+			return
+		}
 	}
 
 	// Validate token. The node id validated above travels with the consume so
@@ -199,6 +226,39 @@ func (s *Server) handleCertsEnroll(w stdhttp.ResponseWriter, r *stdhttp.Request)
 	if err != nil {
 		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to encode certificate: %v", err)})
 		return
+	}
+
+	if s.certStore != nil {
+		certRecord := &store.CertRecord{
+			NodeID:     nodeID,
+			CommonName: cert.Subject.CommonName,
+			Serial:     cert.SerialNumber.String(),
+			CertPEM:    certPEM,
+			IssuedAt:   cert.NotBefore,
+			ExpiresAt:  cert.NotAfter,
+		}
+		// IssueCertIfAbsent, not IssueCert: the CA has already signed this
+		// certificate by now, so losing the race must not leave it stranded. An
+		// upsert would overwrite the winner and put the loser's certificate in
+		// neither table, where nothing can ever revoke it.
+		err := s.certStore.IssueCertIfAbsent(r.Context(), certRecord)
+		if errors.Is(err, store.ErrCertIdentityExists) {
+			// The other request won. This certificate was already signed, so it
+			// has to be made explicitly unusable rather than merely discarded.
+			if revErr := s.certStore.RevokeSerial(r.Context(), certRecord.Serial, nodeID); revErr != nil {
+				writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("lost enrollment race and failed to revoke the superseded certificate: %v", revErr)})
+				return
+			}
+			writeJSON(w, stdhttp.StatusConflict, map[string]string{"error": fmt.Sprintf("node_id %q was enrolled concurrently by another request", nodeID)})
+			return
+		}
+		if err != nil {
+			writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to record issued certificate: %v", err)})
+			return
+		}
+		if s.revocationCache != nil {
+			s.revocationCache.Remove(certRecord.Serial)
+		}
 	}
 
 	writeJSON(w, stdhttp.StatusOK, EnrollmentResponse{
@@ -373,7 +433,7 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 					Status:    st.Status,
 					EventsURL: "/v1/tasks/" + existingTask.TaskID + "/events",
 					CreatedAt: st.CreatedAt,
-					Warnings: taskWarnings(req),
+					Warnings:  taskWarnings(req),
 				})
 				return
 			}
@@ -429,7 +489,7 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 					Status:    st.Status,
 					EventsURL: "/v1/tasks/" + existingTask.TaskID + "/events",
 					CreatedAt: st.CreatedAt,
-					Warnings: taskWarnings(req),
+					Warnings:  taskWarnings(req),
 				})
 				return
 			}
@@ -461,7 +521,7 @@ func (s *Server) handleCreateTask(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		Status:    t.CurrentStatus(),
 		EventsURL: "/v1/tasks/" + t.TaskID + "/events",
 		CreatedAt: t.CreatedAt,
-		Warnings: taskWarnings(req),
+		Warnings:  taskWarnings(req),
 	})
 }
 
@@ -658,31 +718,105 @@ type WorkspaceFileResponse struct {
 	Content string `json:"content"`
 }
 
+// withinRoot reports whether p is the root itself or lives under it.
+func withinRoot(root, p string) bool {
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
+// resolveExistingPrefix resolves symlinks on the deepest existing ancestor of
+// path and re-appends the components that do not exist yet, so a symlink whose
+// target does not exist is still judged by where it points.
+func resolveExistingPrefix(path string) (string, error) {
+	remainder := ""
+	current := path
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			if remainder == "" {
+				return resolved, nil
+			}
+			return filepath.Join(resolved, remainder), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("resolve %q: %w", current, err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("no existing ancestor for %q", path)
+		}
+		remainder = filepath.Join(filepath.Base(current), remainder)
+		current = parent
+	}
+}
+
 // resolveWorkspacePath resolves a client-supplied path inside the workspace root.
-// It returns ok=false when the path escapes the root so callers can answer 403.
-// The returned rel is the cleaned path relative to the workspace root.
-func (s *Server) resolveWorkspacePath(subPath string) (fullPath, rel string, ok bool) {
+//
+// It returns:
+//   - fullPath, rel, nil when the path is safe to serve.
+//   - "", "", nil when the path is outside the workspace root (caller answers 403).
+//   - "", "", err on a real failure (caller answers 500).
+//
+// Containment is verified twice: once on the lexical path (to reject obvious
+// traversal without I/O) and once on the symlink-resolved path (to reject a
+// link that sits inside the workspace and points out of it). The resolution
+// stops at the deepest existing ancestor so a path that does not exist yet is
+// still judged by where its prefix actually points.
+func (s *Server) resolveWorkspacePath(subPath string) (fullPath, rel string, err error) {
 	cleaned := filepath.Clean(subPath)
 	if cleaned == "." {
-		return s.workspaceRoot, ".", true
+		return s.workspaceRoot, ".", nil
 	}
-	// Reject explicit traversal before normalization so requests such as
+	// Reject obvious traversal before any I/O so requests such as
 	// "../../etc" can never be silently folded back into the workspace root.
 	if filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
-		return "", "", false
+		return "", "", nil
 	}
 
-	fullPath = filepath.Join(s.workspaceRoot, filepath.Clean("/"+subPath))
-	rel, err := filepath.Rel(s.workspaceRoot, fullPath)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return "", "", false
+	root, err := filepath.EvalSymlinks(s.workspaceRoot)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", "", fmt.Errorf("resolve workspace root: %w", err)
+		}
+		root = filepath.Clean(s.workspaceRoot)
 	}
-	return fullPath, rel, true
+	joined := filepath.Join(root, cleaned)
+	if !withinRoot(root, joined) {
+		return "", "", nil
+	}
+	resolved, err := resolveExistingPrefix(joined)
+	if err != nil {
+		return "", "", err
+	}
+	if !withinRoot(root, resolved) {
+		return "", "", nil
+	}
+	out, err := filepath.Rel(root, resolved)
+	if err != nil || strings.HasPrefix(out, "..") {
+		return "", "", fmt.Errorf("compute relative path: %w", err)
+	}
+	// Return the resolved path so the caller opens the real file, not the link.
+	// The containment check above guarantees the resolved path is still under
+	// the workspace root, so a link pointing outside is caught here and never
+	// reaches the file system call. The check-then-use sequence has a narrow
+	// TOCTOU window (swapping the link between resolution and open); opening
+	// the resolved path keeps the window small but does not eliminate it.
+	return resolved, out, nil
 }
 
 func (s *Server) handleWorkspaceTree(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	fullPath, relDir, ok := s.resolveWorkspacePath(r.URL.Query().Get("path"))
-	if !ok {
+	fullPath, relDir, err := s.resolveWorkspacePath(r.URL.Query().Get("path"))
+	if err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if fullPath == "" {
 		writeJSON(w, stdhttp.StatusForbidden, map[string]string{"error": "access denied: path outside workspace root"})
 		return
 	}
@@ -748,8 +882,12 @@ func (s *Server) handleWorkspaceFile(w stdhttp.ResponseWriter, r *stdhttp.Reques
 		return
 	}
 
-	fullPath, relPath, ok := s.resolveWorkspacePath(subPath)
-	if !ok {
+	fullPath, relPath, err := s.resolveWorkspacePath(subPath)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if fullPath == "" {
 		writeJSON(w, stdhttp.StatusForbidden, map[string]string{"error": "access denied: path outside workspace root"})
 		return
 	}
@@ -786,7 +924,75 @@ func (s *Server) handleWorkspaceFile(w stdhttp.ResponseWriter, r *stdhttp.Reques
 	})
 }
 
-// Webhook management handlers
+// CertRevokeRequest represents a certificate revocation request via REST API.
+type CertRevokeRequest struct {
+	NodeID string `json:"node_id"`
+}
+
+// CertRevokeResponse represents the response after revoking a certificate.
+type CertRevokeResponse struct {
+	Status         string `json:"status"`
+	NodeID         string `json:"node_id"`
+	TasksCancelled int    `json:"tasks_cancelled"`
+}
+
+func (s *Server) handleCertsRevoke(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if s.config.BearerToken == "" {
+		writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]string{
+			"error": "certificate revocation API is unavailable: coordinator has no bearer token configured",
+		})
+		return
+	}
+
+	if s.certStore == nil {
+		writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]string{
+			"error": "cert store is not configured",
+		})
+		return
+	}
+
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, 4<<10)
+	var req CertRevokeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	if strings.TrimSpace(req.NodeID) == "" {
+		writeJSON(w, stdhttp.StatusBadRequest, map[string]string{"error": "node_id is required"})
+		return
+	}
+
+	nodeID := strings.TrimSpace(req.NodeID)
+
+	rec, err := s.certStore.GetCert(r.Context(), nodeID)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to get certificate: %v", err),
+		})
+		return
+	}
+	if rec == nil {
+		writeJSON(w, stdhttp.StatusNotFound, map[string]string{
+			"error": fmt.Sprintf("certificate for node %q not found", nodeID),
+		})
+		return
+	}
+
+	cancelledCount, err := s.RevokeCertWithCount(r.Context(), nodeID)
+	if err != nil {
+		writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("failed to revoke certificate: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, stdhttp.StatusOK, CertRevokeResponse{
+		Status:         "revoked",
+		NodeID:         nodeID,
+		TasksCancelled: cancelledCount,
+	})
+}
 
 // CreateWebhookRequest represents a webhook creation request.
 type CreateWebhookRequest struct {
@@ -947,7 +1153,7 @@ func (s *Server) handleTaskCheckpoint(w stdhttp.ResponseWriter, r *stdhttp.Reque
 	t.EmitEvent(protocol.EventCheckpoint, cp)
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
-		"task_id":   id,
+		"task_id":    id,
 		"checkpoint": cp,
 	})
 }
@@ -973,7 +1179,7 @@ func (s *Server) handleGetCheckpoint(w stdhttp.ResponseWriter, r *stdhttp.Reques
 	}
 
 	writeJSON(w, stdhttp.StatusOK, map[string]any{
-		"task_id":   id,
+		"task_id":    id,
 		"checkpoint": state.Checkpoint,
 	})
 }

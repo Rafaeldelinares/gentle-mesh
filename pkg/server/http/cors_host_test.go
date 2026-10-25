@@ -401,7 +401,45 @@ func TestServer_PiRunnerAllowedWithToken(t *testing.T) {
 	}
 }
 
-func TestServer_NonPiRunnerWarnsOnNonLoopbackWithoutAuth(t *testing.T) {
+func TestServer_NonLoopbackRejectedWithoutAuth(t *testing.T) {
+	tasksDir := t.TempDir()
+	cfg := meshhttp.ServerConfig{
+		Addr:             "0.0.0.0:0",
+		TasksDir:         tasksDir,
+		HeartbeatTimeout: 5 * time.Second,
+		TaskTTL:          time.Hour,
+		WorkspaceRoot:    tasksDir,
+		DBPath:           "none",
+		// Runner is nil, so the server selects the mesh/simulated runner.
+	}
+
+	srv, err := meshhttp.NewServer(cfg)
+	if err != nil {
+		t.Fatalf("failed creating server: %v", err)
+	}
+	defer srv.Shutdown(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.Start()
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected Start() to reject binding to non-loopback address without auth, got nil")
+		}
+		expectedSubstr := "cannot bind coordinator to non-loopback address"
+		if !strings.Contains(err.Error(), expectedSubstr) {
+			t.Errorf("expected error containing %q, got %q", expectedSubstr, err.Error())
+		}
+	case <-time.After(500 * time.Millisecond):
+		_ = srv.Shutdown(context.Background())
+		t.Fatal("expected Start() to reject synchronously before listening, but it blocked or started listening")
+	}
+}
+
+func TestServer_NonLoopbackAllowedWithInsecureNoAuth(t *testing.T) {
 	var logBuf bytes.Buffer
 	prevWriter := log.Writer()
 	log.SetOutput(&logBuf)
@@ -415,7 +453,7 @@ func TestServer_NonPiRunnerWarnsOnNonLoopbackWithoutAuth(t *testing.T) {
 		TaskTTL:          time.Hour,
 		WorkspaceRoot:    tasksDir,
 		DBPath:           "none",
-		// Runner is nil, so the server selects the mesh/simulated runner.
+		InsecureNoAuth:   true,
 	}
 
 	srv, err := meshhttp.NewServer(cfg)
@@ -438,9 +476,9 @@ func TestServer_NonPiRunnerWarnsOnNonLoopbackWithoutAuth(t *testing.T) {
 
 	startErr := <-errCh
 	if startErr != nil && !errors.Is(startErr, http.ErrServerClosed) {
-		t.Errorf("Start() returned unexpected error for a non-pi runner: %v", startErr)
+		t.Errorf("Start() returned unexpected error when InsecureNoAuth is true: %v", startErr)
 	}
 	if !strings.Contains(logBuf.String(), "WARNING") {
-		t.Errorf("expected a non-loopback warning to be logged, got %q", logBuf.String())
+		t.Errorf("expected a non-loopback warning to be logged when InsecureNoAuth is set, got %q", logBuf.String())
 	}
 }

@@ -341,9 +341,14 @@ func TestRegistry_SelectNodeForTask(t *testing.T) {
 	_ = reg.Heartbeat(protocol.NodeHeartbeatRequest{NodeID: "node-2", ActiveTasks: 4})  // 4/4
 	_ = reg.Heartbeat(protocol.NodeHeartbeatRequest{NodeID: "node-3", ActiveTasks: 10}) // 10/10
 
-	_, err = reg.SelectNodeForTask("worker")
-	if !errors.Is(err, registry.ErrNoNodeAvailable) {
-		t.Fatalf("expected ErrNoNodeAvailable when all nodes full, got: %v", err)
+	// Soft cap: when every node is at capacity the least loaded one is still selected, so a
+	// task is never pushed to the local fallback for lack of room.
+	sel, err = reg.SelectNodeForTask("worker")
+	if err != nil {
+		t.Fatalf("expected a node to be selected under the soft cap, got error: %v", err)
+	}
+	if sel == nil {
+		t.Fatal("expected a node to be selected under the soft cap, got nil")
 	}
 
 	// Degraded / Offline node handling: if only node supporting an agent is offline
@@ -379,9 +384,12 @@ func TestRegistry_SelectNodeForTask(t *testing.T) {
 
 	// Once active tasks reaches 1, it should be full
 	_ = reg.Heartbeat(protocol.NodeHeartbeatRequest{NodeID: "node-5", ActiveTasks: 1})
-	_, err = reg.SelectNodeForTask("single-tasker")
-	if !errors.Is(err, registry.ErrNoNodeAvailable) {
-		t.Fatalf("expected ErrNoNodeAvailable for single-tasker at max 1, got: %v", err)
+	sel, err = reg.SelectNodeForTask("single-tasker")
+	if err != nil {
+		t.Fatalf("expected the soft cap to keep selecting single-tasker at max 1, got: %v", err)
+	}
+	if sel.NodeID != "node-5" {
+		t.Errorf("expected node-5 under the soft cap, got %s", sel.NodeID)
 	}
 }
 

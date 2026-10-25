@@ -15,8 +15,13 @@ Report privately through GitHub Security Advisories:
 
 → https://github.com/Rafaeldelinares/gentle-mesh/security/advisories/new
 
-Include as much detail as you can: a description, the affected version(s), the potential
-impact, and any suggested fix. Anonymized reproduction notes are fine.
+Include as much detail as you can:
+
+- Description of the vulnerability
+- Steps to reproduce (anonymized if needed)
+- Affected version(s)
+- Potential impact
+- Any suggested fixes (optional)
 
 ## Supported versions
 
@@ -33,9 +38,13 @@ This project is a community proof-of-concept / RFC proposal, not an audited prod
 
 ## Known limitations
 
-- **No node certificate revocation**: node certificates are valid for one year and there is no
-  revocation mechanism; a compromised or leaked node certificate stays valid until it expires
-  (#25).
+- **Node certificate revocation is now authoritative on disk** (#25, merged via PR #149): a revoked
+  serial is recorded in an append-only `revoked_serials` ledger, keyed by the serial
+  a TLS handshake actually presents, so the fact survives certificate rotation
+  and coordinator restarts. `Server.IsCertRevoked` consults the ledger with the
+  in-memory blocklist in front, and fails the handshake closed on a store error.
+  A Certificate Revocation List is still not distributed to third parties that
+  do not talk to the coordinator; the disk ledger is the only revocation source.
 - **No authentication or loopback binding by default**: the coordinator listens on every interface
   without a token by default. Starting with `-runner pi` on a non-loopback address without `-token`
   or `-require-mtls` is **rejected** at startup (v1.0.3); other runners only log a warning.

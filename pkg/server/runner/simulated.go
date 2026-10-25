@@ -84,7 +84,8 @@ func (r *SimulatedRunner) Run(ctx context.Context, req protocol.TaskRequest, sin
 
 	// 1. Emit status: running
 	if _, err := sink.EmitEvent(protocol.EventStatus, protocol.StatusPayload{
-		Status: protocol.TaskStatusRunning,
+		Status:  protocol.TaskStatusRunning,
+		Message: "WARNING: running in SIMULATED mode",
 	}); err != nil {
 		return err
 	}
