@@ -2,6 +2,7 @@ package client_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -353,5 +354,63 @@ func TestBridge_MalformedInput(t *testing.T) {
 	}
 	if resp.ID != "req-ok" || !resp.Success {
 		t.Errorf("expected valid response to req-ok despite prior malformed line")
+	}
+}
+
+func TestBridge_UnsupportedCommandAnswersErrorAndKeepsSession(t *testing.T) {
+	bridge := client.NewBridge(client.Config{
+		CoordinatorURL: "http://coordinator.mesh.local:8080",
+	})
+
+	var out bytes.Buffer
+	in := strings.NewReader(`{"id":"unsupported-1","type":"not_a_real_command"}` + "\n" + `{"id":"ok-1","type":"get_state"}` + "\n")
+
+	// An unsupported command must be answered and must not terminate the session.
+	err := bridge.Serve(context.Background(), in, &out)
+	if err != nil {
+		t.Fatalf("Serve should keep the session alive after an unsupported command, got %v", err)
+	}
+
+	type frame struct {
+		ID      string `json:"id"`
+		Type    string `json:"type"`
+		Command string `json:"command"`
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+
+	var frames []frame
+	scanner := bufio.NewScanner(&out)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var f frame
+		if err := json.Unmarshal([]byte(line), &f); err != nil {
+			t.Fatalf("invalid response frame %q: %v", line, err)
+		}
+		frames = append(frames, f)
+	}
+
+	var unsupported, ok *frame
+	for i := range frames {
+		switch frames[i].ID {
+		case "unsupported-1":
+			unsupported = &frames[i]
+		case "ok-1":
+			ok = &frames[i]
+		}
+	}
+
+	if unsupported == nil {
+		t.Fatal("expected an explicit error frame for the unsupported command")
+	}
+	if unsupported.Type != "response" || unsupported.Success || unsupported.Command != "not_a_real_command" || unsupported.Error == "" {
+		t.Errorf("unexpected unsupported-command frame: %+v", *unsupported)
+	}
+
+	if ok == nil || !ok.Success || ok.Command != "get_state" {
+		t.Fatalf("expected the following valid command to be answered, got %+v", ok)
 	}
 }
