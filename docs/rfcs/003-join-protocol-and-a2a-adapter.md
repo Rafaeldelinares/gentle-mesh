@@ -9,6 +9,10 @@
 > conformidad». Que un objetivo figure en esta lista no significa que esté cumplido hoy: la tabla
 > de conformidad se llena **PR a PR**, con su evidencia, y no al final.
 
+> **Tracking.** El seguimiento de esta RFC (tareas, commits, conteos de tests) vive en
+> [`odd/tasks/rfc-003-join-protocol.md`](../../odd/tasks/rfc-003-join-protocol.md), con la misma
+> convención que RFC-002 y que el resto de los frentes del repo.
+
 ## 1. Propósito
 
 Hoy el conocimiento de la malla vive **solo en el coordinador**: el estado de las tareas, los
