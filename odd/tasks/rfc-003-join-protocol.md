@@ -38,7 +38,7 @@ gentle-mesh/
 
 - [x] Task 0: Documento técnico de RFC-003 (objetivos, no-objetivos, perfil mínimo, restricción de diseño y tabla de conformidad) más este tracking. (Commit: `abc8f4c`, documentación; PR [#167](https://github.com/Rafaeldelinares/gentle-mesh/pull/167))
 - [x] Task 1: Formato del evento firmado + test de la carrera de escritura. Resuelto con Opción C (`BEGIN IMMEDIATE` + `UNIQUE(prev_hash)` en SQLite). 4 tests pasando con race detector: linealidad bajo 16 escritores concurrentes, rechazo de doble génesis `prev_hash = ""`, rechazo de bifurcación intermedia y serialización multi-handle. (Issue: [#166](https://github.com/Rafaeldelinares/gentle-mesh/issues/166))
-- [ ] Task 2: Cada cambio de estado como evento; el SQLite como proyección derivada del log, no al revés.
+- [x] Task 2: Cada cambio de estado como evento; el SQLite como proyección derivada del log, no al revés (J6). Cero inferencias del reloj de pared: expiración por reaper emitida explícitamente (`reason: "lease_expired"`). Suite completa de equivalencia campo por campo verificada bajo `-race` (`TestProjector_RebuildFromScratchProducesIdenticalState`). (Issue: [#169](https://github.com/Rafaeldelinares/gentle-mesh/issues/169))
 - [ ] Task 3: Endpoint de snapshot con digest verificable + suscripción al stream en vivo, con cursor reanudable.
 - [ ] Task 4: Verificación oportunista del territorio declarado contra la actividad observada (ficheros tocados, operaciones git), sin reemplazar la declaración.
 - [ ] Task 5: Adaptador A2A: Agent Card en `/.well-known/agent-card.json`, firmada JWS sobre JCS con las primitivas Ed25519 existentes.
