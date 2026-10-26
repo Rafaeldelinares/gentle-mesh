@@ -7,11 +7,10 @@
 // the previous event is part of what is hashed, so an altered link is
 // detectable.
 //
-// The append path here is deliberately the *unprotected* one: it reads the
-// current head, hashes the event against it, and inserts. That is the shape
-// every writer starts with, and it is what RFC-003 §7 identifies as the first
-// technical risk to close: two concurrent writers read the same head and
-// produce two events with the same predecessor, forking the chain.
+// The append path implements Option C (RFC-003 §7, issue #166):
+// in-process serialization plus BEGIN IMMEDIATE on a dedicated connection,
+// backed by a UNIQUE(prev_hash) constraint in SQLite (including the empty
+// string for genesis) as an invariant safeguard against forks.
 package joinlog
 
 import (
@@ -22,6 +21,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
@@ -72,6 +72,7 @@ func ComputeEventHash(e Event) (string, error) {
 
 // Log is the append-only hash-chained event log.
 type Log struct {
+	mu sync.Mutex
 	db *sql.DB
 }
 
@@ -107,9 +108,11 @@ CREATE TABLE IF NOT EXISTS join_log (
 	payload TEXT NOT NULL,
 	created_at TEXT NOT NULL,
 	prev_hash TEXT NOT NULL DEFAULT '',
-	hash TEXT NOT NULL
+	hash TEXT NOT NULL,
+	UNIQUE(prev_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_join_log_seq ON join_log(seq);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_join_log_prev_hash ON join_log(prev_hash);
 `
 	if _, err := l.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("join log schema: %w", err)
@@ -133,10 +136,13 @@ func (l *Log) Head(ctx context.Context) (string, error) {
 
 // Append writes one event to the log.
 //
-// This is the unprotected path: the head is read, then the event is hashed
-// against it, then it is inserted, without holding a write transaction across
-// the read. Concurrent appends therefore race, and RFC-003 §7 requires the
-// mechanism that closes that race to be chosen before the format is frozen.
+// Concurrency is handled by Option C (RFC-003 §7, issue #166):
+// 1. In-process mutex (mu.Lock) serializes calls within this process.
+// 2. A dedicated connection executes BEGIN IMMEDIATE, acquiring the write lock
+//    before reading the current head. This ensures that concurrent connections
+//    are serialized at the SQLite level.
+// 3. The schema enforces UNIQUE(prev_hash) (including the empty string for the
+//    genesis event), serving as an invariant safeguard against chain forks.
 func (l *Log) Append(ctx context.Context, e Event) error {
 	if e.ID == "" {
 		id, err := newEventID()
@@ -148,10 +154,43 @@ func (l *Log) Append(ctx context.Context, e Event) error {
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = time.Now().UTC()
 	}
-	head, err := l.Head(ctx)
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	conn, err := l.db.Conn(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("join log acquire conn: %w", err)
 	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "PRAGMA busy_timeout = 5000;"); err != nil {
+		return fmt.Errorf("join log busy timeout: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE;"); err != nil {
+		return fmt.Errorf("join log begin immediate: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK;")
+		}
+	}()
+
+	var head string
+	var nextSeq int64 = 1
+	var lastSeq sql.NullInt64
+	err = conn.QueryRowContext(ctx, `SELECT hash, seq FROM join_log ORDER BY seq DESC LIMIT 1;`).Scan(&head, &lastSeq)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("join log head: %w", err)
+	}
+	if err == sql.ErrNoRows {
+		head = ""
+		nextSeq = 1
+	} else if lastSeq.Valid {
+		nextSeq = lastSeq.Int64 + 1
+	}
+
 	e.PrevHash = head
 	hash, err := ComputeEventHash(e)
 	if err != nil {
@@ -163,16 +202,19 @@ func (l *Log) Append(ctx context.Context, e Event) error {
 	if payload == "" {
 		payload = "{}"
 	}
-	res, err := l.db.ExecContext(ctx,
+
+	_, err = conn.ExecContext(ctx,
 		`INSERT INTO join_log (id, seq, type, actor, payload, created_at, prev_hash, hash)
-		 VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM join_log), ?, ?, ?, ?, ?, ?);`,
-		e.ID, e.Type, e.Actor, payload, e.CreatedAt.UTC().Format(time.RFC3339Nano), e.PrevHash, e.Hash)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+		e.ID, nextSeq, e.Type, e.Actor, payload, e.CreatedAt.UTC().Format(time.RFC3339Nano), e.PrevHash, e.Hash)
 	if err != nil {
-		return fmt.Errorf("join log append: %w", err)
+		return fmt.Errorf("join log append insert: %w", err)
 	}
-	if _, err := res.RowsAffected(); err != nil {
-		return fmt.Errorf("join log append: %w", err)
+
+	if _, err := conn.ExecContext(ctx, "COMMIT;"); err != nil {
+		return fmt.Errorf("join log commit: %w", err)
 	}
+	committed = true
 	return nil
 }
 

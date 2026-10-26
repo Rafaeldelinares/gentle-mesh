@@ -214,7 +214,7 @@ referenciable, pero que **no hay implementación**.
 | Objetivo | Perfil mínimo | Qué significa | Estado | Test relacionado | Qué falta | Incidencia |
 |----------|---------------|---------------|--------|------------------------|-----------|------------|
 | J1 | sí | Formato del evento firmado: id, tipo, actor, payload, hash del evento anterior y firma Ed25519 sobre la forma canónica JCS. | sin código | — | Formato y firma | [#166](https://github.com/Rafaeldelinares/gentle-mesh/issues/166) |
-| J2 | sí | Escrituras concurrentes al mismo log producen una cadena lineal, sin bifurcaciones ni predecesores compartidos. | sin código | — | Mecanismo de serialización + test | [#166](https://github.com/Rafaeldelinares/gentle-mesh/issues/166) |
+| J2 | sí | Escrituras concurrentes al mismo log producen una cadena lineal, sin bifurcaciones ni predecesores compartidos. | cumplido | `TestJoinLog_ConcurrentAppendsProduceOneLinearChain`, `TestJoinLog_GenesisUniqueConstraint` | — | [#166](https://github.com/Rafaeldelinares/gentle-mesh/issues/166) |
 | J3 | sí | Snapshot con digest verificable por el cliente a partir del log. | sin código | — | Endpoint de snapshot | — |
 | J4 | sí | Stream en vivo sin huecos ni duplicados, reanudable por cursor. | sin código | — | Endpoint de stream | — |
 | J5 | sí | La declaración de territorio se contrasta contra la actividad observada; la evidencia va al log. | sin código | — | Contraste de territorio | — |
