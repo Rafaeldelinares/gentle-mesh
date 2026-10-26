@@ -79,7 +79,7 @@ lo demuestra.
 | J3 | **Snapshot verificable** | El endpoint de snapshot devuelve el estado derivado del log junto con un digest; el digest es recomputable por el cliente a partir del log y una discrepancia se detecta. |
 | J4 | **Stream en vivo** | Un cliente suscrito recibe los eventos posteriores a su snapshot, en el orden de la cadena, sin huecos ni duplicados, y puede reanudar desde un cursor. |
 | J5 | **Territorio contrastado** | Una declaración de territorio se contrasta contra la actividad observada (ficheros tocados, operaciones git) y la discrepancia se reporta. El contraste **no reemplaza** la declaración: la evidencia va al log. |
-| J6 | **El log es la fuente de verdad** | El estado completo de la malla se puede reconstruir leyendo el log desde cero, sin consultar ningún estado derivado. Un test reconstruye el estado y lo compara con el del coordinador. |
+| J6 | **El log es la fuente de verdad** | El estado completo de la malla se puede reconstruir leyendo el log desde cero, sin consultar ningún estado derivado. Toda mutación de estado —incluyendo la expiración de leases por el reaper autónomo (RFC-002 R2)— se emite como evento explícito en el log (`territory.released` con `reason: "lease_expired"`), **nunca inferida del reloj de pared durante el replay**. Un test reconstruye el estado y lo compara con el del coordinador. |
 | J7 | **El coordinador es un lector más** | Un nodo puede unirse y operar leyendo el log y su stream, sin que el coordinador esté disponible ni sea su punto de必经ada. |
 
 ### 4.2 Adaptador A2A (A)
@@ -218,7 +218,7 @@ referenciable, pero que **no hay implementación**.
 | J3 | sí | Snapshot con digest verificable por el cliente a partir del log. | sin código | — | Endpoint de snapshot | — |
 | J4 | sí | Stream en vivo sin huecos ni duplicados, reanudable por cursor. | sin código | — | Endpoint de stream | — |
 | J5 | sí | La declaración de territorio se contrasta contra la actividad observada; la evidencia va al log. | sin código | — | Contraste de territorio | — |
-| J6 | sí | El estado completo se reconstruye leyendo el log desde cero. | sin código | — | Proyección y test de equivalencia | — |
+| J6 | sí | El estado completo se reconstruye leyendo el log desde cero. | cumplido | `TestProjector_RebuildFromScratchProducesIdenticalState` | — | [#169](https://github.com/Rafaeldelinares/gentle-mesh/issues/169) |
 | J7 | no | El coordinador deja de ser punto de必经ada para unirse. | sin código | — | Extensión futura | — |
 | A1 | sí | Agent Card conforme al perfil A2A servida en `/.well-known/agent-card.json`. | sin código | — | Endpoint de la card | — |
 | A2 | sí | Card firmada como JWS sobre JCS con las primitivas Ed25519 existentes. | sin código | — | Firma y verificación | — |
