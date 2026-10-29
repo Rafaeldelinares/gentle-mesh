@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,26 @@ type SQLiteStore struct {
 	closed  bool
 }
 
+// sqliteDSN builds the DSN for a database file.
+//
+// The pragmas travel in the DSN because a SQLite pragma is **per connection**:
+// setting them with a one-off Exec only configures the connection that served
+// that call, and every other connection of the pool kept busy_timeout = 0 —
+// returning SQLITE_BUSY immediately instead of waiting for the write lock
+// (#177). Carrying them in the DSN makes every new connection inherit them.
+//
+// The path is percent-encoded because SQLite reads a filename containing "?"
+// as URI query parameters: without the encoding, a database at
+// "/tmp/with?question.db" is silently created as "/tmp/with".
+func sqliteDSN(dbPath string) string {
+	abs, err := filepath.Abs(dbPath)
+	if err != nil {
+		abs = dbPath
+	}
+	u := url.URL{Scheme: "file", Path: abs}
+	return u.String() + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+}
+
 // NewSQLiteStore opens an SQLite database, configures WAL mode, busy timeout,
 // and ensures the tasks table and indexes exist.
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
@@ -34,21 +55,37 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		}
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	dsn := dbPath
+	singleConn := false
+	if dbPath != ":memory:" {
+		dsn = sqliteDSN(dbPath)
+	}
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite database: %w", err)
 	}
 
-	// PRAGMA journal_mode=WAL
-	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
+	if singleConn {
+		// An in-memory database lives inside its connection: a pool would hand
+		// out different databases. One connection keeps it coherent, and it is
+		// the connection that carries the pragmas below.
+		db.SetMaxOpenConns(1)
 	}
 
-	// PRAGMA busy_timeout=5000
-	if _, err := db.Exec("PRAGMA busy_timeout=5000;"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to set busy timeout: %w", err)
+	// PRAGMA journal_mode=WAL and PRAGMA busy_timeout=5000 are carried by the
+	// DSN for file databases (every pooled connection inherits them). For the
+	// in-memory case there is a single connection, so setting them here is
+	// enough.
+	if singleConn {
+		if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
+		}
+		if _, err := db.Exec("PRAGMA busy_timeout=5000;"); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("failed to set busy timeout: %w", err)
+		}
 	}
 
 	if err := InitSQLiteStoreForTest(db); err != nil {
