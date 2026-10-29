@@ -333,8 +333,10 @@ func AuthMiddlewareWithConfig(cfg AuthConfig, next stdhttp.Handler) stdhttp.Hand
 			nodeMatched = subtle.ConstantTimeCompare([]byte(authHeader), []byte(expectedNodeAuth))
 		}
 		if nodeMatched == 1 {
-			if r.Method == stdhttp.MethodPost && (r.URL.Path == "/v1/mesh/join" || r.URL.Path == "/v1/mesh/join/" ||
-				r.URL.Path == "/v1/mesh/heartbeat" || r.URL.Path == "/v1/mesh/heartbeat/") {
+			if (r.Method == stdhttp.MethodPost && (r.URL.Path == "/v1/mesh/join" || r.URL.Path == "/v1/mesh/join/" ||
+				r.URL.Path == "/v1/mesh/heartbeat" || r.URL.Path == "/v1/mesh/heartbeat/")) ||
+				(r.Method == stdhttp.MethodGet && (r.URL.Path == "/v1/mesh/snapshot" || r.URL.Path == "/v1/mesh/snapshot/" ||
+					r.URL.Path == "/v1/mesh/events" || r.URL.Path == "/v1/mesh/events/")) {
 				next.ServeHTTP(w, r)
 				return
 			}

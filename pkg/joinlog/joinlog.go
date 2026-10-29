@@ -21,6 +21,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -37,6 +39,8 @@ import (
 type Event struct {
 	// ID uniquely identifies the event.
 	ID string `json:"id"`
+	// Seq is the sequence number of the event in the chain.
+	Seq int64 `json:"seq,omitempty"`
 	// Type is the high-level event kind.
 	Type string `json:"type"`
 	// Actor is the identity that authored the event.
@@ -62,6 +66,7 @@ func ComputeEventHash(e Event) (string, error) {
 	}
 	cleared := e
 	cleared.Hash = ""
+	cleared.Seq = 0
 	data, err := jcs.Marshal(&cleared)
 	if err != nil {
 		return "", fmt.Errorf("jcs marshal: %w", err)
@@ -72,12 +77,18 @@ func ComputeEventHash(e Event) (string, error) {
 
 // Log is the append-only hash-chained event log.
 type Log struct {
-	mu sync.Mutex
-	db *sql.DB
+	mu          sync.Mutex
+	db          *sql.DB
+	subscribers map[chan Event]struct{}
 }
 
 // New opens (or creates) a join log backed by the SQLite database at path.
 func New(path string) (*Log, error) {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("create join log dir: %w", err)
+		}
+	}
 	// The pragmas travel in the DSN because a SQLite pragma is per
 	// connection: setting them with a one-off Exec would only configure
 	// whichever pooled connection served that call, and the others would
@@ -87,7 +98,10 @@ func New(path string) (*Log, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open join log: %w", err)
 	}
-	l := &Log{db: db}
+	l := &Log{
+		db:          db,
+		subscribers: make(map[chan Event]struct{}),
+	}
 	if err := l.initSchema(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -132,6 +146,21 @@ func (l *Log) Head(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("join log head: %w", err)
 	}
 	return head, nil
+}
+
+// HeadPosition returns the sequence number and hash of the last event in the log.
+// If the log is empty, it returns 0 and "".
+func (l *Log) HeadPosition(ctx context.Context) (int64, string, error) {
+	var seq int64
+	var head string
+	err := l.db.QueryRowContext(ctx, `SELECT seq, hash FROM join_log ORDER BY seq DESC LIMIT 1;`).Scan(&seq, &head)
+	if err == sql.ErrNoRows {
+		return 0, "", nil
+	}
+	if err != nil {
+		return 0, "", fmt.Errorf("join log head position: %w", err)
+	}
+	return seq, head, nil
 }
 
 // Append writes one event to the log.
@@ -215,15 +244,45 @@ func (l *Log) Append(ctx context.Context, e Event) error {
 		return fmt.Errorf("join log commit: %w", err)
 	}
 	committed = true
+
+	e.Seq = nextSeq
+	for ch := range l.subscribers {
+		select {
+		case ch <- e:
+		default:
+		}
+	}
 	return nil
 }
 
-// Events returns every event in the log, in chain order.
-func (l *Log) Events(ctx context.Context) ([]Event, error) {
-	rows, err := l.db.QueryContext(ctx,
-		`SELECT id, type, actor, payload, created_at, prev_hash, hash FROM join_log ORDER BY seq ASC;`)
+// EventBySeq returns the event with sequence number seq, or nil if not found.
+func (l *Log) EventBySeq(ctx context.Context, seq int64) (*Event, error) {
+	row := l.db.QueryRowContext(ctx,
+		`SELECT id, seq, type, actor, payload, created_at, prev_hash, hash
+		 FROM join_log WHERE seq = ?;`, seq)
+	var e Event
+	var payload, createdAt string
+	err := row.Scan(&e.ID, &e.Seq, &e.Type, &e.Actor, &payload, &createdAt, &e.PrevHash, &e.Hash)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
 	if err != nil {
-		return nil, fmt.Errorf("join log events: %w", err)
+		return nil, fmt.Errorf("join log event by seq: %w", err)
+	}
+	e.Payload = json.RawMessage(payload)
+	if ts, err := time.Parse(time.RFC3339Nano, createdAt); err == nil {
+		e.CreatedAt = ts
+	}
+	return &e, nil
+}
+
+// EventsSince returns every event in the log with sequence number > sinceSeq, in chain order.
+func (l *Log) EventsSince(ctx context.Context, sinceSeq int64) ([]Event, error) {
+	rows, err := l.db.QueryContext(ctx,
+		`SELECT id, seq, type, actor, payload, created_at, prev_hash, hash
+		 FROM join_log WHERE seq > ? ORDER BY seq ASC;`, sinceSeq)
+	if err != nil {
+		return nil, fmt.Errorf("join log events since: %w", err)
 	}
 	defer rows.Close()
 
@@ -231,7 +290,7 @@ func (l *Log) Events(ctx context.Context) ([]Event, error) {
 	for rows.Next() {
 		var e Event
 		var payload, createdAt string
-		if err := rows.Scan(&e.ID, &e.Type, &e.Actor, &payload, &createdAt, &e.PrevHash, &e.Hash); err != nil {
+		if err := rows.Scan(&e.ID, &e.Seq, &e.Type, &e.Actor, &payload, &createdAt, &e.PrevHash, &e.Hash); err != nil {
 			return nil, fmt.Errorf("join log scan: %w", err)
 		}
 		e.Payload = json.RawMessage(payload)
@@ -241,9 +300,51 @@ func (l *Log) Events(ctx context.Context) ([]Event, error) {
 		events = append(events, e)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("join log events: %w", err)
+		return nil, fmt.Errorf("join log events since: %w", err)
 	}
 	return events, nil
+}
+
+// Events returns every event in the log, in chain order.
+func (l *Log) Events(ctx context.Context) ([]Event, error) {
+	return l.EventsSince(ctx, 0)
+}
+
+// Subscribe returns an event channel delivering historical events with seq > sinceSeq
+// followed by live broadcast events. The returned unsubscribe function removes the subscriber.
+func (l *Log) Subscribe(ctx context.Context, sinceSeq int64) (<-chan Event, func(), error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	history, err := l.EventsSince(ctx, sinceSeq)
+	if err != nil {
+		return nil, nil, fmt.Errorf("subscribe read history: %w", err)
+	}
+
+	bufSize := 128
+	if len(history)+64 > bufSize {
+		bufSize = len(history) + 64
+	}
+	ch := make(chan Event, bufSize)
+	for _, e := range history {
+		ch <- e
+	}
+
+	if l.subscribers == nil {
+		l.subscribers = make(map[chan Event]struct{})
+	}
+	l.subscribers[ch] = struct{}{}
+
+	var once sync.Once
+	unsub := func() {
+		once.Do(func() {
+			l.mu.Lock()
+			delete(l.subscribers, ch)
+			l.mu.Unlock()
+		})
+	}
+
+	return ch, unsub, nil
 }
 
 // ChainError describes a broken link in the chain.

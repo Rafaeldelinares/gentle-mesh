@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gentleman-programming/gentle-mesh/pkg/joinlog"
 	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/federation"
@@ -63,6 +64,10 @@ type ServerConfig struct {
 	CertStore  store.CertStore  // For node certificate tracking and revocation
 	// Webhook configuration
 	WebhookStore store.WebhookStore // For webhook notifications
+	// Join log configuration (RFC-003)
+	JoinLog       *joinlog.Log
+	JoinProjector *joinlog.Projector
+	JoinLogPath   string
 	// Rate limiting configuration
 	RateLimitRequests int           // Requests per window (0 = disabled)
 	RateLimitWindow   time.Duration // Time window
@@ -86,6 +91,9 @@ type Server struct {
 	certStore        store.CertStore
 	revocationCache  *revocationCache
 	webhookStore     store.WebhookStore
+	joinLog          *joinlog.Log
+	joinProjector    *joinlog.Projector
+	joinHandler      *joinlog.HTTPHandler
 }
 
 // NewServer initializes a new Server with defaults for omitted configuration fields.
@@ -217,6 +225,36 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		}
 	}
 
+	var jl *joinlog.Log
+	var jp *joinlog.Projector
+	if cfg.JoinLog != nil {
+		jl = cfg.JoinLog
+		jp = cfg.JoinProjector
+	} else if cfg.JoinLogPath != "none" && (cfg.JoinLogPath != "" || cfg.DBPath != "none") {
+		jlPath := cfg.JoinLogPath
+		if jlPath == "" && cfg.TasksDir != "" {
+			jlPath = filepath.Join(cfg.TasksDir, "join.db")
+		}
+		if jlPath != "" {
+			var err error
+			jl, err = joinlog.New(jlPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to initialize join log: %w", err)
+			}
+			projPath := jlPath + ".proj.db"
+			jp, err = joinlog.NewProjector(projPath)
+			if err != nil {
+				_ = jl.Close()
+				return nil, fmt.Errorf("failed to initialize join projector: %w", err)
+			}
+		}
+	}
+
+	var joinHandler *joinlog.HTTPHandler
+	if jl != nil && jp != nil {
+		joinHandler = joinlog.NewHTTPHandler(jl, jp)
+	}
+
 	s := &Server{
 		config:           cfg,
 		registry:         cfg.Registry,
@@ -232,6 +270,9 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		certStore:        cfg.CertStore,
 		revocationCache:  revCache,
 		webhookStore:     cfg.WebhookStore,
+		joinLog:          jl,
+		joinProjector:    jp,
+		joinHandler:      joinHandler,
 	}
 
 	s.httpServer = &stdhttp.Server{
@@ -646,10 +687,26 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		httpErr = s.httpServer.Shutdown(ctx)
 	}
 	tmErr := s.taskManager.Close()
+	if s.joinProjector != nil {
+		_ = s.joinProjector.Close()
+	}
+	if s.joinLog != nil {
+		_ = s.joinLog.Close()
+	}
 	if httpErr != nil && !errors.Is(httpErr, stdhttp.ErrServerClosed) {
 		return httpErr
 	}
 	return tmErr
+}
+
+// JoinLog returns the attached join log if configured.
+func (s *Server) JoinLog() *joinlog.Log {
+	return s.joinLog
+}
+
+// JoinProjector returns the attached join projector if configured.
+func (s *Server) JoinProjector() *joinlog.Projector {
+	return s.joinProjector
 }
 
 // FailTasksOfOfflineNodes finalizes as failed NODE_LOST every running task

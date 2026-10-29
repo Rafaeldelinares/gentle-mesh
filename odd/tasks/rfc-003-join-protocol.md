@@ -12,12 +12,13 @@ Que el conocimiento de la malla deje de vivir solo en el coordinador y pase a un
 - **Sin CRDTs, sin Raft/Paxos, sin event-sourcing completo.** Es un log de eventos de alto nivel (tarea creada, territorio declarado, colisión detectada, tarea terminada), no un sistema de reconstrucción universal.
 - **Réplicas y consenso: fuera de alcance, pero sin cerrar la puerta.** El formato del evento y el esquema de encadenado **no pueden asumir implícitamente un único coordinador posible**; cada decisión que encarecería réplicas más adelante queda anotada en §6 del RFC.
 - **JCS (RFC 8785) + Ed25519**, reusando las primitivas que ya existen en `pkg/jcs`, `pkg/envelope`, `pkg/signing` y `pkg/receipt`.
+- **Snapshot con doble digest (J3, issue #171):** El snapshot expone tanto la posición inmutable en la cadena (`head_event_seq` + `head_event_hash`) para empalmar con el stream sin huecos, como el digest semántico del estado (`state_digest = SHA256(JCS(state))`) para contrastar que la proyección coincida byte a byte con la del coordinador (RFC 8785).
+- **Cursor de reanudación de stream (J4, issue #171):** El stream SSE emite `id: <seq>` (ordinal monótono 1, 2, 3...). La reconexión utiliza el estándar SSE nativo vía header `Last-Event-ID: <seq>` (o query `?since_seq=<seq>`), permitiendo reanudar sin pedir el snapshot completo. Parámetro opcional `?since_hash=<hash>` para validar continuidad de cadena.
 - **A2A es fachada hacia afuera, no transporte interno** (N4). El tráfico entre nodos sigue hablando el protocolo propio.
 - **El modelo de capacidades en dos capas se documenta, no se implementa** en esta RFC: capa AGENTE (modelo, skills, presupuestos) y capa NODO/WORKER (hardware, sandbox, toolchains, red, identidad), con Tier 1 verificable al instante vía el `POST /preflight` que ya existe y Tier 2 como confianza por observación.
 
 ## Decisiones Pendientes (a resolver en implementación)
 
-- [ ] **Superficie del snapshot** (J3): qué se firma y cómo se define el digest (sobre la cadena de hashes, no sobre el estado derivado).
 - [ ] **Formato de envelope firmado completo para eventos de agentes** (reutilización de `pkg/signing` con Ed25519 sobre JCS).
 
 ## Arquitectura de Paquetes (prevista)
@@ -39,7 +40,7 @@ gentle-mesh/
 - [x] Task 0: Documento técnico de RFC-003 (objetivos, no-objetivos, perfil mínimo, restricción de diseño y tabla de conformidad) más este tracking. (Commit: `abc8f4c`, documentación; PR [#167](https://github.com/Rafaeldelinares/gentle-mesh/pull/167))
 - [x] Task 1: Formato del evento firmado + test de la carrera de escritura. Resuelto con Opción C (`BEGIN IMMEDIATE` + `UNIQUE(prev_hash)` en SQLite). 4 tests pasando con race detector: linealidad bajo 16 escritores concurrentes, rechazo de doble génesis `prev_hash = ""`, rechazo de bifurcación intermedia y serialización multi-handle. (Issue: [#166](https://github.com/Rafaeldelinares/gentle-mesh/issues/166))
 - [x] Task 2: Cada cambio de estado como evento; el SQLite como proyección derivada del log, no al revés (J6). Cero inferencias del reloj de pared: expiración por reaper emitida explícitamente (`reason: "lease_expired"`). Suite completa de equivalencia campo por campo verificada bajo `-race` (`TestProjector_RebuildFromScratchProducesIdenticalState`). (Issue: [#169](https://github.com/Rafaeldelinares/gentle-mesh/issues/169))
-- [ ] Task 3: Endpoint de snapshot con digest verificable + suscripción al stream en vivo, con cursor reanudable.
+- [x] Task 3: Endpoint de snapshot con digest verificable (J3) + suscripción al stream en vivo con cursor reanudable `id: <seq>:<hash>` y detección de divergencia 409 (J4). 7 tests pasando bajo `-race` cubriendo snapshot, adulteración de estado, stream histórico, stream en vivo, reconexión por Last-Event-ID, espera cuando since_seq > head, y rechazo 409 de bifurcación. (Issue: [#171](https://github.com/Rafaeldelinares/gentle-mesh/issues/171))
 - [ ] Task 4: Verificación oportunista del territorio declarado contra la actividad observada (ficheros tocados, operaciones git), sin reemplazar la declaración.
 - [ ] Task 5: Adaptador A2A: Agent Card en `/.well-known/agent-card.json`, firmada JWS sobre JCS con las primitivas Ed25519 existentes.
 - [ ] Task 6: Documentar (no implementar) el modelo de capacidades en dos capas, con Tier 1 (verificable al instante) y Tier 2 (confianza por observación).
