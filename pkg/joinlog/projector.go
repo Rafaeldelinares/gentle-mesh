@@ -29,15 +29,30 @@ type ActiveTerritoryLock struct {
 	ClaimedAt    time.Time `json:"claimed_at"`
 }
 
+// TerritoryVerification is the projected evidence of an opportunistic territory
+// verification (RFC-003 J5). It is additive: it never replaces the claim or the
+// release of the territory it refers to.
+type TerritoryVerification struct {
+	TaskID           string          `json:"task_id"`
+	GitRepo          string          `json:"git_repo"`
+	GitBranch        string          `json:"git_branch"`
+	DeclaredSurfaces []string        `json:"declared_surfaces"`
+	ObservedFiles    []string        `json:"observed_files"`
+	Discrepancies    []string        `json:"discrepancies"`
+	Status           TerritoryStatus `json:"status"`
+	VerifiedAt       time.Time       `json:"verified_at"`
+}
+
 // MeshState holds the projected state of the mesh derived purely from the event log.
 // All fields are deterministic: two projections of the same log yield identical
 // MeshState values regardless of when or where they were executed.
 type MeshState struct {
-	Nodes            map[string]NodeJoinedPayload     `json:"nodes"`
-	Tasks            map[string]TaskCreatedPayload    `json:"tasks"`
-	ActiveLocks      map[string]ActiveTerritoryLock   `json:"active_locks"`
-	SettledTasks     map[string]TaskSettledPayload    `json:"settled_tasks"`
-	TerritoryHistory []TerritoryHistoryEntry          `json:"territory_history"`
+	Nodes                 map[string]NodeJoinedPayload   `json:"nodes"`
+	Tasks                 map[string]TaskCreatedPayload  `json:"tasks"`
+	ActiveLocks           map[string]ActiveTerritoryLock `json:"active_locks"`
+	SettledTasks          map[string]TaskSettledPayload  `json:"settled_tasks"`
+	TerritoryHistory      []TerritoryHistoryEntry        `json:"territory_history"`
+	TerritoryVerifications []TerritoryVerification       `json:"territory_verifications"`
 }
 
 // Projector consumes events from a joinlog.Log and projects them into a SQLite
@@ -104,6 +119,18 @@ CREATE TABLE IF NOT EXISTS proj_territory_history (
 	territory_key TEXT NOT NULL,
 	reason TEXT NOT NULL,
 	released_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS proj_territory_verifications (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	task_id TEXT NOT NULL,
+	git_repo TEXT NOT NULL,
+	git_branch TEXT NOT NULL,
+	declared_surfaces TEXT NOT NULL,
+	observed_files TEXT NOT NULL,
+	discrepancies TEXT NOT NULL,
+	status TEXT NOT NULL,
+	verified_at TEXT NOT NULL
 );
 `
 	if _, err := p.db.ExecContext(ctx, schema); err != nil {
@@ -207,6 +234,35 @@ func (p *Projector) ProjectEvent(ctx context.Context, e Event) error {
 			return fmt.Errorf("project task.settled: %w", err)
 		}
 
+	case EventTypeTerritoryVerified:
+		// Evidence only: it never touches proj_territory_locks (the claim and
+		// the release keep their own meaning) nor proj_territory_history.
+		var payload TerritoryVerifiedPayload
+		if err := json.Unmarshal(e.Payload, &payload); err != nil {
+			return fmt.Errorf("unmarshal territory.verified payload: %w", err)
+		}
+		declaredJSON, err := json.Marshal(payload.DeclaredSurfaces)
+		if err != nil {
+			return fmt.Errorf("marshal declared surfaces: %w", err)
+		}
+		observedJSON, err := json.Marshal(payload.ObservedFiles)
+		if err != nil {
+			return fmt.Errorf("marshal observed files: %w", err)
+		}
+		discrepanciesJSON, err := json.Marshal(payload.Discrepancies)
+		if err != nil {
+			return fmt.Errorf("marshal discrepancies: %w", err)
+		}
+		if _, err := p.db.ExecContext(ctx,
+			`INSERT INTO proj_territory_verifications
+			   (task_id, git_repo, git_branch, declared_surfaces, observed_files, discrepancies, status, verified_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+			payload.TaskID, payload.GitRepo, payload.GitBranch,
+			string(declaredJSON), string(observedJSON), string(discrepanciesJSON),
+			string(payload.Status), eventTimestamp); err != nil {
+			return fmt.Errorf("project territory.verified: %w", err)
+		}
+
 	default:
 		// Unknown event types are tolerated without breaking replay (forward compatibility)
 	}
@@ -232,11 +288,12 @@ func (p *Projector) Replay(ctx context.Context, l *Log) error {
 // All fields are populated so that two snapshots can be deeply compared.
 func (p *Projector) Snapshot(ctx context.Context) (*MeshState, error) {
 	state := &MeshState{
-		Nodes:            make(map[string]NodeJoinedPayload),
-		Tasks:            make(map[string]TaskCreatedPayload),
-		ActiveLocks:      make(map[string]ActiveTerritoryLock),
-		SettledTasks:     make(map[string]TaskSettledPayload),
-		TerritoryHistory: make([]TerritoryHistoryEntry, 0),
+		Nodes:                  make(map[string]NodeJoinedPayload),
+		Tasks:                  make(map[string]TaskCreatedPayload),
+		ActiveLocks:            make(map[string]ActiveTerritoryLock),
+		SettledTasks:           make(map[string]TaskSettledPayload),
+		TerritoryHistory:       make([]TerritoryHistoryEntry, 0),
+		TerritoryVerifications: make([]TerritoryVerification, 0),
 	}
 
 	// 1. Nodes
@@ -326,6 +383,42 @@ func (p *Projector) Snapshot(ctx context.Context) (*MeshState, error) {
 		state.TerritoryHistory = append(state.TerritoryHistory, h)
 	}
 	if err := histRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// 5. Territory verifications (evidence, additive)
+	verifRows, err := p.db.QueryContext(ctx,
+		`SELECT task_id, git_repo, git_branch, declared_surfaces, observed_files, discrepancies, status, verified_at
+		 FROM proj_territory_verifications ORDER BY id ASC;`)
+	if err != nil {
+		return nil, fmt.Errorf("query proj_territory_verifications: %w", err)
+	}
+	defer verifRows.Close()
+	for verifRows.Next() {
+		var v TerritoryVerification
+		var declaredJSON, observedJSON, discrepanciesJSON, verifiedAtStr string
+		if err := verifRows.Scan(&v.TaskID, &v.GitRepo, &v.GitBranch, &declaredJSON, &observedJSON,
+			&discrepanciesJSON, &v.Status, &verifiedAtStr); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(declaredJSON), &v.DeclaredSurfaces)
+		_ = json.Unmarshal([]byte(observedJSON), &v.ObservedFiles)
+		_ = json.Unmarshal([]byte(discrepanciesJSON), &v.Discrepancies)
+		if v.DeclaredSurfaces == nil {
+			v.DeclaredSurfaces = []string{}
+		}
+		if v.ObservedFiles == nil {
+			v.ObservedFiles = []string{}
+		}
+		if v.Discrepancies == nil {
+			v.Discrepancies = []string{}
+		}
+		if ts, err := time.Parse(time.RFC3339Nano, verifiedAtStr); err == nil {
+			v.VerifiedAt = ts
+		}
+		state.TerritoryVerifications = append(state.TerritoryVerifications, v)
+	}
+	if err := verifRows.Err(); err != nil {
 		return nil, err
 	}
 

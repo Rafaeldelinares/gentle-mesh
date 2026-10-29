@@ -258,6 +258,13 @@ func Command(ctx context.Context, dir string, args ...string) (*exec.Cmd, error)
 // machinery. With diff.external emptied git fails hard rather than diffing, so
 // a `diff` without these flags would look like a broken runner instead of a
 // neutralized one.
+//
+// It also refuses a range operand that starts with "-": git parses such an
+// operand as an option, not as a revision, so "<base>..HEAD" built from
+// untrusted data could smuggle an option into the diff (for example
+// "--output=/some/path..HEAD", which makes git write the diff to a file). This
+// is the argument-injection class of #35, and it is refused at the package that
+// exists to keep git invocations safe, so every caller is covered.
 func checkDiffArgs(args []string) error {
 	if len(args) == 0 || args[0] != "diff" {
 		return nil
@@ -273,6 +280,11 @@ func checkDiffArgs(args []string) error {
 	}
 	if !noExt || !noTextconv {
 		return errors.New("gitsafe: a git diff must pass --no-ext-diff and --no-textconv")
+	}
+	for _, a := range args[1:] {
+		if strings.Contains(a, "..") && strings.HasPrefix(a, "-") {
+			return fmt.Errorf("gitsafe: refusing a diff range operand that would be parsed as an option: %q", a)
+		}
 	}
 	return nil
 }

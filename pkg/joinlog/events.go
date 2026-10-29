@@ -26,6 +26,10 @@ const (
 	// EventTypeTaskSettled indicates a task has completed, settled deterministically,
 	// or terminated with a definitive verdict.
 	EventTypeTaskSettled = "task.settled"
+
+	// EventTypeTerritoryVerified indicates that an opportunistic verification
+	// of declared territory vs observed activity has been performed and recorded (RFC-003 J5).
+	EventTypeTerritoryVerified = "territory.verified"
 )
 
 // ReleaseReason explains why a territory lock was released.
@@ -84,4 +88,24 @@ type TaskSettledPayload struct {
 	TaskID      string `json:"task_id"`
 	Verdict     string `json:"verdict"` // e.g. "SETTLED_CLEAN", "SETTLEMENT_FAILED", "SETTLEMENT_TIMEOUT"
 	ReceiptHash string `json:"receipt_hash,omitempty"`
+}
+
+// TerritoryStatus represents the outcome of an opportunistic territory verification.
+type TerritoryStatus string
+
+const (
+	TerritoryStatusClean       TerritoryStatus = "CLEAN"
+	TerritoryStatusDiscrepancy TerritoryStatus = "DISCREPANCY"
+)
+
+// TerritoryVerifiedPayload carries the cryptographic evidence of an opportunistic
+// territory verification (RFC-003 J5, issue #173).
+type TerritoryVerifiedPayload struct {
+	TaskID           string          `json:"task_id"`
+	GitRepo          string          `json:"git_repo"`
+	GitBranch        string          `json:"git_branch"`
+	DeclaredSurfaces []string        `json:"declared_surfaces"`
+	ObservedFiles    []string        `json:"observed_files"`
+	Discrepancies    []string        `json:"discrepancies"`
+	Status           TerritoryStatus `json:"status"` // CLEAN or DISCREPANCY
 }

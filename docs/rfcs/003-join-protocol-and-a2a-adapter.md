@@ -104,6 +104,24 @@ Para el stream del join log (J4), la semántica es **distinta y más exigente**:
      - **Si difiere**: rechaza la conexión con `HTTP 409 Conflict` (Divergencia de cadena detectada), forzando
        al agente a solicitar un nuevo snapshot en vez de admitir una bifurcación de datos.
 
+### 4.1.2 Análisis técnico: Frontera de confianza en la verificación de territorio (J5)
+
+La garantía de J5 en esta RFC es: **arnés de Go del host (fuera del sandbox del agente) vs. declaración del agente**.
+
+1. **Nivel de confianza real hoy**:
+   - El agente LLM opera enjaulado en un sandbox `bwrap` sobre un worktree efímero.
+   - Quien recolecta la actividad observada (`git diff --name-only BaseRef..HEAD`) es el **arnés nativo en Go** (`GentleShellRunner`), que corre en el host fuera del sandbox.
+   - El contraste evalúa si los archivos efectivamente modificados en Git respetan las superficies declaradas (`edit_surfaces`). El nivel de confianza real hoy es: *«el agente no mintió, verificado por el mismo binario reproducible que corre en el host del worker»*.
+2. **Lo que queda explícitamente fuera de este RFC (Zero-Trust inter-nodo)**:
+   - No se implementa la verificación de Git independiente desde el coordinador (donde el coordinador haría fetch de los objetos de `proposal/<task_id>` para correr `git diff` en su propio host).
+   - En la arquitectura actual de gentle-mesh, el coordinador no tiene acceso al filesystem ni al `RepoCache` local del worker. Construir un transporte de objetos Git entre worker y coordinador excede el alcance de este RFC.
+   - **Beneficio colateral identificado**: Esta transferencia de objetos Git resolvería de paso el soporte de `gentle-mesh apply` en entornos distribuidos multi-nodo (donde hoy `apply` requiere acceso local al `RepoCache` del worker). Queda documentado como candidato para una incidencia de infraestructura separada.
+3. **Superficie de la observación (límite conocido y explícito)**:
+   - La actividad observada es el diff **commiteado** (`BaseRef..HEAD`) de la rama `proposal/<task_id>`, calculado por el arnés de Go con un `git diff --name-only` endurecido vía `pkg/gitsafe` (sin `diff.external`, sin `textconv`, sin drivers de filtro).
+   - **La revisión base se valida y se resuelve antes de entrar al argv**: se exige un nombre de ref plano (sin `-` inicial, sin `..`, solo caracteres de ref) y se resuelve a un SHA completo de commit, de modo que el operando del diff es un string hexadecimal que git no puede interpretar como opción. `pkg/gitsafe` además rechaza cualquier operando de rango que empiece por `-` (la forma `--output=/ruta..HEAD`, que haría que git escribiera el diff a un fichero). Esto cierra la clase de inyección de argumentos de #35 en esta ruta.
+   - En consecuencia, un fichero que el agente haya creado o modificado pero **nunca commiteado** no aparece en la observación. El contrato de completitud del runner ya exige working tree limpio, pero `git status --porcelain` **tampoco** lista ficheros ignorados: un fichero con extensión ignorada por el `.gitignore` del host (por ejemplo `*.key`) puede quedar fuera de la observación por completo.
+   - Esto no se resuelve en esta RFC (haría falta una enumeración adicional de ficheros no ignorados/ignorados modificados, con su propio coste). Queda anotado como límite conocido del nivel de garantía actual y abierto como incidencia de seguridad propia ([#174](https://github.com/Rafaeldelinares/gentle-mesh/issues/174)).
+
 ### 4.2 Adaptador A2A (A)
 
 | ID | Objetivo | Criterio medible |
@@ -239,7 +257,7 @@ referenciable, pero que **no hay implementación**.
 | J2 | sí | Escrituras concurrentes al mismo log producen una cadena lineal, sin bifurcaciones ni predecesores compartidos. | cumplido | `TestJoinLog_ConcurrentAppendsProduceOneLinearChain`, `TestJoinLog_GenesisUniqueConstraint` | — | [#166](https://github.com/Rafaeldelinares/gentle-mesh/issues/166) |
 | J3 | sí | Snapshot con digest verificable por el cliente a partir del log. | cumplido | `TestSnapshot_VerifiableDigest`, `TestHTTPSnapshot_Success` | — | [#171](https://github.com/Rafaeldelinares/gentle-mesh/issues/171) |
 | J4 | sí | Stream en vivo sin huecos ni duplicados, reanudable por cursor. | cumplido | `TestHTTPEvents_StreamAndResume`, `TestHTTPEvents_ChainDivergenceReturns409` | — | [#171](https://github.com/Rafaeldelinares/gentle-mesh/issues/171) |
-| J5 | sí | La declaración de territorio se contrasta contra la actividad observada; la evidencia va al log. | sin código | — | Contraste de territorio | — |
+| J5 | sí | La declaración de territorio se contrasta contra la actividad observada; la evidencia va al log. | cumplido | `TestTerritory_CleanVerification`, `TestTerritory_DiscrepancyVerification`, `TestTerritory_SurfaceMatchingBoundary`, `TestTerritory_VerifiedEventIsAdditiveEvidence` | — | [#173](https://github.com/Rafaeldelinares/gentle-mesh/issues/173) |
 | J6 | sí | El estado completo se reconstruye leyendo el log desde cero. | cumplido | `TestProjector_RebuildFromScratchProducesIdenticalState` | — | [#169](https://github.com/Rafaeldelinares/gentle-mesh/issues/169) |
 | J7 | no | El coordinador deja de ser punto de必经ada para unirse. | sin código | — | Extensión futura | — |
 | A1 | sí | Agent Card conforme al perfil A2A servida en `/.well-known/agent-card.json`. | sin código | — | Endpoint de la card | — |
