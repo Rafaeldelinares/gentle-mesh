@@ -130,6 +130,85 @@ La garantía de J5 en esta RFC es: **arnés de Go del host (fuera del sandbox de
 | A2 | **Agent Card firmada** | La Agent Card se firma como JWS sobre su forma canónica JCS, con las primitivas Ed25519 ya existentes en `pkg/envelope` / `pkg/signing` / `pkg/receipt`. Un cliente verifica la firma con la clave publicada y rechaza una card alterada. |
 | A3 | **A2A no es transporte interno** | El adaptador expone la card hacia fuera; el tráfico entre nodos de gentle-mesh sigue hablando el protocolo propio. Un test demuestra que la malla no depende de mensajes A2A para funcionar. |
 
+### 4.2.1 Diseño del adaptador A2A: la Agent Card y quién la firma
+
+#### 4.2.1.1 Forma de la card
+
+La card se sirve en `GET /.well-known/agent-card.json`. El **cuerpo** es un objeto canónico (JCS, RFC 8785) y la **firma** va en un sobre contiguo, de forma JWS compacta:
+
+```json
+{
+  "kind": "gentle-mesh.agent-card/v1",
+  "subject": {
+    "node_id": "w-dev-2",
+    "role": "worker",
+    "public_key": "<base64url de la clave Ed25519 del sujeto>"
+  },
+  "name": "w-dev-2",
+  "description": "Nodo worker de la malla gentle-mesh",
+  "url": "https://192.168.1.26:8631",
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": true,
+    "push_notifications": false,
+    "state_transition_history": true
+  },
+  "skills": [
+    { "id": "go-build", "name": "Compilar Go", "tags": ["go", "build"] }
+  ],
+  "default_input_modes": ["text/plain"],
+  "default_output_modes": ["text/plain", "application/json"],
+  "mesh": {
+    "log_head_seq": 142,
+    "log_head_hash": "3f75573d...",
+    "state_digest": "a6be93ab..."
+  },
+  "issued_at": "2026-10-30T00:00:00Z",
+  "expires_at": "2026-11-30T00:00:00Z"
+}
+```
+
+Sobre de firma (JWS compacto sobre bytes JCS):
+
+```json
+{
+  "protected": { "alg": "EdDSA", "typ": "JOSE", "kid": "w-dev-2" },
+  "payload": "<base64url(JCS(card))>",
+  "signature": "<base64url(Ed25519) sobre ASCII(base64url(JCS(protected)) || '.' || base64url(JCS(payload)))>"
+}
+```
+
+Dos propiedades de este formato que hay que preservar:
+
+- **Determinismo**: la firma se calcula sobre los bytes JCS, así que el mismo contenido lógico produce siempre la misma firma (misma clave, mismo instante). Un verificador no necesita re-serializar: decodifica `payload` y recalcula.
+- **Vinculación con el estado verificable**: el bloque `mesh` ata la card a un punto exacto del log (`log_head_seq`, `log_head_hash`) y al digest del estado proyectado (`state_digest`, J3). Un consumidor externo puede comprobar que la card no describe un estado viejo ni alterado, sin confiar en la palabra del coordinador.
+
+#### 4.2.1.2 La decisión: quién firma, y qué identidad se expone hacia afuera
+
+La card se publica para **consumo externo**, así que «quién firma» es exactamente «qué identidad exponemos hacia afuera». Hay tres designs coherentes:
+
+| | **Nodo firma (sujeto)** | **Coordinador firma (representante)** |
+|---|---|---|
+| Qué se expone | La identidad del **nodo individual**, encadenada al CA de la malla | La identidad del **coordinador** (o de «la malla») |
+| ¿Puede el coordinador falsear capacidades? | **No**: alterar la card rompe la firma | **Sí**: firma sobre lo que él afirma de un tercero |
+| ¿Hace falta delegación? | No | **Sí**, y hoy no existe ese mecanismo |
+| Ancla de confianza externa | La clave pública del sujeto + el encadenamiento de esa clave | El propio coordinador |
+| Cobertura | Nodos con identidad de agente | También nodos sin identidad propia |
+
+**Recomendación: el nodo firma; el coordinador distribuye y ancla.**
+
+- La **firma** es del sujeto (el nodo), con su identidad Ed25519 de agente — la misma de RFC-002 (`pkg/signing` / `pkg/keystore`), reusando `pkg/jcs` para la forma canónica, tal como dice A2.
+- El **binding** entre `node_id` y esa clave Ed25519 no lo afirma el coordinador enWords: vive en el **log de eventos** (`node.joined`), que es la fuente de verdad y está encadenado por hash. La card incluye `subject.public_key`; un verificador que tenga acceso al log (o a su snapshot verificado, J3) puede comprobar el binding sin confiar en una declaración del coordinador.
+- El **coordinador** sirve la card y el CA de la malla: es **distribuidor y ancla**, no *representante* de los nodos.
+- **Nunca** el coordinador firma en nombre de un tercero. Si el sujeto de una card es el propio coordinador, la card lo declara (`subject.role: "coordinator"`) y su firma es sobre su propia identidad.
+
+El precio explícito de esta recomendación: **el ancla de confianza externa es el registro del coordinador (o el log), no una cadena X.509 del sujeto**. La alternativa fuerte —firmar con la identidad mTLS del nodo (ECDSA P-256) y adjuntar su certificado, de modo que un externo que confíe en el CA de la malla verifique la cadena completa— es más cara: exige JWS con ES256 en lugar de EdDSA (desviándose del texto de A2) **o** reenrolar a los nodos con claves Ed25519 (tocando la PKI, donde #160 sigue abierto). Se deja anotado como decisión a futuro; no se construye en esta RFC.
+
+#### 4.2.1.3 Qué NO se decide aquí
+
+- El formato exacto del `Agent Card` del ecosistema A2A externo (perfil, nombres de campo): la card de gentle-mesh usa su propio `kind` y se documenta como *subconjunto* del perfil A2A, no como una implementación completa.
+- La rotación de claves y la revocación de una card: hereda el modelo de revocación del ledger PKI, pero su implementación no forma parte de esta pieza.
+
 ### 4.3 Modelo de capacidades en dos capas (C) — **documentar, no implementar**
 
 | ID | Objetivo | Criterio medible |

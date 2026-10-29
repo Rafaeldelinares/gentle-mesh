@@ -15,12 +15,15 @@ Que el conocimiento de la malla deje de vivir solo en el coordinador y pase a un
 - **Snapshot con doble digest (J3, issue #171):** El snapshot expone tanto la posición inmutable en la cadena (`head_event_seq` + `head_event_hash`) para empalmar con el stream sin huecos, como el digest semántico del estado (`state_digest = SHA256(JCS(state))`) para contrastar que la proyección coincida byte a byte con la del coordinador (RFC 8785).
 - **Cursor de reanudación de stream (J4, issue #171):** El stream SSE emite `id: <seq>` (ordinal monótono 1, 2, 3...). La reconexión utiliza el estándar SSE nativo vía header `Last-Event-ID: <seq>` (o query `?since_seq=<seq>`), permitiendo reanudar sin pedir el snapshot completo. Parámetro opcional `?since_hash=<hash>` para validar continuidad de cadena.
 - **Frontera de confianza en verificación de territorio (J5, issue #173):** La garantía es arnés de Go del worker (fuera del sandbox bwrap) vs. declaración del agente. El zero-trust inter-nodo (coordinador ejecutando git diff sobre objetos transferidos) se difiere como candidato de infraestructura independiente (que resolvería además `gentle-mesh apply` multi-nodo).
+- **Quién firma la Agent Card (A2, Punto 5):** El **nodo firma como sujeto** (Ed25519 de agente sobre JCS, reusando `pkg/signing`/`pkg/jcs`), y el **coordinador distribuye y ancla** (sirve la card y el CA) sin firmar en nombre de terceros. El binding `node_id` ↔ clave vive en el log de eventos (`node.joined`), no en una declaración del coordinador. La identidad expuesta hacia afuera es la del nodo individual, no la del coordinador como representante de la malla. Ver RFC-003 §4.2.1.
 - **A2A es fachada hacia afuera, no transporte interno** (N4). El tráfico entre nodos sigue hablando el protocolo propio.
 - **El modelo de capacidades en dos capas se documenta, no se implementa** en esta RFC: capa AGENTE (modelo, skills, presupuestos) y capa NODO/WORKER (hardware, sandbox, toolchains, red, identidad), con Tier 1 verificable al instante vía el `POST /preflight` que ya existe y Tier 2 como confianza por observación.
 
 ## Decisiones Pendientes (a resolver en implementación)
 
 - [ ] **Formato de envelope firmado completo para eventos de agentes** (reutilización de `pkg/signing` con Ed25519 sobre JCS).
+- [ ] **Ancla de confianza externa de la Agent Card**: la recomendación es el binding en el log (`node.joined`); la alternativa fuerte (firma con la identidad mTLS del nodo + su certificado X.509) queda como decisión a futuro porque toca la PKI, donde #160 sigue abierto.
+- [ ] **Contenido de `skills` y `capabilities`**: qué se deriva del estado proyectado del log y qué se declara (A1 exige que sea derivado de capacidades reales, no de un auto-reporte).
 
 ## Arquitectura de Paquetes (prevista)
 
