@@ -91,6 +91,64 @@ func normalizeSurfacePath(p string) string {
 	return strings.TrimPrefix(p, "/")
 }
 
+// ValidateRevisionName rejects a revision that git could parse as an option
+// instead of a revision.
+//
+// This is the guard for the argument-injection class of #35: a base ref that
+// starts with "-" (for example "--output=/some/path") would be parsed by git as
+// an option, not as a revision, and the concatenated range "<base>..HEAD" would
+// carry that option into the diff. The allowed shape is a plain ref name:
+// alphanumerics plus ".", "_", "/" and "-", never starting with "-" or ".",
+// and never containing "..".
+func ValidateRevisionName(rev string) error {
+	if rev == "" {
+		return errors.New("revision is empty")
+	}
+	if strings.HasPrefix(rev, "-") {
+		return fmt.Errorf("revision %q starts with '-' and would be parsed as an option", rev)
+	}
+	if strings.HasPrefix(rev, ".") {
+		return fmt.Errorf("revision %q starts with '.'", rev)
+	}
+	if strings.Contains(rev, "..") {
+		return fmt.Errorf("revision %q contains '..'", rev)
+	}
+	for _, r := range rev {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '/' || r == '-':
+		default:
+			return fmt.Errorf("revision %q contains the disallowed character %q", rev, string(r))
+		}
+	}
+	return nil
+}
+
+// resolveCommitSHA resolves a validated ref name to a full commit SHA.
+//
+// Resolving to a SHA is what makes the diff operand inert: a 40-hex string
+// cannot be parsed as an option, whatever the caller passed in.
+func resolveCommitSHA(ctx context.Context, dir, rev string) (string, error) {
+	if err := ValidateRevisionName(rev); err != nil {
+		return "", err
+	}
+	cmd, err := gitsafe.Command(ctx, dir, "rev-parse", "--verify", rev+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("build git rev-parse: %w", err)
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve revision %q: %w", rev, err)
+	}
+	sha := strings.TrimSpace(string(out))
+	if len(sha) != 40 {
+		return "", fmt.Errorf("resolve revision %q: unexpected commit id %q", rev, sha)
+	}
+	return sha, nil
+}
+
 // VerifyTerritory contrasts the declared edit surfaces against the observed files,
 // determining whether the task remained strictly within its declared territory (RFC-003 J5).
 //
@@ -142,8 +200,17 @@ func matchesAnySurface(surfaces []string, file string) bool {
 // program paths (external diff, textconv, filter drivers) are neutralized, so the
 // observed file list cannot be produced by running something the agent planted.
 func InspectWorktreeAndVerify(ctx context.Context, worktreeDir, baseRef, taskID, repo, branch string, declaredSurfaces []string) (TerritoryVerifiedPayload, error) {
+	// The base ref is task-supplied data. It is validated and resolved to a
+	// commit SHA before it ever reaches the git argv: a base that starts with
+	// "-" would otherwise be parsed as an option (--output=...) and turn the
+	// observation into a file-write primitive outside the worktree.
+	baseSHA, err := resolveCommitSHA(ctx, worktreeDir, baseRef)
+	if err != nil {
+		return TerritoryVerifiedPayload{}, fmt.Errorf("invalid base ref: %w", err)
+	}
+
 	cmd, err := gitsafe.Command(ctx, worktreeDir,
-		"diff", "--no-ext-diff", "--no-textconv", "--name-only", baseRef+"..HEAD")
+		"diff", "--no-ext-diff", "--no-textconv", "--name-only", baseSHA+"..HEAD")
 	if err != nil {
 		return TerritoryVerifiedPayload{}, fmt.Errorf("build git diff: %w", err)
 	}

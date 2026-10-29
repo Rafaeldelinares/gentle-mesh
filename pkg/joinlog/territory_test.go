@@ -220,7 +220,89 @@ func TestTerritory_VerifiedEventIsAdditiveEvidence(t *testing.T) {
 	}
 }
 
-// 3. Test Real Git Worktree Inspection: InspectWorktreeAndVerify runs git diff
+// TestTerritory_RejectsOptionLikeBaseRef proves that a base ref crafted to look
+// like a git option cannot turn the observation into an argument-injection
+// primitive (same family as #35: attacker-controlled data concatenated into an
+// external command without neutralization).
+//
+// The shape: baseRef = "--output=<path>" becomes the diff operand
+// "--output=<path>..HEAD", which git parses as the --output option (write the
+// diff to a file), not as a revision. The harness would then write a file at an
+// attacker-chosen path, with attacker-influenced content, outside the sandbox.
+func TestTerritory_RejectsOptionLikeBaseRef(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+
+	runGit := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test",
+			"GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=Test",
+			"GIT_COMMITTER_EMAIL=test@example.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v failed: %v: %s", args, err, string(out))
+		}
+	}
+
+	repoDir := filepath.Join(tempDir, "worktree")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	runGit(repoDir, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repoDir, "base.txt"), []byte("base"), 0644); err != nil {
+		t.Fatalf("write base.txt: %v", err)
+	}
+	runGit(repoDir, "add", "base.txt")
+	runGit(repoDir, "commit", "-m", "initial commit")
+
+	// The attacker chooses where the injected write lands.
+	writeDir := t.TempDir()
+	maliciousBase := "--output=" + filepath.Join(writeDir, "pwned")
+
+	_, err := joinlog.InspectWorktreeAndVerify(ctx, repoDir, maliciousBase, "task-evil", "repo", "branch", []string{"pkg/*"})
+	if err == nil {
+		t.Errorf("expected an error for an option-like base ref %q, got nil", maliciousBase)
+	}
+
+	// The decisive assertion: nothing was written outside the worktree.
+	entries, readErr := os.ReadDir(writeDir)
+	if readErr != nil {
+		t.Fatalf("read write dir: %v", readErr)
+	}
+	for _, entry := range entries {
+		t.Errorf("option-like base ref %q caused a file write outside the worktree: %s", maliciousBase, entry.Name())
+	}
+}
+
+// TestTerritory_RejectsOtherOptionLikeBaseRefs covers the rest of the class:
+// any operand that git would parse as an option instead of a revision.
+func TestTerritory_RejectsOtherOptionLikeBaseRefs(t *testing.T) {
+	for _, base := range []string{
+		"--output=/tmp/anything",
+		"-p",
+		"--stat",
+		"--no-index",
+		"",
+		"main..HEAD",
+		"refs/heads/main^{}",
+	} {
+		if err := joinlog.ValidateRevisionName(base); err == nil {
+			t.Errorf("expected ValidateRevisionName(%q) to fail, got nil", base)
+		}
+	}
+
+	for _, base := range []string{"main", "origin/main", "release-1.2", "feature/J5_territory"} {
+		if err := joinlog.ValidateRevisionName(base); err != nil {
+			t.Errorf("expected ValidateRevisionName(%q) to pass, got %v", base, err)
+		}
+	}
+}
+
+// TestTerritory_InspectWorktree tests the real Git worktree inspection.
 func TestTerritory_InspectWorktree(t *testing.T) {
 	ctx := context.Background()
 	tempDir := t.TempDir()

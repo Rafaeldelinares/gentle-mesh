@@ -205,6 +205,28 @@ func TestCheckDiffArgsRefusesBareDiff(t *testing.T) {
 	}
 }
 
+// TestCheckDiffArgsRefusesOptionLikeRangeOperand pins the argument-injection
+// guard: a range operand that starts with "-" is parsed by git as an option,
+// not as a revision. "--output=/some/path..HEAD" would make git write the diff
+// to a file outside the worktree (same family as #35).
+func TestCheckDiffArgsRefusesOptionLikeRangeOperand(t *testing.T) {
+	for _, operand := range []string{
+		"--output=/tmp/pwned..HEAD",
+		"--stat..HEAD",
+		"-p..HEAD",
+	} {
+		err := checkDiffArgs([]string{"diff", "--no-ext-diff", "--no-textconv", operand})
+		if err == nil {
+			t.Errorf("expected the option-like range operand %q to be refused", operand)
+		}
+	}
+
+	// A legitimate range must still pass.
+	if err := checkDiffArgs([]string{"diff", "--no-ext-diff", "--no-textconv", "main..HEAD"}); err != nil {
+		t.Fatalf("a legitimate range must be accepted: %v", err)
+	}
+}
+
 // End-to-end proof at the package level: a poisoned driver defined entirely in
 // the repository config must not run, and the checkout must still be correct.
 func TestCommand_NeutralizesPoisonedFilterDriver(t *testing.T) {
