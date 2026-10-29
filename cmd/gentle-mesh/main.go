@@ -211,6 +211,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	addr := fs.String("addr", "127.0.0.1:8080", "Coordinator listen address (e.g. 127.0.0.1:8443 for HTTPS, 127.0.0.1:8080 for HTTP)")
 	tasksDir := fs.String("tasks-dir", "/tmp/gentle-mesh/tasks", "Directory for task logs and state")
 	dbPath := fs.String("db-path", "", "Path to SQLite database for task persistence (defaults to <tasks-dir>/gentle-mesh.db, 'none' to disable; 'none' is not allowed with -tls)")
+	joinLogPath := fs.String("joinlog-path", "", "Path to SQLite database for mesh join log (defaults to <tasks-dir>/join.db, 'none' to disable)")
 	heartbeatTimeout := fs.Duration("heartbeat-timeout", 30*time.Second, "Heartbeat timeout for registered nodes")
 	token := fs.String("token", envOrDefault("GENTLE_MESH_TOKEN", ""), "Optional bearer authentication token (defaults to $GENTLE_MESH_TOKEN so it never has to appear in the process arguments)")
 	dispatchToken := fs.String("dispatch-token", "", "Optional bearer authentication token used when dispatching tasks to mesh workers (falls back to -token)")
@@ -312,6 +313,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		Addr:              *addr,
 		TasksDir:          *tasksDir,
 		DBPath:            dbPathResolved,
+		JoinLogPath:       *joinLogPath,
 		HeartbeatTimeout:  *heartbeatTimeout,
 		TaskTTL:           *taskTTL,
 		BearerToken:       *token,

@@ -44,6 +44,11 @@ func (s *Server) registerRoutes(mux *stdhttp.ServeMux) {
 	mux.HandleFunc("GET /v1/workspace/file", s.handleWorkspaceFile)
 	mux.HandleFunc("POST /v1/certs/enroll", s.handleCertsEnroll)
 	mux.HandleFunc("POST /v1/certs/revoke", s.handleCertsRevoke)
+	// Join log routes (RFC-003)
+	if s.joinHandler != nil {
+		s.joinHandler.RegisterRoutes(mux)
+	}
+
 	// Webhook management
 	mux.HandleFunc("POST /v1/webhooks", s.handleCreateWebhook)
 	mux.HandleFunc("GET /v1/webhooks", s.handleListWebhooks)

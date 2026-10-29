@@ -82,6 +82,28 @@ lo demuestra.
 | J6 | **El log es la fuente de verdad** | El estado completo de la malla se puede reconstruir leyendo el log desde cero, sin consultar ningún estado derivado. Toda mutación de estado —incluyendo la expiración de leases por el reaper autónomo (RFC-002 R2)— se emite como evento explícito en el log (`territory.released` con `reason: "lease_expired"`), **nunca inferida del reloj de pared durante el replay**. Un test reconstruye el estado y lo compara con el del coordinador. |
 | J7 | **El coordinador es un lector más** | Un nodo puede unirse y operar leyendo el log y su stream, sin que el coordinador esté disponible ni sea su punto de必经ada. |
 
+### 4.1.1 Análisis técnico: Semántica de reanudación del stream (Last-Event-ID vs. anclaje de hash)
+
+En el SSE existente de gentle-mesh (`/v1/tasks/{id}/events`), los eventos son de progreso de ejecución
+(`thought`, `token`, `status`) identificados por un entero monótono (`1, 2, 3...`). La reconexión con
+`Last-Event-ID: N` solo pide «lo que vino después de N» sobre un flujo efímero.
+
+Para el stream del join log (J4), la semántica es **distinta y más exigente**:
+1. **Los eventos están encadenados por hash**: cada evento referencia inmutablemente el hash del anterior (`prev_hash`).
+2. **El riesgo de divergencia silenciosa**: si un agente que se desconectó en `seq: 142` reconecta pidiendo
+   solo `Last-Event-ID: 142`, y el servidor sufrió un restore de backup, una partición o una reordenación,
+   el evento 143 del servidor podría tener un `prev_hash` que no coincide con el hash del evento 142 que
+   el agente ya persistió. Su proyección local se rompería de inmediato al validar la cadena (`VerifyChain`).
+3. **El diseño adoptado**:
+   - El estándar W3C SSE define `id:` como una cadena opaca de texto libre, no como un entero forzoso.
+   - En el stream del join log, el servidor emite `id: <seq>:<hash>` (ej. `142:3f75573d...`).
+   - Al reconectar, el cliente envía `Last-Event-ID: 142:3f75573d...` (o mediante query params equivalentes
+     `?since_seq=142&since_hash=3f75573d...`).
+   - El servidor verifica que el evento local en `seq: 142` posea exactamente ese hash:
+     - **Si coincide**: transmite los eventos con `seq > 142` en orden estricto.
+     - **Si difiere**: rechaza la conexión con `HTTP 409 Conflict` (Divergencia de cadena detectada), forzando
+       al agente a solicitar un nuevo snapshot en vez de admitir una bifurcación de datos.
+
 ### 4.2 Adaptador A2A (A)
 
 | ID | Objetivo | Criterio medible |
@@ -215,8 +237,8 @@ referenciable, pero que **no hay implementación**.
 |----------|---------------|---------------|--------|------------------------|-----------|------------|
 | J1 | sí | Formato del evento firmado: id, tipo, actor, payload, hash del evento anterior y firma Ed25519 sobre la forma canónica JCS. | sin código | — | Formato y firma | [#166](https://github.com/Rafaeldelinares/gentle-mesh/issues/166) |
 | J2 | sí | Escrituras concurrentes al mismo log producen una cadena lineal, sin bifurcaciones ni predecesores compartidos. | cumplido | `TestJoinLog_ConcurrentAppendsProduceOneLinearChain`, `TestJoinLog_GenesisUniqueConstraint` | — | [#166](https://github.com/Rafaeldelinares/gentle-mesh/issues/166) |
-| J3 | sí | Snapshot con digest verificable por el cliente a partir del log. | sin código | — | Endpoint de snapshot | — |
-| J4 | sí | Stream en vivo sin huecos ni duplicados, reanudable por cursor. | sin código | — | Endpoint de stream | — |
+| J3 | sí | Snapshot con digest verificable por el cliente a partir del log. | cumplido | `TestSnapshot_VerifiableDigest`, `TestHTTPSnapshot_Success` | — | [#171](https://github.com/Rafaeldelinares/gentle-mesh/issues/171) |
+| J4 | sí | Stream en vivo sin huecos ni duplicados, reanudable por cursor. | cumplido | `TestHTTPEvents_StreamAndResume`, `TestHTTPEvents_ChainDivergenceReturns409` | — | [#171](https://github.com/Rafaeldelinares/gentle-mesh/issues/171) |
 | J5 | sí | La declaración de territorio se contrasta contra la actividad observada; la evidencia va al log. | sin código | — | Contraste de territorio | — |
 | J6 | sí | El estado completo se reconstruye leyendo el log desde cero. | cumplido | `TestProjector_RebuildFromScratchProducesIdenticalState` | — | [#169](https://github.com/Rafaeldelinares/gentle-mesh/issues/169) |
 | J7 | no | El coordinador deja de ser punto de必经ada para unirse. | sin código | — | Extensión futura | — |
