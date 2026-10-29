@@ -41,6 +41,9 @@ func normalizeState(s *MeshState) MeshState {
 	if norm.TerritoryHistory == nil {
 		norm.TerritoryHistory = make([]TerritoryHistoryEntry, 0)
 	}
+	if norm.TerritoryVerifications == nil {
+		norm.TerritoryVerifications = make([]TerritoryVerification, 0)
+	}
 	return norm
 }
 
