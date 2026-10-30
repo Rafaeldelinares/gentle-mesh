@@ -205,7 +205,16 @@ La card se publica para **consumo externo**, así que «quién firma» es exacta
 
 El precio explícito de esta recomendación: **el ancla de confianza externa es el registro del coordinador (o el log), no una cadena X.509 del sujeto**. La alternativa fuerte —firmar con la identidad mTLS del nodo (ECDSA P-256) y adjuntar su certificado, de modo que un externo que confíe en el CA de la malla verifique la cadena completa— es más cara: exige JWS con ES256 en lugar de EdDSA (desviándose del texto de A2) **o** reenrolar a los nodos con claves Ed25519 (tocando la PKI, donde #160 sigue abierto). Se deja anotado como decisión a futuro; no se construye en esta RFC.
 
-#### 4.2.1.3 Qué NO se decide aquí
+#### 4.2.1.3 Direccionamiento A2A y resolución en malla
+
+Por convención estándar de A2A, la ruta canónica `GET /.well-known/agent-card.json` (sin parámetros) **describe única y exclusivamente al host local** (en este caso, el coordinador de gentle-mesh). Un cliente A2A estándar externo que consulte este endpoint recibe la card del propio coordinador firmada con su propia identidad Ed25519.
+
+Para la resolución de workers federados a través del gateway del coordinador, se implementa una extensión:
+- **`GET /.well-known/agent-card.json?node_id=<id>`**: resuelve la Agent Card proyectada del worker desde el log de eventos de la malla.
+- **Desviación explícita documentada**: el uso del parámetro `?node_id=` es una extensión de catálogo de gentle-mesh y **no forma parte de la especificación base de A2A**. Un cliente A2A genérico que no conozca esta extensión no sabrá consultar workers federados por query param; en una topología distribuida pura, cada nodo worker que exponga interfaz A2A hacia afuera servirá su propia card local en su respectivo `GET /.well-known/agent-card.json` en su propio puerto o dominio.
+- **Invariante anti-suplantación**: el coordinador distribuye la card de los workers pero **nunca** firma en nombre de ellos (§4.2.1.2).
+
+#### 4.2.1.4 Qué NO se decide aquí
 
 - El formato exacto del `Agent Card` del ecosistema A2A externo (perfil, nombres de campo): la card de gentle-mesh usa su propio `kind` y se documenta como *subconjunto* del perfil A2A, no como una implementación completa.
 - La rotación de claves y la revocación de una card: hereda el modelo de revocación del ledger PKI, pero su implementación no forma parte de esta pieza.
