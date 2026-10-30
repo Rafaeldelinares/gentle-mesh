@@ -223,13 +223,78 @@ Para la resolución de workers federados a través del gateway del coordinador, 
 
 | ID | Objetivo | Criterio medible |
 |----|----------|------------------|
-| C1 | **Dos capas separadas** | El documento distingue la capa **AGENTE** (modelo, skills, presupuestos de ejecución) de la capa **NODO/WORKER** (hardware, sandbox, toolchains, red, identidad). |
-| C2 | **Tier 1: verificable al instante** | Lo verificable sin historial se responde en el momento — vía el handshake de pre-flight ya existente (`POST /preflight`, RFC-002 A2) — y con su causa real cuando falta algo. |
-| C3 | **Tier 2: confianza por observación** | Lo que no se puede verificar al instante (calidad de un resultado, estabilidad de un nodo) se modela como confianza que crece con la observación, no como un hecho. |
-| C4 | **Fallo con causa, no genérico** | Una carencia del nodo (una herramienta que no está instalada, un sandbox que no arranca) se reporta con su causa concreta, en vez de perderse como un error genérico. |
+| C1 | **Dos capas separadas** | El documento distingue formalmente la capa **AGENTE** (modelo, skills, presupuestos de ejecución) de la capa **NODO/WORKER** (hardware, sandbox bwrap, toolchains instaladas, red e identidad criptográfica). |
+| C2 | **Tier 1: verificable al instante** | Lo verificable sin historial se evalúa síncronamente en el momento del pre-flight handshake (`POST /preflight`, RFC-002 A2), contrastando requerimientos del sobre contra capacidades reales del host receptor. |
+| C3 | **Tier 2: confianza por observación** | Lo que no se puede verificar al instante (estabilidad histórica de un worker, calidad y tasa de éxito en liquidaciones previas) se deriva observando los eventos inmutables del `JoinLog`, tratándolo como reputación acumulada y no como una declaración estática. |
+| C4 | **Fallo con causa estructurada** | Una carencia del nodo (toolchain ausente, memoria insuficiente, colisión territorial) se reporta mediante diagnósticos tipados con causa concreta y sugerencia de re-enrutamiento, eliminando errores opacos como `DISPATCH_FAILED`. |
 
-> C1–C4 son **diseño documentado** en esta RFC: dejan sitio y fijan el vocabulario, pero **no**
-> se implementan en esta tanda. Su estado en la tabla de conformidad es «documentado», no «cumplido».
+> C1–C4 son **diseño documentado** en esta RFC: fijan la arquitectura, el vocabulario y las interfaces conceptuales para futuras iteraciones, pero **no** se implementan como lógica de ejecución en esta tanda. Su estado en la tabla de conformidad es «documentado», no «cumplido».
+
+#### 4.3.1 Separación estructural: Capa Agente vs. Capa Nodo (C1)
+
+La falacia del cómputo homogéneo asume que un agente es intercambiable con cualquier máquina. En la práctica, una tarea distribuida exige dos conjuntos de condiciones ortogonales:
+
+1. **Capa AGENTE (Cognitiva y Lógica)**:
+   - **Modelo de lenguaje**: familia, proveedor y tamaño (`claude-3-5-sonnet`, `gemini-1.5-pro`, `qwen2.5-coder-32b`).
+   - **Habilidades declaradas (Skills)**: capacidad de razonamiento, rol (`worker`, `judge`, `reviewer`), modo de ejecución (TDD estricto, refactor, auditoría).
+   - **Presupuestos**: límite de tokens de contexto, turnos máximos de conversación y timeout de wall-clock lógico.
+   - **Firma e Identidad**: clave privada Ed25519 del agente (`pkg/signing`) para firmar envelopes y recibos de liquidación.
+
+2. **Capa NODO / WORKER (Infraestructura y Ejecución)**:
+   - **Toolchains y Binarios de Sistema**: presencia y versiones de compiladores (`go 1.26.9+`, `python 3.12`, `rustc`, `docker`).
+   - **Recursos de Cómputo**: arquitectura de CPU (`arm64`, `amd64`), núcleos disponibles, RAM libre y aceleración GPU/VRAM para inferencia local.
+   - **Sandbox y Aislamiento**: soporte de `bwrap` (Bubblewrap), reglas de confinamiento de filesystem y acceso restringido a red.
+   - **Localidad de Territorio**: repositorios Git clonados localmente, estado del working tree (`git_clean_worktree: true`) y cachés amortizadas (`RepoCache`).
+   - **Identidad de Red (mTLS)**: certificado cliente emitido por la CA de la malla (`pkg/pki`), sujeto `node_id` y canal seguro autenticado (patrón S1).
+
+Un worker puede hospedar múltiples agentes lógicos; un agente puede correr en distintos workers si el nodo satisface los requisitos materiales de la tarea.
+
+#### 4.3.2 Tier 1: Validación instantánea en Pre-flight Handshake (C2)
+
+El Tier 1 agrupa todos los invariantes que pueden comprobarse localmente en tiempo de pre-despacho ($O(1)$ sin consultar historial):
+- Existencia y versión ejecutable de herramientas (`exec.LookPath("go")`).
+- Disponibilidad de memoria y disco sobre el directorio de trabajo.
+- Verificación territorial preliminar: branch no bloqueada en `proj_territory_locks` y working tree sin modificaciones conflictivas.
+
+Esta validación se canaliza a través del endpoint de negociación de pre-vuelo (`POST /preflight`, definido en RFC-002 Pilar 2). Si la comprobación pasa, el nodo emite un `PreflightReceipt` positivo; si no, devuelve un diagnóstico de rechazo inmediato antes de instanciar procesos o gastar tokens.
+
+#### 4.3.3 Tier 2: Confianza por Observación acumulada en el JoinLog (C3)
+
+Existen propiedades que ningún handshake estático puede garantizar a priori:
+- ¿El nodo tiende a abandonar tareas a mitad de ejecución (`NODE_LOST`)?
+- ¿Cumple rigurosamente las aserciones de liquidación (`SETTLED_CLEAN`) o acumula fallos (`SETTLEMENT_FAILED`)?
+- ¿Respeta las superficies de edición declaradas o genera discrepancias territoriales frecuentes en `territory.verified`?
+
+En lugar de que los nodos se autocalifiquen con puntajes arbitrarios, **el Tier 2 modela la confianza como una proyección determinista sobre el `JoinLog` inmutable**:
+- El coordinador y los orquestadores leen la secuencia histórica de eventos (`task.settled`, `territory.verified`, `node.offline`).
+- La tasa de liquidación exitosa y la latencia promedio emergen de los recibos firmados persistidos en SQLite.
+- La confianza es una función pura: a partir del mismo log encadenado por hash, cualquier nodo calcula exactamente el mismo perfil de fiabilidad para un worker.
+
+#### 4.3.4 Diagnóstico de fallos estructurados vs. errores genéricos (C4)
+
+Cuando una tarea no puede ser atendida por un nodo o falla el pre-flight, el sistema rechaza el uso de códigos opacos como `DISPATCH_FAILED` o cadenas de texto libres.
+
+El protocolo define una estructura de diagnóstico tipada:
+
+```json
+{
+  "code": "MISSING_TOOLCHAIN",
+  "resource": "tool:go",
+  "constraint": ">= 1.22.0",
+  "observed": "go 1.20.4",
+  "suggested_nodes": ["w-dev-2", "w-dev-3"],
+  "retryable": false
+}
+```
+
+Códigos estándar previstos:
+- `MISSING_TOOLCHAIN`: binario de compilación o herramienta ausente o desactualizada.
+- `INSUFFICIENT_MEMORY`: RAM física o VRAM libre por debajo del umbral mínimo del sobre.
+- `TERRITORY_LOCKED`: conflicto de concurrencia en la rama Git requerida (`proj_territory_locks`).
+- `DIRTY_WORKTREE`: presencia de modificaciones no commiteadas en el repositorio local.
+- `SANDBOX_UNAVAILABLE`: entorno de ejecución confinado (`bwrap`) no soportado en el host.
+
+El despachador utiliza `suggested_nodes` y los metadatos estructurados para re-enrutar la tarea de inmediato al nodo idóneo sin intervención humana.
 
 ## 5. No-objetivos
 
@@ -342,20 +407,20 @@ referenciable, pero que **no hay implementación**.
 
 | Objetivo | Perfil mínimo | Qué significa | Estado | Test relacionado | Qué falta | Incidencia |
 |----------|---------------|---------------|--------|------------------------|-----------|------------|
-| J1 | sí | Formato del evento firmado: id, tipo, actor, payload, hash del evento anterior y firma Ed25519 sobre la forma canónica JCS. | sin código | — | Formato y firma | [#166](https://github.com/Rafaeldelinares/gentle-mesh/issues/166) |
-| J2 | sí | Escrituras concurrentes al mismo log producen una cadena lineal, sin bifurcaciones ni predecesores compartidos. | cumplido | `TestJoinLog_ConcurrentAppendsProduceOneLinearChain`, `TestJoinLog_GenesisUniqueConstraint` | — | [#166](https://github.com/Rafaeldelinares/gentle-mesh/issues/166) |
-| J3 | sí | Snapshot con digest verificable por el cliente a partir del log. | cumplido | `TestSnapshot_VerifiableDigest`, `TestHTTPSnapshot_Success` | — | [#171](https://github.com/Rafaeldelinares/gentle-mesh/issues/171) |
-| J4 | sí | Stream en vivo sin huecos ni duplicados, reanudable por cursor. | cumplido | `TestHTTPEvents_StreamAndResume`, `TestHTTPEvents_ChainDivergenceReturns409` | — | [#171](https://github.com/Rafaeldelinares/gentle-mesh/issues/171) |
-| J5 | sí | La declaración de territorio se contrasta contra la actividad observada; la evidencia va al log. | cumplido | `TestTerritory_CleanVerification`, `TestTerritory_DiscrepancyVerification`, `TestTerritory_SurfaceMatchingBoundary`, `TestTerritory_VerifiedEventIsAdditiveEvidence` | — | [#173](https://github.com/Rafaeldelinares/gentle-mesh/issues/173) |
-| J6 | sí | El estado completo se reconstruye leyendo el log desde cero. | cumplido | `TestProjector_RebuildFromScratchProducesIdenticalState` | — | [#169](https://github.com/Rafaeldelinares/gentle-mesh/issues/169) |
-| J7 | no | El coordinador deja de ser punto de必经ada para unirse. | sin código | — | Extensión futura | — |
-| A1 | sí | Agent Card conforme al perfil A2A servida en `/.well-known/agent-card.json`. | sin código | — | Endpoint de la card | — |
-| A2 | sí | Card firmada como JWS sobre JCS con las primitivas Ed25519 existentes. | sin código | — | Firma y verificación | — |
-| A3 | no | El tráfico interno no depende de A2A. | sin código | — | Extensión futura | — |
-| C1 | sí | Las dos capas (agente / nodo-worker) están documentadas y nombradas. | documentado | este documento, §4.3 | — | — |
-| C2 | no | Tier 1: lo verificable al instante se responde en el momento, con su causa real. | documentado | este documento, §4.3 | Implementación fuera de esta RFC | — |
-| C3 | no | Tier 2: la confianza por observación se modela aparte del hecho verificable. | documentado | este documento, §4.3 | Implementación fuera de esta RFC | — |
-| C4 | no | Una carencia del nodo se reporta con su causa concreta. | documentado | este documento, §4.3 | Implementación fuera de esta RFC | — |
+| J1 | sí | Formato del evento: id, tipo, payload, seq, hash y prev_hash encadenado deterministamente por SHA-256. | cumplido | `TestJoinLog_CrossHandleSerialization`, `TestJoinLog_GenesisUniqueConstraint` | — | [#166](https://github.com/Rafaeldelinares/gentle-mesh/issues/166) (PR [#168](https://github.com/Rafaeldelinares/gentle-mesh/pull/168)) |
+| J2 | sí | Escrituras concurrentes al mismo log producen una cadena lineal, sin bifurcaciones ni predecesores compartidos (Opción C). | cumplido | `TestJoinLog_ConcurrentAppendsProduceOneLinearChain`, `TestJoinLog_ForkUniqueConstraint` | — | [#166](https://github.com/Rafaeldelinares/gentle-mesh/issues/166) (PR [#168](https://github.com/Rafaeldelinares/gentle-mesh/pull/168)) |
+| J3 | sí | Snapshot con digest verificable por el cliente a partir del log (`state_digest = SHA256(JCS(state))`). | cumplido | `TestSnapshot_VerifiableDigest`, `TestHTTPSnapshot_Success` | — | [#171](https://github.com/Rafaeldelinares/gentle-mesh/issues/171) (PR [#172](https://github.com/Rafaeldelinares/gentle-mesh/pull/172)) |
+| J4 | sí | Stream en vivo sin huecos ni duplicados, reanudable por cursor `id: <seq>:<hash>` con detección 409 de divergencia. | cumplido | `TestHTTPEvents_StreamAndResume`, `TestHTTPEvents_ChainDivergenceReturns409` | — | [#171](https://github.com/Rafaeldelinares/gentle-mesh/issues/171) (PR [#172](https://github.com/Rafaeldelinares/gentle-mesh/pull/172)) |
+| J5 | sí | La declaración de territorio se contrasta contra la actividad observada por el arnés fuera del sandbox; la evidencia va al log (`territory.verified`). | cumplido | `TestTerritory_CleanVerification`, `TestTerritory_DiscrepancyVerification`, `TestTerritory_SurfaceMatchingBoundary`, `TestTerritory_VerifiedEventIsAdditiveEvidence` | — | [#173](https://github.com/Rafaeldelinares/gentle-mesh/issues/173) (PR [#175](https://github.com/Rafaeldelinares/gentle-mesh/pull/175)) |
+| J6 | sí | El estado completo se reconstruye leyendo el log desde cero, sin inferencias del reloj de pared. | cumplido | `TestProjector_RebuildFromScratchProducesIdenticalState` | — | [#169](https://github.com/Rafaeldelinares/gentle-mesh/issues/169) (PR [#170](https://github.com/Rafaeldelinares/gentle-mesh/pull/170)) |
+| J7 | no | El coordinador deja de ser punto obligatorio para unirse. | sin código | — | Extensión futura | — |
+| A1 | sí | Agent Card conforme al perfil A2A servida en `GET /.well-known/agent-card.json` en el servidor real. | cumplido | `TestA2A_ServerServesVerifiableAgentCard` | — | [#182](https://github.com/Rafaeldelinares/gentle-mesh/issues/182) (PR [#183](https://github.com/Rafaeldelinares/gentle-mesh/pull/183)) |
+| A2 | sí | Card firmada como JWS sobre JCS con Ed25519; consumidor verifica firma y detecta adulteración. | cumplido | `TestAgentCard_SignAndVerify_Success`, `TestAgentCard_TamperedPayload_Rejected`, `TestAgentCard_CoordinatorDoesNotSignForThirdParties` | — | [#182](https://github.com/Rafaeldelinares/gentle-mesh/issues/182) (PR [#183](https://github.com/Rafaeldelinares/gentle-mesh/pull/183)) |
+| A3 | no | El tráfico interno no depende de A2A. | cumplido | Demostrado: la malla opera con su transporte propio HTTPS/SSE mTLS; A2A es adaptador de descubrimiento externo. | — | — |
+| C1 | sí | Las dos capas (agente / nodo-worker) están documentadas y nombradas formalmente. | documentado | este documento, §4.3.1 | — | — |
+| C2 | no | Tier 1: lo verificable al instante se responde en el momento vía pre-flight handshake, con causa real. | documentado | este documento, §4.3.2 | Implementación fuera de esta RFC (RFC-002 Pilar 2) | — |
+| C3 | no | Tier 2: la confianza por observación se deriva deterministamente de los eventos del JoinLog. | documentado | este documento, §4.3.3 | Implementación fuera de esta RFC | — |
+| C4 | no | Una carencia del nodo se reporta con diagnóstico tipado estructurado en vez de error genérico. | documentado | este documento, §4.3.4 | Implementación fuera de esta RFC | — |
 
 ### Método y límites de la comprobación
 
