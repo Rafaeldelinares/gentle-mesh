@@ -24,6 +24,7 @@ import (
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/task"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/webhook"
+	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
 )
 
 // ServerConfig defines configuration parameters for the mesh HTTPS/HTTP coordinator server.
@@ -68,6 +69,8 @@ type ServerConfig struct {
 	JoinLog       *joinlog.Log
 	JoinProjector *joinlog.Projector
 	JoinLogPath   string
+	// A2A signing identity (RFC-003 §4.2.1)
+	Signer signing.Signer
 	// Rate limiting configuration
 	RateLimitRequests int           // Requests per window (0 = disabled)
 	RateLimitWindow   time.Duration // Time window
@@ -94,6 +97,7 @@ type Server struct {
 	joinLog          *joinlog.Log
 	joinProjector    *joinlog.Projector
 	joinHandler      *joinlog.HTTPHandler
+	signer           signing.Signer
 }
 
 // NewServer initializes a new Server with defaults for omitted configuration fields.
@@ -273,6 +277,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		joinLog:          jl,
 		joinProjector:    jp,
 		joinHandler:      joinHandler,
+		signer:           cfg.Signer,
 	}
 
 	s.httpServer = &stdhttp.Server{

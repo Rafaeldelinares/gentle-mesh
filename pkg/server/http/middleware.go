@@ -301,7 +301,8 @@ func AuthMiddlewareWithConfig(cfg AuthConfig, next stdhttp.Handler) stdhttp.Hand
 			return
 		}
 
-		if r.URL.Path == "/healthz" || r.URL.Path == "/healthz/" {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/healthz/" ||
+			r.URL.Path == "/.well-known/agent-card.json" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -372,7 +373,7 @@ func MTLSMiddlewareWithRevocation(checker CertRevocationChecker, next stdhttp.Ha
 	return stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		if r.URL.Path == "/healthz" || r.URL.Path == "/healthz/" ||
 			r.URL.Path == "/v1/mesh/ca" || r.URL.Path == "/v1/certs/enroll" ||
-			r.URL.Path == "/v1/certs/revoke" {
+			r.URL.Path == "/v1/certs/revoke" || r.URL.Path == "/.well-known/agent-card.json" {
 			next.ServeHTTP(w, r)
 			return
 		}
