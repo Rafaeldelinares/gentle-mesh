@@ -30,6 +30,8 @@ type AgentProfile struct {
 type NodeJoinRequest struct {
 	NodeID         string         `json:"node_id"`
 	Endpoint       string         `json:"endpoint"`
+	Role           string         `json:"role,omitempty"` // "coordinator", "worker"
+	AgentPublicKey string         `json:"agent_public_key,omitempty"`
 	Hardware       NodeHardware   `json:"hardware"`
 	Agents         []AgentProfile `json:"agents"`
 	MaxConcurrency int            `json:"max_concurrency"`
@@ -75,6 +77,8 @@ type NodeHeartbeatRequest struct {
 type NodeInfo struct {
 	NodeID         string         `json:"node_id"`
 	Endpoint       string         `json:"endpoint"`
+	Role           string         `json:"role,omitempty"`
+	AgentPublicKey string         `json:"agent_public_key,omitempty"`
 	Hardware       NodeHardware   `json:"hardware"`
 	Agents         []AgentProfile `json:"agents"`
 	MaxConcurrency int            `json:"max_concurrency"`
