@@ -12,12 +12,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gentleman-programming/gentle-mesh/pkg/joinlog"
 	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/federation"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
 	"github.com/gentleman-programming/gentle-mesh/pkg/server/task"
+	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
 )
 
 func (s *Server) registerRoutes(mux *stdhttp.ServeMux) {
@@ -287,6 +289,69 @@ func (s *Server) handleMeshJoin(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 				"error": "client certificate identity does not match node_id",
 			})
 			return
+		}
+	}
+
+	// Validate agent_public_key if provided or if join log is active
+	if req.AgentPublicKey != "" {
+		if _, err := signing.ValidateEd25519PublicKey(req.AgentPublicKey); err != nil {
+			writeJSON(w, stdhttp.StatusBadRequest, map[string]string{
+				"error": fmt.Sprintf("invalid agent_public_key: %v", err),
+			})
+			return
+		}
+	}
+
+	// Atomic persistence: JoinLog FIRST, Registry SECOND.
+	// If JoinLog or Projector fails, the node is NEVER registered in memory.
+	if s.joinLog != nil {
+		role := req.Role
+		if role == "" {
+			role = "worker"
+		}
+		var tags []string
+		for _, a := range req.Agents {
+			tags = append(tags, a.Tags...)
+		}
+		payload := joinlog.NodeJoinedPayload{
+			NodeID:         req.NodeID,
+			Role:           role,
+			Endpoint:       req.Endpoint,
+			AgentPublicKey: req.AgentPublicKey,
+			Tags:           tags,
+		}
+		payloadBytes, err := json.Marshal(payload)
+		if err != nil {
+			writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("failed to serialize node.joined payload: %v", err),
+			})
+			return
+		}
+
+		evt := joinlog.Event{
+			Type:    joinlog.EventTypeNodeJoined,
+			Payload: payloadBytes,
+		}
+		if err := s.joinLog.Append(r.Context(), evt); err != nil {
+			writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("failed to append to join log: %v", err),
+			})
+			return
+		}
+
+		if s.joinProjector != nil {
+			// Read the newly appended event from head to get assigned Seq and Hash
+			headSeq, headHash, err := s.joinLog.HeadPosition(r.Context())
+			if err == nil {
+				evt.Seq = headSeq
+				evt.Hash = headHash
+			}
+			if err := s.joinProjector.ProjectEvent(r.Context(), evt); err != nil {
+				writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{
+					"error": fmt.Sprintf("failed to project node.joined: %v", err),
+				})
+				return
+			}
 		}
 	}
 

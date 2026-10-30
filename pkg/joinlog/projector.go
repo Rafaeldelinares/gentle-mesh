@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS proj_nodes (
 	node_id TEXT PRIMARY KEY,
 	role TEXT NOT NULL,
 	endpoint TEXT NOT NULL,
+	agent_public_key TEXT NOT NULL DEFAULT '',
 	tags TEXT NOT NULL DEFAULT '[]'
 );
 
@@ -136,6 +137,10 @@ CREATE TABLE IF NOT EXISTS proj_territory_verifications (
 	if _, err := p.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("projector init schema: %w", err)
 	}
+
+	// Migration: ensure agent_public_key column exists on existing projection DBs
+	_, _ = p.db.ExecContext(ctx, "ALTER TABLE proj_nodes ADD COLUMN agent_public_key TEXT NOT NULL DEFAULT '';")
+
 	return nil
 }
 
@@ -155,13 +160,14 @@ func (p *Projector) ProjectEvent(ctx context.Context, e Event) error {
 			tagsJSON = []byte("[]")
 		}
 		_, err = p.db.ExecContext(ctx,
-			`INSERT INTO proj_nodes (node_id, role, endpoint, tags)
-			 VALUES (?, ?, ?, ?)
+			`INSERT INTO proj_nodes (node_id, role, endpoint, agent_public_key, tags)
+			 VALUES (?, ?, ?, ?, ?)
 			 ON CONFLICT(node_id) DO UPDATE SET
 			   role = excluded.role,
 			   endpoint = excluded.endpoint,
+			   agent_public_key = excluded.agent_public_key,
 			   tags = excluded.tags;`,
-			payload.NodeID, payload.Role, payload.Endpoint, string(tagsJSON))
+			payload.NodeID, payload.Role, payload.Endpoint, payload.AgentPublicKey, string(tagsJSON))
 		if err != nil {
 			return fmt.Errorf("project node.joined: %w", err)
 		}
@@ -297,7 +303,7 @@ func (p *Projector) Snapshot(ctx context.Context) (*MeshState, error) {
 	}
 
 	// 1. Nodes
-	nodeRows, err := p.db.QueryContext(ctx, `SELECT node_id, role, endpoint, tags FROM proj_nodes ORDER BY node_id ASC;`)
+	nodeRows, err := p.db.QueryContext(ctx, `SELECT node_id, role, endpoint, agent_public_key, tags FROM proj_nodes ORDER BY node_id ASC;`)
 	if err != nil {
 		return nil, fmt.Errorf("query proj_nodes: %w", err)
 	}
@@ -305,7 +311,7 @@ func (p *Projector) Snapshot(ctx context.Context) (*MeshState, error) {
 	for nodeRows.Next() {
 		var n NodeJoinedPayload
 		var tagsJSON string
-		if err := nodeRows.Scan(&n.NodeID, &n.Role, &n.Endpoint, &tagsJSON); err != nil {
+		if err := nodeRows.Scan(&n.NodeID, &n.Role, &n.Endpoint, &n.AgentPublicKey, &tagsJSON); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(tagsJSON), &n.Tags)
