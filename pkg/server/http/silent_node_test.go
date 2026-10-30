@@ -413,9 +413,11 @@ func TestSilentNodeConcurrentEOFAndSweepSingleTransitionAndEvent(t *testing.T) {
 		t.Fatalf("expected failed status, got %s", mt.CurrentStatus())
 	}
 
-	// Contar eventos terminales emitidos por el suscriptor
+	// Contar eventos terminales emitidos por el suscriptor.
+	// La tarea pasó a terminal (Failed), por lo que el canal se cierra al entregar los eventos.
+	// Esperamos deterministamente con timeout de guarda holgado (2s) en vez de ventana fija de 200ms (#176).
 	var terminalCount int
-	timeout := time.After(200 * time.Millisecond)
+	timeout := time.After(2 * time.Second)
 drain:
 	for {
 		select {
@@ -427,7 +429,7 @@ drain:
 				terminalCount++
 			}
 		case <-timeout:
-			break drain
+			t.Fatal("timed out waiting for subscriber channel to close after terminal failure")
 		}
 	}
 

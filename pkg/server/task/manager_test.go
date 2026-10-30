@@ -642,8 +642,8 @@ func TestTaskManager_FanOut(t *testing.T) {
 
 func TestTaskManager_CleanupExpired(t *testing.T) {
 	tmpDir := t.TempDir()
-	// TTL of 500ms — raised from 50ms to prevent flaky failures on slow CI runners
-	mgr, err := NewTaskManager(tmpDir, 500*time.Millisecond)
+	// TTL of 50ms — deterministically waited on via polling (#164)
+	mgr, err := NewTaskManager(tmpDir, 50*time.Millisecond)
 	if err != nil {
 		t.Fatalf("NewTaskManager: %v", err)
 	}
@@ -662,13 +662,19 @@ func TestTaskManager_CleanupExpired(t *testing.T) {
 		t.Fatal("expected t1 to exist before TTL elapsed")
 	}
 
-	// Wait for TTL to expire
-	time.Sleep(800 * time.Millisecond)
-
-	mgr.CleanupExpired()
-
-	// t1 should be purged
-	if _, exists := mgr.GetTask(t1.TaskID); exists {
+	// t1 is completed and should be purged once its finishedAt exceeds TTL.
+	// Poll with a generous deadline instead of a brittle wall-clock sleep (#164).
+	deadline := time.Now().Add(2 * time.Second)
+	purged := false
+	for time.Now().Before(deadline) {
+		mgr.CleanupExpired()
+		if _, exists := mgr.GetTask(t1.TaskID); !exists {
+			purged = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !purged {
 		t.Fatal("expected t1 to be purged after TTL")
 	}
 
