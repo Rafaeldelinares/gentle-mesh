@@ -46,3 +46,26 @@ En octubre de 2026, una auditoría independiente sobre el repositorio encontró 
 El cierre se hizo con cinco pasadas adversariales por frente, reproduciendo cada fallo antes de escribir el arreglo. En uno de los casos, el propio proceso de cierre introdujo una condición de carrera nueva — y la misma verificación que cerró el hallazgo original la encontró y la corrigió en la misma sesión, antes de darla por buena.
 
 El resultado: identidad de nodos con revocación de certificados respaldada por el propio almacenamiento persistente (no por una copia en memoria que podía desincronizarse), aislamiento de ejecución reforzado contra fugas del sandbox, y una primera validación real, con dos máquinas distintas — una como coordinador, otra como ejecutor — completando una tarea de principio a fin con un agente real dentro del entorno aislado. El binario desplegado en ambas máquinas se verificó como idéntico, byte a byte, antes de confiar en el resultado.
+
+## El ciclo RFC-003: Nacer situado, el adaptador A2A y la disciplina del arnés
+
+Entre el 29 y el 30 de octubre de 2026 se completó íntegramente la RFC-003 en `main`. El objetivo era resolver el problema de la consciencia situacional sin caer en la sobreingeniería de consenso pesado (Raft/Paxos) ni en la complacencia de estados volátiles:
+
+1. **La carrera de escritura resuelta por la base de datos (Opción C)**: encadenar eventos por SHA-256 (`prev_hash`) bajo concurrencia expone el riesgo de bifurcación si dos escritores leen la misma cabeza. Se demostró en RED y se resolvió combinando `BEGIN IMMEDIATE` en una conexión dedicada con una restricción dura `UNIQUE(prev_hash)` en SQLite (PR [#168](https://github.com/Rafaeldelinares/gentle-mesh/pull/168)), resistiendo 16 escritores concurrentes sin forks ni dobles génesis.
+2. **Replay determinista sin reloj de pared**: el estado proyectado de la malla se reconstruye desde cero leyendo el log de eventos (J6). Para que el replay sea 100% determinista, las expiraciones de leases se registran como eventos explícitos (`reason: "lease_expired"`), desterrando cualquier llamada a `time.Since` o dependencia del reloj del host en la reconstrucción (PR [#170](https://github.com/Rafaeldelinares/gentle-mesh/pull/170)).
+3. **Arranque situado (Snapshot + Stream SSE)**: los nuevos nodos descargan un snapshot verificable con doble digest (posición inmutable en la cadena y digest canónico JCS del estado semántico, J3) y se suscriben a un stream SSE con cursor monótono `id: <seq>:<hash>` que detecta divergencias con HTTP 409 Conflict (J4, PR [#172](https://github.com/Rafaeldelinares/gentle-mesh/pull/172)).
+4. **Verificación territorial oportunista**: el arnés fuera del sandbox `bwrap` contrasta los archivos tocados por `git diff BaseRef..HEAD` contra las superficies declaradas, emitiendo evidencia aditiva `territory.verified` en el log y endureciendo la invocación de Git contra inyecciones de argumentos (J5, PR [#175](https://github.com/Rafaeldelinares/gentle-mesh/pull/175)).
+
+### La lección del Punto 4.5: El arnés contra la promesa aspiracional
+
+Durante el diseño del adaptador A2A (§4.2.1), se redactó la regla de que *"el binding entre node_id y su clave pública Ed25519 vive en el log de eventos"*. Cuando el usuario cuestionó si ese binding estaba realmente respaldado por el código de producción o si era solo una aspiración escrita, la inspección reveló la verdad cruda: **no existía ningún endpoint en producción que emitiera `node.joined`, y `NodeJoinedPayload` ni siquiera almacenaba la clave pública**.
+
+En lugar de parchar el texto o darlo por cumplido, **se pausó la RFC-003 y se abrió un hito de implementación específico (Punto 4.5)**:
+- Se implementó `POST /v1/mesh/join` atado estrictamente a la identidad mTLS del cliente (`VerifiedChains[0][0].Subject.CommonName == req.NodeID`, patrón S1).
+- Se implementó validación canónica de claves Ed25519 en curva Edwards (RFC 8032 §5.1.3, $y < 2^{255}-19$, rechazando claves todo-ceros y no canónicas).
+- Se garantizó atomicidad estricta invirtiendo el orden: el evento se persiste en el JoinLog y se proyecta en SQLite *antes* de admitir al nodo en la memoria del servidor.
+- Se verificó con tests en RED demostrando el rechazo de suplantación y de claves no canónicas antes de escribir el GREEN (PR [#181](https://github.com/Rafaeldelinares/gentle-mesh/pull/181)).
+
+Solo con esa garantía criptográfica real en `main` se procedió al adaptador A2A: la Agent Card servida en `GET /.well-known/agent-card.json` con sobre compacto JWS/JCS (PR [#183](https://github.com/Rafaeldelinares/gentle-mesh/pull/183)), documentando honestamente que la raíz describe al host local y que `?node_id=` es una extensión de catálogo de la malla.
+
+El ciclo cerró con el saneamiento de la fiabilidad de CI (PR [#184](https://github.com/Rafaeldelinares/gentle-mesh/pull/184), eliminando esperas fijas de reloj por sincronización determinista por condición) y la formalización documental del modelo de capacidades en dos capas (§4.3, PR [#185](https://github.com/Rafaeldelinares/gentle-mesh/pull/185)).
