@@ -51,15 +51,47 @@
 
 ## Estado y hoja de ruta
 
-**Hoy:** RFC-001 (transporte distribuido) y el perfil mínimo conforme RFC-002 (12/12 requisitos de liquidación y recibos firmados) en main.
+**Hoy:** 
+- **RFC-001 (transporte distribuido):** Servidor HTTP/SSE en Go puro sin dependencias (`CGO_ENABLED=0`), mTLS Zero-Trust, semáforos territoriales en Git y soporte de workers remotos.
+- **RFC-002 (liquidación contractual entre agentes):** Perfil mínimo conforme 100% cumplido (12/12 requisitos, recibos firmados Ed25519, hash chain y leases con reaper autónomo en `main`).
+- **RFC-003 (protocolo de unión y adaptador A2A):** 100% completado y cerrado en `main` (J1–J6 cumplidos con tests bajo `-race`, A1–A2 cumplidos en producción, C1–C4 documentados).
 
-**Próximo:** dos piezas de cobertura automatizada siguen pendientes: un test de enrollment de extremo a extremo corriendo en CI (ver [#62](https://github.com/Rafaeldelinares/gentle-mesh/issues/62)) y tests del disparador de webhooks, con su firma y su payload HMAC (ver [#63](https://github.com/Rafaeldelinares/gentle-mesh/issues/63)). La tercera pieza de ese roadmap —la respuesta de error explícita a los comandos RPC no soportados— ya está resuelta en `main` ([#56](https://github.com/Rafaeldelinares/gentle-mesh/pull/56)).
+### Para qué escenario es usable hoy (Honestidad de alcance)
 
-**Seguridad por defecto y certificados:** la escucha por defecto es segura en loopback (`127.0.0.1:8080`; ver [#57](https://github.com/Rafaeldelinares/gentle-mesh/issues/57)), y la revocación de certificados mTLS está implementada con desconexión atómica de nodos y cancelación de tareas en vuelo vía `cert-revoke` y `POST /v1/certs/revoke` (ver [#25](https://github.com/Rafaeldelinares/gentle-mesh/issues/25)).
+Gentle Mesh es usable hoy en producción para:
+> **Un desarrollador individual o un equipo técnico de confianza, operando dentro de su propia red local (LAN) o VPN privada, ejecutando sus propios agentes de IA sobre repositorios de código compartidos.**
 
-**Nota sobre plazos:** este proyecto es impulsado por la comunidad; no se ofrecen fechas de entrega.
+**Qué resuelve de verdad hoy (respaldado por tests deterministas en CI):**
+1. **Resiliencia de red y arranque situado:** el conocimiento de la malla vive en un log inmutable de eventos (`join_log`) encadenado por SHA-256 (J1), serializado sin colisiones mediante Opción C (`BEGIN IMMEDIATE` + `UNIQUE(prev_hash)` en SQLite, J2). Un worker que se une o reconecta no arranca ciego: descarga un snapshot verificable con doble digest (`state_digest = SHA256(JCS(state))`, J3) y se engancha al stream SSE reanudable por cursor `id: <seq>:<hash>` con detección 409 de divergencia (J4).
+2. **Replay determinista sin reloj de pared:** el estado proyectado en SQLite se reconstruye desde cero leyendo el log (J6); las expiraciones de leases se registran como eventos discretos (`reason: "lease_expired"`), eliminando inferencias dependientes del reloj local.
+3. **Verificación territorial oportunista:** el arnés en Go fuera del sandbox Bubblewrap (`bwrap`) contrasta a posteriori los archivos modificados en Git (`git diff BaseRef..HEAD`) contra las superficies declaradas (`edit_surfaces`), emitiendo evidencia aditiva `territory.verified` en el log (J5).
+4. **Admisión autenticada mTLS (S1):** el evento `node.joined` solo puede ser emitido en el log si el certificado mTLS del cliente coincide estrictamente con el `node_id` y la clave pública Ed25519 es canónica en la curva Edwards (RFC 8032 §5.1.3, PR [#181](https://github.com/Rafaeldelinares/gentle-mesh/pull/181)).
+5. **Adaptador A2A estándar:** `GET /.well-known/agent-card.json` sirve una Agent Card canónica JCS firmada con sobre JWS compacto Ed25519 (A1, A2). El coordinador sirve la card del host local y distribuye las de workers federados sin firmar jamás en su nombre (§4.2.1.2).
 
-**Sobre RFC-002:** el protocolo de recibos firmados y liquidación contractual entre agentes cumple el 100% (12/12) de los requisitos del perfil mínimo conforme en `main`, verificado con tests automatizados continuos.
+**Qué queda FUERA del alcance actual (Fronteras y Deuda Abierta):**
+- **Multi-worker concurrente en un solo host:** soporte para orquestar múltiples workers compitiendo intensivamente en la misma máquina ([#147](https://github.com/Rafaeldelinares/gentle-mesh/issues/147)).
+- **Exposición a Internet pública / WAN Zero-Trust:** el sistema no está endurecido para exponerse a internet abierta sin VPN/LAN ([#156](https://github.com/Rafaeldelinares/gentle-mesh/issues/156)).
+- **Webhooks con firma HMAC:** disparador de notificaciones HTTP externas con firma de eventos ([#150](https://github.com/Rafaeldelinares/gentle-mesh/issues/150) / [#63](https://github.com/Rafaeldelinares/gentle-mesh/issues/63)).
+- **Límite de verificación territorial:** archivos sin commitear ignorados por `.gitignore` escapan al diff observado de Git ([#174](https://github.com/Rafaeldelinares/gentle-mesh/issues/174)).
+- **Ligado de SAN en PKI:** `SignCSR` valida el CommonName pero no restringe exhaustivamente los Subject Alternative Names ([#160](https://github.com/Rafaeldelinares/gentle-mesh/issues/160)).
+
+**Guías de uso:**
+- **Guía de uso real en producción (Recomendada):** [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) — instalación, coordinador con mTLS, worker con sandbox `bwrap` (`-runner gentle-shell`), despacho de tareas reales y liquidación.
+- **Demostración rápida de 2 minutos:** [docs/DEMO.md](docs/DEMO.md) — entorno simulado en Docker para ver el semáforo territorial sin agentes reales.
+
+#### Conformidad del Perfil Mínimo RFC-003 (Log de Unión y A2A)
+
+| Objetivo | Qué significa | Estado | Test representativo / Referencia |
+|----------|---------------|--------|----------------------------------|
+| **J1** — Formato de evento encadenado | Eventos encadenados por SHA-256 (`prev_hash`) con hash inmutable. | cumplido | `pkg/joinlog/concurrency_test.go` (PR [#168](https://github.com/Rafaeldelinares/gentle-mesh/pull/168)) |
+| **J2** — Serialización sin colisión | Cadena lineal estricta bajo concurrencia (Opción C: `BEGIN IMMEDIATE` + `UNIQUE(prev_hash)`). | cumplido | `pkg/joinlog/concurrency_test.go` (PR [#168](https://github.com/Rafaeldelinares/gentle-mesh/pull/168)) |
+| **J3** — Snapshot con doble digest | Snapshot con posición en log y digest semántico JCS (`state_digest = SHA256(JCS(state))`). | cumplido | `pkg/joinlog/snapshot_test.go` (PR [#172](https://github.com/Rafaeldelinares/gentle-mesh/pull/172)) |
+| **J4** — Stream SSE reanudable | Stream en vivo con cursor `id: <seq>:<hash>` y detección de bifurcación HTTP 409. | cumplido | `pkg/joinlog/http_test.go` (PR [#172](https://github.com/Rafaeldelinares/gentle-mesh/pull/172)) |
+| **J5** — Verificación territorial | Contraste de `git diff` commiteado contra surfaces declaradas fuera del sandbox. | cumplido | `pkg/joinlog/territory_test.go` (PR [#175](https://github.com/Rafaeldelinares/gentle-mesh/pull/175)) |
+| **J6** — Reconstrucción desde cero | Proyección determinista de estado en SQLite desde el log sin reloj de pared. | cumplido | `pkg/joinlog/projector_test.go` (PR [#170](https://github.com/Rafaeldelinares/gentle-mesh/pull/170)) |
+| **A1** — Agent Card servida | Endpoint `GET /.well-known/agent-card.json` servido en el servidor de producción. | cumplido | `pkg/server/http/a2a_server_test.go` (PR [#183](https://github.com/Rafaeldelinares/gentle-mesh/pull/183)) |
+| **A2** — Agent Card firmada | Sobre JWS compacto Ed25519 sobre cuerpo canónico JCS con clave del sujeto. | cumplido | `pkg/a2a/card_test.go` (PR [#183](https://github.com/Rafaeldelinares/gentle-mesh/pull/183)) |
+| **C1–C4** — Capacidades en 2 capas | Capa Agente vs. Capa Nodo, Tier 1 instantáneo, Tier 2 observado y fallos tipados. | documentado | `docs/rfcs/003-join-protocol-and-a2a-adapter.md` §4.3 (PR [#185](https://github.com/Rafaeldelinares/gentle-mesh/pull/185)) |
 
 #### Conformidad del Perfil Mínimo RFC-002 (12/12)
 
@@ -274,6 +306,8 @@ Los E2E viven en `integration/f2/`. La relación entre RFC-001 y RFC-002 en uso:
 
 ## 3. Demostración Rápida en Local (Entorno Seguro)
 
+> 📖 **Guía de uso real en producción:** si buscas poner en marcha un clúster real con mTLS, workers remotos, aislamiento Bubblewrap (`bwrap`), ejecución de agentes reales y liquidación con recibos firmados, consulta la guía paso a paso: **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)**.
+>
 > **Demo en vivo:** [docs/DEMO.md](docs/DEMO.md) — coordinator local sin TLS, dos tareas con superficies solapadas que demuestra la cola automática.
 
 > ⚠️ **Qué demuestra esta sección, y qué no.** La demo levanta el coordinador con `-runner pi` (subproceso local, **sin sandbox ni worktree**) usando `docs/demo/fake-pi`, un script que duerme y devuelve texto: sirve para ver el territorio y la cola, **no** para juzgar el aislamiento ni la calidad de la ejecución. Para ejecución real con agentes dentro de `bwrap` sobre worktrees efímeros, mira el runner `gentle-shell` (2.4), sus flags y los E2E de `integration/f2/`.

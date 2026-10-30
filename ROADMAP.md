@@ -40,32 +40,51 @@ Demostración empírica de las dos preguntas centrales del protocolo A2A mediant
    - Validación física sobre red local (LAN) contra un worker dedicado Debian 13 (NiPoGi), resolviendo el stub de DNS de `systemd-resolved` en `bwrap` (PR #124).
    - Resolución de tarea sintética compleja (F2-7): despacho de una caché concurrente LRU con expiración por TTL en Go; el agente iteró su propio ciclo TDD dentro del sandbox, corrigió fallos y entregó 21/21 tests pasando con `-race` sin condiciones de carrera (PR #128).
 
+### Conformidad Total de RFC-003 (Protocolo de Unión y Adaptador A2A)
+Diseño, implementación y verificación de todos los objetivos de RFC-003 integrados y demostrados en `main`:
+- **J1 (Formato de evento encadenado):** Log inmutable de eventos encadenados deterministamente por SHA-256 (`prev_hash`) (PR [#168](https://github.com/Rafaeldelinares/gentle-mesh/pull/168) / issue [#166](https://github.com/Rafaeldelinares/gentle-mesh/issues/166)).
+- **J2 (Serialización sin colisión):** Cadena lineal estricta bajo concurrencia implementada con Opción C (`BEGIN IMMEDIATE` + `UNIQUE(prev_hash)` en SQLite) (PR [#168](https://github.com/Rafaeldelinares/gentle-mesh/pull/168)).
+- **J3 (Snapshot con doble digest):** `GET /v1/mesh/snapshot` sirviendo posición de cadena inmutable y digest semántico JCS (`state_digest = SHA256(JCS(state))`) (PR [#172](https://github.com/Rafaeldelinares/gentle-mesh/pull/172) / issue [#171](https://github.com/Rafaeldelinares/gentle-mesh/issues/171)).
+- **J4 (Stream SSE reanudable):** `GET /v1/mesh/events` con cursor monótono `id: <seq>:<hash>`, soporte de `Last-Event-ID` y detección de bifurcación con HTTP 409 Conflict (PR [#172](https://github.com/Rafaeldelinares/gentle-mesh/pull/172)).
+- **J5 (Verificación territorial oportunista):** El arnés fuera del sandbox bwrap contrasta los archivos tocados por `git diff BaseRef..HEAD` contra las superficies declaradas, emitiendo evidencia `territory.verified` en el log con endurecimiento de argumentos git (PR [#175](https://github.com/Rafaeldelinares/gentle-mesh/pull/175) / issue [#173](https://github.com/Rafaeldelinares/gentle-mesh/issues/173)).
+- **J6 (Reconstrucción desde cero):** Proyección determinista de estado en SQLite derivada exclusivamente del log, con expiraciones de lease como eventos explícitos (`reason: "lease_expired"`), eliminando dependencias de reloj de pared (PR [#170](https://github.com/Rafaeldelinares/gentle-mesh/pull/170) / issue [#169](https://github.com/Rafaeldelinares/gentle-mesh/issues/169)).
+- **Punto 4.5 (Admisión autenticada mTLS S1):** `POST /v1/mesh/join` atado a certificado cliente (`Subject.CommonName == req.NodeID`), validación canónica de claves Ed25519 en curva Edwards (RFC 8032 §5.1.3, $y < 2^{255}-19$, sin claves todo-ceros) y atomicidad estricta (JoinLog primero, Projector segundo, Registry tercero) (PR [#181](https://github.com/Rafaeldelinares/gentle-mesh/pull/181) / issue [#180](https://github.com/Rafaeldelinares/gentle-mesh/issues/180)).
+- **A1/A2 (Adaptador A2A y Agent Card firmada):** `GET /.well-known/agent-card.json` servido en producción con sobre compacto JWS sobre cuerpo canónico JCS con Ed25519 (PR [#183](https://github.com/Rafaeldelinares/gentle-mesh/pull/183) / issue [#182](https://github.com/Rafaeldelinares/gentle-mesh/issues/182)). El coordinador sirve la card del host local y distribuye workers sin firmar en su nombre (§4.2.1.2).
+- **C1–C4 (Modelo de capacidades en dos capas):** Especificación formal documentada en §4.3 distinguiendo Capa Agente de Capa Nodo/Worker, Tier 1 instantáneo en pre-flight, Tier 2 observado en JoinLog y diagnósticos tipados (PR [#185](https://github.com/Rafaeldelinares/gentle-mesh/pull/185)).
+
+### Saneamiento de Fiabilidad e Infraestructura (Cerrado en main)
+- **Persistencia SQLite con Pragmas en DSN:** `busy_timeout(5000)` y `journal_mode(WAL)` transportados en el DSN con percent-encoding seguro para todo el pool de conexiones (PR [#178](https://github.com/Rafaeldelinares/gentle-mesh/pull/178) / issue [#177](https://github.com/Rafaeldelinares/gentle-mesh/issues/177)).
+- **Sincronización determinista en CI (cero esperas por reloj):** Eliminación de sleeps fijos de 800ms en `TestTaskManager_CleanupExpired` (reemplazado por sondeo de condición) y timeouts fijos de 200ms en `TestSilentNodeConcurrentEOFAndSweepSingleTransitionAndEvent` (reemplazado por cierre de canal con timeout de guarda de 2s) (PR [#184](https://github.com/Rafaeldelinares/gentle-mesh/pull/184) / issues [#164](https://github.com/Rafaeldelinares/gentle-mesh/issues/164) y [#176](https://github.com/Rafaeldelinares/gentle-mesh/issues/176)).
+
 ---
 
 ## 2. Hallazgos técnicos y deuda trackeada (Issues abiertos)
 
-Durante la validación en hardware real se identificaron brechas concretas, registradas en issues para su resolución:
+El proyecto mantiene un registro transparente de sus límites y trabajo pendiente:
 
 - **[#117] Documentación de seguridad desactualizada:** `SECURITY.md` afirma en sus limitaciones conocidas que no existe revocación de certificados, cuando los PRs #110 y #111 ya la implementaron en `main`.
 - **[#120] Recolección de residuos (GC de worktrees y ramas):** Falta de mecanismo automático para limpiar directorios de trabajo efímeros y ramas de propuesta huérfanas tras intentos fallidos o caídas de workers.
 - **[#122] Sobrecarga de contexto en sandbox:** Medición e instrumentación del overhead de ~14k tokens de contexto base que la directiva `--isolated` de `gentle-shell` introduce sobre el suelo de Pi.
 - **[#125] Buffer fijo en parser SSE:** `protocol.ParseSSE` utiliza el buffer por defecto de 64 KB de `bufio.Scanner`, provocando fallos por `token too long` cuando las herramientas devuelven salidas o argumentos voluminosos.
 - **[#126] Límite de tool calls por tarea:** El límite fijo de 15 llamadas a herramientas en `gentle-shell` resulta insuficiente para tareas complejas con ciclos iterativos de TDD; debe ser configurable por tarea o runner.
-- **[#127] Desactualización de guías de uso:** `README.md` (Sección 3) y `docs/DEMO.md` describen únicamente el runner simulado (`fake-pi`) o procesos locales sin sandbox (`-runner pi`), omitiendo el runner real `gentle-shell` con `bwrap` y la evidencia de la Fase 2.
-- **Métricas de liquidación (R1) y PRs históricos:** Triage e integración pendiente de métricas de liquidación y PRs abiertos previos (#89, #56, #53).
+- **[#147] Concurrencia multi-worker en un solo host:** Endurecimiento del soporte para ejecutar múltiples subprocesos de workers compitiendo intensivamente sobre el mismo hardware físico.
+- **[#156] Exposición fuera de la LAN / WAN Zero-Trust:** El transporte actual asume una red local (LAN) o VPN privada; la exposición directa a internet pública requiere defensas adicionales de rate-limiting, WAF y autenticación de borde.
+- **[#150] / [#63] Webhooks con firma HMAC:** Disparador de notificaciones HTTP asíncronas con firma criptográfica de eventos.
+- **[#160] Ligado de SAN a node_id en PKI:** `pki.SignCSR` valida el CommonName pero no restringe ni valida exhaustivamente los Subject Alternative Names (SANs) contra el `node_id`.
+- **[#174] Límite de la observación territorial por `.gitignore`:** Archivos creados sin commitear cuyas extensiones coincidan con `.gitignore` no aparecen en `git status --porcelain` ni en `git diff BaseRef..HEAD`, escapando a la verificación territorial a posteriori.
 
 ---
 
-## 3. Decisiones pendientes (Opciones abiertas sobre la mesa)
+## 3. Decisiones pendientes y próximos pasos
 
-Las siguientes líneas de trabajo se encuentran en evaluación y no deben interpretarse como compromisos cerrados:
+Con RFC-001, RFC-002 y RFC-003 formalmente cerradas y verificadas en `main`, las siguientes líneas de trabajo están abiertas:
 
-1. **Diseño de RFC-003 (Agentes Situados e Interoperabilidad A2A):**  
-   Evaluar si se formaliza una nueva especificación técnica que aborde la auto-declaración de capacidades y toolchains requeridos por los nodos (hallazgo de F2-7), el contexto territorial nativo y la interoperabilidad multidireccional entre agentes.
-2. **Presentación a la comunidad Gentle AI:**  
-   Definir el momento y formato para someter la arquitectura, la evidencia de Fase 2 y los resultados de liquidación contractual a la revisión de Alan Buscaglia y la comunidad de Gentle AI, asegurando alineación con la gobernanza del ecosistema.
-3. **Puesta en producción del backlog en workers remotos:**  
-   Evaluar si, antes de expandir el diseño conceptual o abrir nuevas propuestas, se utiliza la infraestructura física validada (como el nodo NiPoGi) para resolver tareas reales del propio backlog de `gentle-mesh` de forma distribuida.
+1. **Presentación a la comunidad Gentle AI:**  
+   Someter la arquitectura completa, la evidencia física de Fase 2, la liquidación determinista (RFC-002) y el log de unión / A2A (RFC-003) a la revisión y orientación de Alan Buscaglia y la comunidad de Gentle AI.
+2. **Puesta en producción del backlog en workers remotos:**  
+   Utilizar la infraestructura física validada (coordinador + worker NiPoGi en LAN con `-runner gentle-shell`) para ejecutar y resolver tareas reales del propio backlog de `gentle-mesh` de forma distribuida y autónoma.
+3. **Guía de adopción y puesta en marcha:**  
+   Publicar la guía de uso real de producción ([docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)) para permitir que colaboradores desplieguen clústeres propios con mTLS y sandbox bwrap.
 
 ---
 

@@ -16,7 +16,7 @@ Lo que **no** mide:
 * **No hay aislamiento.** El coordinador corre con `-runner pi`, que lanza el subproceso local **sin sandbox y sin worktree**. El runner de produccion es `-runner gentle-shell`, que ejecuta `gentle-shell` dentro de `bwrap` sobre un worktree efimero y verifica que el agente haya dejado la propuesta commiteada en una rama `proposal/<task_id>` de un cache bare. Nada de eso aparece aqui.
 * **No es la validacion de la Fase 2.** La ejecucion real con agentes dentro de `bwrap` (worktrees efimeros, caida de worker con `NODE_LOST`, contabilidad de tokens y costo, worker fisico en LAN, y una tarea TDD resuelta de punta a punta) esta verificada en los E2E de `integration/f2/`, documentada en el apartado 2.5 del `README.md`.
 
-Si lo que queres verificar es que el sistema ejecuta trabajo real de forma aislada, no uses esta demo: usa `-runner gentle-shell` con un cache bare y revisa la propuesta con `gentle-mesh apply`.
+Si lo que queres verificar es que el sistema ejecuta trabajo real de forma aislada, no uses esta demo: consulta la guía de puesta en marcha en producción: **[docs/GETTING-STARTED.md](GETTING-STARTED.md)** (o usa `-runner gentle-shell` con un cache bare y revisa la propuesta con `gentle-mesh apply`).
 
 ---
 
