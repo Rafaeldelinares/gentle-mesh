@@ -54,10 +54,11 @@ const (
 
 // NodeJoinedPayload is the typed payload for EventTypeNodeJoined.
 type NodeJoinedPayload struct {
-	NodeID   string   `json:"node_id"`
-	Role     string   `json:"role"` // "coordinator", "worker"
-	Endpoint string   `json:"endpoint"`
-	Tags     []string `json:"tags,omitempty"`
+	NodeID         string   `json:"node_id"`
+	Role           string   `json:"role"` // "coordinator", "worker"
+	Endpoint       string   `json:"endpoint"`
+	AgentPublicKey string   `json:"agent_public_key,omitempty"` // Hex-encoded Ed25519 public key of the node's agent
+	Tags           []string `json:"tags,omitempty"`
 }
 
 // TaskCreatedPayload is the typed payload for EventTypeTaskCreated.

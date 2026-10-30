@@ -82,6 +82,8 @@ func (r *Registry) RegisterNode(req protocol.NodeJoinRequest) (*protocol.NodeInf
 	existing, exists := r.nodes[req.NodeID]
 	if exists {
 		existing.Endpoint = req.Endpoint
+		existing.Role = req.Role
+		existing.AgentPublicKey = req.AgentPublicKey
 		existing.Hardware = req.Hardware
 		existing.Agents = copyAgents(req.Agents)
 		existing.MaxConcurrency = req.MaxConcurrency
@@ -93,6 +95,8 @@ func (r *Registry) RegisterNode(req protocol.NodeJoinRequest) (*protocol.NodeInf
 	node := &protocol.NodeInfo{
 		NodeID:         req.NodeID,
 		Endpoint:       req.Endpoint,
+		Role:           req.Role,
+		AgentPublicKey: req.AgentPublicKey,
 		Hardware:       req.Hardware,
 		Agents:         copyAgents(req.Agents),
 		MaxConcurrency: req.MaxConcurrency,
