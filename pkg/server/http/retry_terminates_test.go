@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
-	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
+	meshhttp "github.com/Rafaeldelinares/gentle-mesh/pkg/server/http"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/runner"
 )
 
 // scriptedRunner fails with the configured errors (repeating the last one) and counts its calls.

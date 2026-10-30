@@ -17,11 +17,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/joinlog"
-	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
-	serverhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/joinlog"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/pki"
+	serverhttp "github.com/Rafaeldelinares/gentle-mesh/pkg/server/http"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/registry"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/store"
 	_ "modernc.org/sqlite"
 )
 

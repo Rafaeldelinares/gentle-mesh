@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/store"
 )
 
 var (

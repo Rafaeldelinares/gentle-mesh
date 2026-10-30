@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/receipt"
 )
 
 // TestShell_LocalPreFlightRejection verifies that a dirty git worktree

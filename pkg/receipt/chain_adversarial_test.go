@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 // Adversarial tests for at-rest chain rewriting.

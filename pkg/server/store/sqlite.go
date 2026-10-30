@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
 	_ "modernc.org/sqlite"
 )
 

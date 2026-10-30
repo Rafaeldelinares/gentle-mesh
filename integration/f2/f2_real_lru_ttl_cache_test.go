@@ -21,8 +21,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/integration/agent"
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/integration/agent"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
 )
 
 // TestF2_RealAgent_DispatchesLRUTTLCache runs the synthetic LRU+TTL cache

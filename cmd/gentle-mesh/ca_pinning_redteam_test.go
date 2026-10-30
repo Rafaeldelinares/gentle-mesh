@@ -24,8 +24,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/pki"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
 )
 
 func setupTestTLSServer(t *testing.T) (*httptest.Server, *pki.MeshCA, *bool, *sync.Mutex) {

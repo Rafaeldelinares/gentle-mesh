@@ -3,7 +3,7 @@ package runner
 import (
 	"context"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
 )
 
 // EventToken represents the event type for streaming subagent thought/tokens.

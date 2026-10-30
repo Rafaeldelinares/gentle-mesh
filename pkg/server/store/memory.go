@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
 )
 
 var _ TaskStore = (*MemoryStore)(nil)

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 // TestServer_ConcurrentLeaseWrites is an in-process concurrency test using httptest
@@ -69,7 +69,7 @@ func TestServer_ConcurrentLeaseWrites(t *testing.T) {
 		EmitterAgentID:  "agent-emitter",
 		ExecutorAgentID: "test-executor",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: workspaceDir,
 		},

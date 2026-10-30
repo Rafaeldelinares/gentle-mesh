@@ -17,10 +17,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
-	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/pki"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
+	meshhttp "github.com/Rafaeldelinares/gentle-mesh/pkg/server/http"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/store"
 )
 
 // setupMTLSTestEnvironment initializes CA, server certs, and test database with token and cert stores.

@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
-	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
-	"github.com/gentleman-programming/gentle-mesh/pkg/settlement"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/jcs"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/receipt"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/settlement"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 	_ "modernc.org/sqlite"
 )
 
@@ -98,7 +98,7 @@ func TestScenario_FullFlow(t *testing.T) {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:       "main",
 			WorkspacePath: dir,
 		},
@@ -274,7 +274,7 @@ class TestNewFunctions:
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:       "main",
 			WorkspacePath: dir,
 		},

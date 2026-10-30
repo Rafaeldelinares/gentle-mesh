@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
 )
 
 func TestEnvelope_S9_ProtocolVersion_StrictV2(t *testing.T) {

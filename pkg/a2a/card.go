@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/jcs"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 const (

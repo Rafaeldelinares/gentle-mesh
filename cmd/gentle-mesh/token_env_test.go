@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
 )
 
 // The operator requirement is a strong bearer token that never appears in the

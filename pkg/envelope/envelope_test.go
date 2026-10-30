@@ -16,7 +16,7 @@ func validEnvelope() *CognitiveTaskEnvelope {
 		EmitterAgentID:   "agent-a",
 		ExecutorAgentID:  "agent-b",
 		Territory: Territory{
-			Repository:   "github.com/gentleman-programming/gentle-mesh",
+			Repository:   "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:       "feature/auth",
 			WorkspacePath: "/srv/workspace/mesh",
 		},
@@ -429,8 +429,8 @@ func TestComputeEnvelopeHash_TerritoryNormalization(t *testing.T) {
 	env1 := validEnvelope()
 	env2 := validEnvelope()
 
-	env1.Territory.Repository = "github.com/gentleman-programming/gentle-mesh"
-	env2.Territory.Repository = "github.com/gentleman-programming/gentle-mesh/" // trailing slash
+	env1.Territory.Repository = "github.com/Rafaeldelinares/gentle-mesh"
+	env2.Territory.Repository = "github.com/Rafaeldelinares/gentle-mesh/" // trailing slash
 
 	hash1, _ := ComputeEnvelopeHash(env1)
 	hash2, _ := ComputeEnvelopeHash(env2)

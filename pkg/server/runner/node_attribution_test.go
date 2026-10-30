@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
 )
 
 // attributingSink records attribution calls and forwarded events.

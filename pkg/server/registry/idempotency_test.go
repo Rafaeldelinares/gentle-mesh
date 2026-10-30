@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/registry"
 )
 
 func TestIdempotencyStore_DuplicateDetection(t *testing.T) {

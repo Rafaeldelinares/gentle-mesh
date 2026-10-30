@@ -9,9 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/receipt"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 // DefaultRemediationLimit is the maximum number of remediation attempts.

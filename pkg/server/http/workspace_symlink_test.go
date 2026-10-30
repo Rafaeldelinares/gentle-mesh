@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
+	meshhttp "github.com/Rafaeldelinares/gentle-mesh/pkg/server/http"
 )
 
 // startWorkspaceServer builds a *Server in-process with the given workspaceRoot and

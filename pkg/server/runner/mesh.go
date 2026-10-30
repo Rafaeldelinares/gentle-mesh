@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"sync"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
 )
 
 // meshDispatchAttempts bounds how many nodes a single task may be sent to when the

@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/jcs"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 // SignEnvelope signs a cognitive task envelope with the emitter agent's signer.

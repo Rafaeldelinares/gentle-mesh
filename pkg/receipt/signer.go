@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 // SignReceipt signs a settlement receipt as the executor agent.

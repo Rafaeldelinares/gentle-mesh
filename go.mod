@@ -1,4 +1,4 @@
-module github.com/gentleman-programming/gentle-mesh
+module github.com/Rafaeldelinares/gentle-mesh
 
 go 1.26.10
 

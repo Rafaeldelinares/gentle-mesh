@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/registry"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/runner"
 )
 
 // reservingSelector implements runner.NodeReserver. It hands out the queued nodes in order and

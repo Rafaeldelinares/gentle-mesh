@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
 )
 
 // Two independent Shell instances (separate *sql.DB handles over the same

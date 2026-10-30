@@ -14,9 +14,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
-	"github.com/gentleman-programming/gentle-mesh/pkg/tlsutil"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/receipt"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/tlsutil"
 )
 
 // HTTPClient is a simple HTTP client that implements the Client interface.

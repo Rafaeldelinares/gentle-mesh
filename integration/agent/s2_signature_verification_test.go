@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/receipt"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 func postJSON(t *testing.T, client *http.Client, url string, body any) (*http.Response, []byte) {

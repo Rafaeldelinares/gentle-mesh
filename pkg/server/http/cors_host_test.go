@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
+	meshhttp "github.com/Rafaeldelinares/gentle-mesh/pkg/server/http"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/runner"
 )
 
 func TestServer_CORSRejectsUnknownOrigin(t *testing.T) {

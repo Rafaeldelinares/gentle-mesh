@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/joinlog"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/joinlog"
 )
 
 // RFC-003 J3 (Snapshot verificable) requires that:

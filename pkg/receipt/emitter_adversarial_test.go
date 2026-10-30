@@ -3,7 +3,7 @@ package receipt
 import (
 	"testing"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 // TestS7_EmitterSignature_AcceptVsDispute_MustNotHashEqual tests that AcceptReceipt

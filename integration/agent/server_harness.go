@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"os/exec"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/receipt"
 )
 
 // registerTestHarnessEndpoints registers /execute, /inject-receipt, and /register-key.

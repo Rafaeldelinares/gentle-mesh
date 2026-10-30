@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/runner"
 )
 
 // TestGentleShellRunner_HostSideGitIgnoresSandboxWrittenFilterDriver is the

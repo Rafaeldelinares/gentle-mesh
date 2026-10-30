@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
 )
 
 // TestPreconditions_ToolAvailable_CommandInjectionRejected verifies that

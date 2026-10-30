@@ -20,9 +20,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/receipt"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 func generateCertWithCNAndSANs(cn string, sans []string, caCertPEM []byte, caKey *ecdsa.PrivateKey) ([]byte, []byte, error) {

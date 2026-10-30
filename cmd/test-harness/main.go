@@ -19,8 +19,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/integration/agent"
-	"github.com/gentleman-programming/gentle-mesh/integration/testscenario"
+	"github.com/Rafaeldelinares/gentle-mesh/integration/agent"
+	"github.com/Rafaeldelinares/gentle-mesh/integration/testscenario"
 )
 
 func main() {

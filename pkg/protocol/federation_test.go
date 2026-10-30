@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
 )
 
 func TestConflictTypeConstants(t *testing.T) {
@@ -109,7 +109,7 @@ func TestPeerRegisterRequestJSONSerialization(t *testing.T) {
 func TestActiveTerritoryJSONSerialization(t *testing.T) {
 	territory := protocol.ActiveTerritory{
 		TaskID:       "task-12345",
-		Repo:         "github.com/gentleman-programming/gentle-mesh",
+		Repo:         "github.com/Rafaeldelinares/gentle-mesh",
 		Branch:       "feature/federation-protocol",
 		EditSurfaces: []string{"pkg/protocol/federation.go", "docs/rfcs/001-remote-agent-transport.md"},
 		Agent:        "worker",
@@ -163,7 +163,7 @@ func TestTerritoryManifestJSONSerialization(t *testing.T) {
 		Territories: []protocol.ActiveTerritory{
 			{
 				TaskID:       "task-001",
-				Repo:         "github.com/gentleman-programming/gentle-mesh",
+				Repo:         "github.com/Rafaeldelinares/gentle-mesh",
 				Branch:       "feature/task-streaming",
 				EditSurfaces: []string{"pkg/server/http/"},
 				Agent:        "worker",
@@ -202,7 +202,7 @@ func TestTerritoryManifestJSONSerialization(t *testing.T) {
 func TestTerritoryConflictJSONSerialization(t *testing.T) {
 	existing := protocol.ActiveTerritory{
 		TaskID:       "task-locked-1",
-		Repo:         "github.com/gentleman-programming/gentle-mesh",
+		Repo:         "github.com/Rafaeldelinares/gentle-mesh",
 		Branch:       "feature/auth",
 		EditSurfaces: []string{"pkg/auth/"},
 		Agent:        "worker",
@@ -750,7 +750,7 @@ func TestActiveTerritory_ExtendedFieldsJSON(t *testing.T) {
 	t.Run("serializes and deserializes all extended multidimensional fields", func(t *testing.T) {
 		territory := protocol.ActiveTerritory{
 			TaskID:         "task-radar-001",
-			Repo:           "github.com/gentleman-programming/gentle-mesh",
+			Repo:           "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:         "feature/radar-protocol",
 			EditSurfaces:   []string{"pkg/protocol/federation.go", "pkg/server/task/task.go"},
 			Agent:          "worker",

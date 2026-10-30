@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/integration/agent"
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
-	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/integration/agent"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/jcs"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/receipt"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 // ─────────────────────────────────────────────────────────────────
@@ -231,7 +231,7 @@ func fanDispatchLeg(ctx context.Context, aClient, executorClient *agent.HTTPClie
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: executorAgentID,
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: workspace,
 		},
@@ -490,7 +490,7 @@ func TestWU13_DispatchEndpointFanOut(t *testing.T) {
 			EmitterAgentID:  "agent-a",
 			ExecutorAgentID: leg.executorID,
 			Territory: envelope.Territory{
-				Repository:    "github.com/gentleman-programming/gentle-mesh",
+				Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 				Branch:        "main",
 				WorkspacePath: workspace,
 			},
@@ -654,7 +654,7 @@ func TestWU13_PreFlightRejectsDirtyWorktree(t *testing.T) {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: workspace,
 		},
@@ -771,7 +771,7 @@ func TestWU13_ChainStressTenReceipts(t *testing.T) {
 					EmitterAgentID:  "agent-a",
 					ExecutorAgentID: "agent-b",
 					Territory: envelope.Territory{
-						Repository:    "github.com/gentleman-programming/gentle-mesh",
+						Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 						Branch:        "main",
 						WorkspacePath: workspace,
 					},
@@ -926,7 +926,7 @@ func TestWU14_AcceptReceiptE2E(t *testing.T) {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: workspace,
 		},
@@ -1604,7 +1604,7 @@ func TestWU16_DisputeReceiptE2E(t *testing.T) {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: workspace,
 		},
@@ -1940,7 +1940,7 @@ func TestWU17_VerifyChain_WrongExecutorKey(t *testing.T) {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: workspace,
 		},

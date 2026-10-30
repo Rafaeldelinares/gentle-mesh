@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/joinlog"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/joinlog"
 )
 
 // RFC-003 J2 (serialización sin colisión) requires that concurrent writers to

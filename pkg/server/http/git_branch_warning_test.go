@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
-	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
+	meshhttp "github.com/Rafaeldelinares/gentle-mesh/pkg/server/http"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/runner"
 )
 
 // volatileTaskResponseFields are the per-request values of a task response; replacing them leaves

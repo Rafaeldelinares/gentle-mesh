@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 func setupR1Server(t *testing.T) (*Server, *httptest.Server, signing.Signer, signing.Signer) {

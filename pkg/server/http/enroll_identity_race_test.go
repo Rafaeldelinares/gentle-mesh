@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/pki"
 )
 
 // TestConcurrentEnrollmentsOfOneIdentityMustNotBothSucceed covers the race in

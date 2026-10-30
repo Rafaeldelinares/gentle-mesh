@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/a2a"
-	"github.com/gentleman-programming/gentle-mesh/pkg/joinlog"
-	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
-	serverhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/a2a"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/joinlog"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/pki"
+	serverhttp "github.com/Rafaeldelinares/gentle-mesh/pkg/server/http"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/registry"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/store"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 	_ "modernc.org/sqlite"
 )
 

@@ -21,11 +21,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
-	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/pki"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
+	meshhttp "github.com/Rafaeldelinares/gentle-mesh/pkg/server/http"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/runner"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/store"
 )
 
 func TestCLI_UsageAndHelp(t *testing.T) {
@@ -930,7 +930,7 @@ func TestRun_DispatchAndSSEConsumption(t *testing.T) {
 		"-coordinator", ts.URL,
 		"-agent", "worker",
 		"-task", "Write complete CLI implementation",
-		"-repo", "https://github.com/gentleman-programming/gentle-mesh",
+		"-repo", "https://github.com/Rafaeldelinares/gentle-mesh",
 		"-branch", "feature/mesh-foundation",
 	}, &stdout, &stderr)
 

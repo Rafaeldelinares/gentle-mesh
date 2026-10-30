@@ -13,7 +13,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/client"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/client"
 )
 
 func TestBridge_GetState(t *testing.T) {

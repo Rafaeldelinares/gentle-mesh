@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/a2a"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/a2a"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 func TestAgentCard_SignAndVerify_Success(t *testing.T) {

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
-	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
+	meshhttp "github.com/Rafaeldelinares/gentle-mesh/pkg/server/http"
 )
 
 func newWhoServerWithFallback(t *testing.T, fallback bool) (*httptest.Server, string) {
