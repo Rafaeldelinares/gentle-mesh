@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gentleman-programming/gentle-mesh/pkg/a2a"
 	"github.com/gentleman-programming/gentle-mesh/pkg/joinlog"
 	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
 	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
@@ -24,6 +26,7 @@ import (
 
 func (s *Server) registerRoutes(mux *stdhttp.ServeMux) {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /.well-known/agent-card.json", s.handleAgentCard)
 	mux.HandleFunc("GET /v1/mesh/ca", s.handleMeshCA) // Public: download mesh CA
 	mux.HandleFunc("POST /v1/mesh/join", s.handleMeshJoin)
 	mux.HandleFunc("POST /v1/mesh/heartbeat", s.handleMeshHeartbeat)
@@ -104,6 +107,108 @@ func (s *Server) handleMeshCA(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=86400") // Cache for 24 hours
 	w.WriteHeader(stdhttp.StatusOK)
 	w.Write(caData)
+}
+
+// handleAgentCard serves the A2A Agent Card for this node or distributed nodes (RFC-003 §4.2.1).
+func (s *Server) handleAgentCard(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	if s.signer == nil {
+		writeJSON(w, stdhttp.StatusServiceUnavailable, map[string]string{
+			"error": "A2A signing identity not configured on coordinator",
+		})
+		return
+	}
+
+	nodeID := strings.TrimSpace(r.URL.Query().Get("node_id"))
+	if nodeID == "" || nodeID == s.signer.AgentID() {
+		// Serve coordinator's own signed card
+		var logHeadSeq int64
+		var logHeadHash string
+		var stateDigest string
+
+		if s.joinLog != nil && s.joinProjector != nil {
+			snap, err := s.joinProjector.CreateSnapshot(r.Context(), s.joinLog)
+			if err == nil {
+				logHeadSeq = snap.HeadEventSeq
+				logHeadHash = snap.HeadEventHash
+				stateDigest = snap.StateDigest
+			}
+		}
+
+		now := time.Now().UTC()
+		card := &a2a.AgentCard{
+			Kind: a2a.KindAgentCardV1,
+			Subject: a2a.AgentCardSubject{
+				NodeID:    s.signer.AgentID(),
+				Role:      "coordinator",
+				PublicKey: hex.EncodeToString(s.signer.PublicKey()),
+			},
+			Name:        s.signer.AgentID(),
+			Description: "Gentle Mesh coordinator node and A2A adapter gateway",
+			URL:         s.config.Addr,
+			Version:     "1.0.0",
+			Capabilities: a2a.AgentCardCapabilities{
+				Streaming:               true,
+				PushNotifications:       false,
+				StateTransitionHistory: true,
+			},
+			Mesh: a2a.AgentCardMesh{
+				LogHeadSeq:  logHeadSeq,
+				LogHeadHash: logHeadHash,
+				StateDigest: stateDigest,
+			},
+			IssuedAt:  now.Format(time.RFC3339),
+			ExpiresAt: now.Add(30 * 24 * time.Hour).Format(time.RFC3339),
+		}
+
+		env, err := a2a.SignAgentCard(card, s.signer)
+		if err != nil {
+			writeJSON(w, stdhttp.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("failed to sign agent card: %v", err),
+			})
+			return
+		}
+
+		writeJSON(w, stdhttp.StatusOK, env)
+		return
+	}
+
+	// Distributed card lookup for a worker node: coordinator serves but NEVER signs for it (RFC-003 §4.2.1.2)
+	if s.joinProjector != nil && s.joinLog != nil {
+		snap, err := s.joinProjector.CreateSnapshot(r.Context(), s.joinLog)
+		if err == nil {
+			if node, ok := snap.State.Nodes[nodeID]; ok {
+				now := time.Now().UTC()
+				card := &a2a.AgentCard{
+					Kind: a2a.KindAgentCardV1,
+					Subject: a2a.AgentCardSubject{
+						NodeID:    node.NodeID,
+						Role:      node.Role,
+						PublicKey: node.AgentPublicKey,
+					},
+					Name: node.NodeID,
+					URL:  node.Endpoint,
+					Capabilities: a2a.AgentCardCapabilities{
+						Streaming:               true,
+						PushNotifications:       false,
+						StateTransitionHistory: true,
+					},
+					Mesh: a2a.AgentCardMesh{
+						LogHeadSeq:  snap.HeadEventSeq,
+						LogHeadHash: snap.HeadEventHash,
+						StateDigest: snap.StateDigest,
+					},
+					IssuedAt:  now.Format(time.RFC3339),
+					ExpiresAt: now.Add(30 * 24 * time.Hour).Format(time.RFC3339),
+				}
+				writeJSON(w, stdhttp.StatusOK, card)
+				return
+			}
+		}
+	}
+
+	writeJSON(w, stdhttp.StatusNotFound, map[string]string{
+		"error": fmt.Sprintf("node %q not found", nodeID),
+	})
 }
 
 // EnrollmentRequest represents a certificate enrollment request.
