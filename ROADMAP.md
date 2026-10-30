@@ -75,16 +75,14 @@ El proyecto mantiene un registro transparente de sus límites y trabajo pendient
 
 ---
 
-## 3. Decisiones pendientes y próximos pasos
+## 3. Opciones y decisiones estratégicas abiertas
 
-Con RFC-001, RFC-002 y RFC-003 formalmente cerradas y verificadas en `main`, las siguientes líneas de trabajo están abiertas:
+Con RFC-001, RFC-002 y RFC-003 formalmente cerradas y verificadas en `main`, el proyecto no tiene compromisos de calendario ni hojas de ruta cerradas. Las siguientes vías permanecen como opciones abiertas sujetas a la decisión expresa del mantenedor:
 
-1. **Presentación a la comunidad Gentle AI:**  
-   Someter la arquitectura completa, la evidencia física de Fase 2, la liquidación determinista (RFC-002) y el log de unión / A2A (RFC-003) a la revisión y orientación de Alan Buscaglia y la comunidad de Gentle AI.
-2. **Puesta en producción del backlog en workers remotos:**  
-   Utilizar la infraestructura física validada (coordinador + worker NiPoGi en LAN con `-runner gentle-shell`) para ejecutar y resolver tareas reales del propio backlog de `gentle-mesh` de forma distribuida y autónoma.
-3. **Guía de adopción y puesta en marcha:**  
-   Publicar la guía de uso real de producción ([docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)) para permitir que colaboradores desplieguen clústeres propios con mTLS y sandbox bwrap.
+1. **Eventual consulta o presentación a la comunidad Gentle AI (Opción abierta):**  
+   Evaluar si, cuándo y bajo qué formato poner la arquitectura técnica, la evidencia física de Fase 2 y los contratos de liquidación a consideración de Alan Buscaglia y la comunidad de Gentle AI. Esta vía permanece estrictamente como una posibilidad sujeta a decisión del mantenedor, sin plazos, compromisos ni presunción de cuándo o cómo se abordará.
+2. **Experimentación con tareas de backlog en workers remotos:**  
+   Evaluar la conveniencia de utilizar la infraestructura física ya validada en red local (coordinador + worker en LAN con `-runner gentle-shell`) para despachar y resolver de forma distribuida tareas reales del propio repositorio.
 
 ---
 
