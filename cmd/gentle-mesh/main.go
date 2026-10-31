@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/Rafaeldelinares/gentle-mesh/pkg/client"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/joinlog"
 	"github.com/Rafaeldelinares/gentle-mesh/pkg/pki"
 	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
 	meshhttp "github.com/Rafaeldelinares/gentle-mesh/pkg/server/http"
@@ -972,7 +973,56 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 
 	fmt.Fprintf(stdout, "Worker %s joined mesh successfully (endpoint: %s, coordinator: %s)\n", id, *endpoint, coordURL)
 
-	// 2. Periodic heartbeat loop
+	// 2. Situated join catch-up (RFC-003 J3/J4):
+	// Fetch verifiable snapshot and subscribe to live SSE event stream.
+	situatedSub := joinlog.NewSituatedSubscriber(joinlog.SubscriberConfig{
+		CoordinatorURL: coordURL,
+		Token:          coordToken,
+		HTTPClient:     httpClient,
+	})
+
+	situatedCtx, cancelSituated := context.WithCancel(ctx)
+	defer cancelSituated()
+
+	startSituatedCatchUp := func() error {
+		snap, err := situatedSub.CatchUp(situatedCtx)
+		if err != nil {
+			if errors.Is(err, joinlog.ErrInvalidSnapshotDigest) {
+				return fmt.Errorf("situated join failed to verify snapshot: %w", err)
+			}
+			// DESIGN DECISION (Issue #190): Backwards compatibility with coordinators that predate
+			// RFC-003 or do not implement /v1/mesh/snapshot (HTTP 404 / unsupported).
+			// The worker logs an explicit structured warning rather than failing closed, allowing
+			// operations in legacy or mixed environments. A strict mode flag is tracked in #190.
+			fmt.Fprintf(stderr, "WARN [situated-join] coordinator snapshot unavailable (%v); continuing in unverified mode (see #190)\n", err)
+			return nil
+		}
+		fmt.Fprintf(stdout, "Worker %s situated snapshot verified (seq: %d, digest: %s)\n", id, snap.HeadEventSeq, snap.StateDigest)
+
+		go func() {
+			if err := situatedSub.SubscribeEvents(situatedCtx, snap.HeadEventSeq, snap.HeadEventHash, nil); err != nil {
+				if errors.Is(err, joinlog.ErrChainDivergence) {
+					fmt.Fprintf(stderr, "FATAL: situated worker stream aborted: %v\n", err)
+					select {
+					case srvErrCh <- err:
+					default:
+					}
+				} else if !errors.Is(err, context.Canceled) {
+					// TODO(#189): Worker situated events stream disconnected without 409 or context cancel.
+					// Currently logs a warning and exits the goroutine without triggering reconnection or
+					// marking the node unverified. Reconnection policy with exponential backoff is tracked in #189.
+					fmt.Fprintf(stderr, "WARN [situated-stream] events stream disconnected: %v (see #189)\n", err)
+				}
+			}
+		}()
+		return nil
+	}
+
+	if err := startSituatedCatchUp(); err != nil {
+		return err
+	}
+
+	// 3. Periodic heartbeat loop
 	ticker := time.NewTicker(*heartbeatInterval)
 	defer ticker.Stop()
 
@@ -1022,6 +1072,12 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 					}
 					if rResp, err := httpClient.Do(reJoinReq); err == nil {
 						rResp.Body.Close()
+						if rResp.StatusCode == http.StatusOK {
+							// Re-catchup snapshot on rejoin
+							if err := startSituatedCatchUp(); err != nil {
+								return fmt.Errorf("worker %s situated catch-up failed on re-registration: %w", id, err)
+							}
+						}
 					}
 				}
 			} else {
