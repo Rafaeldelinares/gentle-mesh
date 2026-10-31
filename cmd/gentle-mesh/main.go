@@ -990,8 +990,11 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			if errors.Is(err, joinlog.ErrInvalidSnapshotDigest) {
 				return fmt.Errorf("situated join failed to verify snapshot: %w", err)
 			}
-			// If coordinator returned 404 or snapshot endpoint is not implemented on older/mock servers, log warning and do not fail
-			fmt.Fprintf(stderr, "WARNING: situated snapshot unavailable on coordinator: %v\n", err)
+			// DESIGN DECISION (Issue #190): Backwards compatibility with coordinators that predate
+			// RFC-003 or do not implement /v1/mesh/snapshot (HTTP 404 / unsupported).
+			// The worker logs an explicit structured warning rather than failing closed, allowing
+			// operations in legacy or mixed environments. A strict mode flag is tracked in #190.
+			fmt.Fprintf(stderr, "WARN [situated-join] coordinator snapshot unavailable (%v); continuing in unverified mode (see #190)\n", err)
 			return nil
 		}
 		fmt.Fprintf(stdout, "Worker %s situated snapshot verified (seq: %d, digest: %s)\n", id, snap.HeadEventSeq, snap.StateDigest)
@@ -1005,7 +1008,10 @@ func runWorker(ctx context.Context, args []string, stdout, stderr io.Writer) err
 					default:
 					}
 				} else if !errors.Is(err, context.Canceled) {
-					fmt.Fprintf(stderr, "Situated events stream disconnected: %v\n", err)
+					// TODO(#189): Worker situated events stream disconnected without 409 or context cancel.
+					// Currently logs a warning and exits the goroutine without triggering reconnection or
+					// marking the node unverified. Reconnection policy with exponential backoff is tracked in #189.
+					fmt.Fprintf(stderr, "WARN [situated-stream] events stream disconnected: %v (see #189)\n", err)
 				}
 			}
 		}()

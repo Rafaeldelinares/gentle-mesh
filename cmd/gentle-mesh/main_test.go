@@ -860,6 +860,60 @@ func TestWorker_SituatedJoin_Divergence409Aborts(t *testing.T) {
 	}
 }
 
+// TestWorker_SituatedJoin_404SnapshotLogsWarningAndContinues covers design decision #190:
+// when connecting to a legacy coordinator where /v1/mesh/snapshot returns 404,
+// the worker must not fail closed; it logs an explicit WARN and continues running.
+func TestWorker_SituatedJoin_404SnapshotLogsWarningAndContinues(t *testing.T) {
+	var heartbeatSeen atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/mesh/join":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(protocol.NodeInfo{NodeID: "legacy-w1", Status: protocol.NodeStatusOnline})
+		case "/v1/mesh/snapshot":
+			// Legacy coordinator without RFC-003 endpoints
+			http.NotFound(w, r)
+		case "/v1/mesh/heartbeat":
+			heartbeatSeen.Store(true)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		}
+	}))
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	go func() {
+		_ = runCLI(ctx, []string{
+			"worker",
+			"-coordinator", ts.URL,
+			"-node-id", "legacy-w1",
+			"-heartbeat-interval", "20ms",
+			"-addr", "127.0.0.1:0",
+		}, &stdout, &stderr)
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if heartbeatSeen.Load() {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if !heartbeatSeen.Load() {
+		t.Fatal("worker did not continue to send heartbeats after 404 snapshot")
+	}
+
+	// Confirm that the warning was explicitly logged to stderr
+	errOutput := stderr.String()
+	if !strings.Contains(errOutput, "WARN [situated-join]") || !strings.Contains(errOutput, "#190") {
+		t.Fatalf("expected structured warning mentioning 'WARN [situated-join]' and '#190', got: %s", errOutput)
+	}
+}
+
 func TestNodes_OutputFormatting(t *testing.T) {
 	ctx := context.Background()
 
