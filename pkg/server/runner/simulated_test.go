@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/task"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/runner"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/task"
 )
 
 // mockSink implements runner.EventSink for focused in-memory unit tests.

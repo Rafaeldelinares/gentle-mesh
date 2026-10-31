@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
 )
 
 func TestR2_RenewedLeaseGetsNoTimeoutReceipt(t *testing.T) {

@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/receipt"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 	_ "modernc.org/sqlite"
 )
 
@@ -65,7 +65,7 @@ func validEnvelope() *envelope.CognitiveTaskEnvelope {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: "/tmp/workspace",
 		},
@@ -91,7 +91,7 @@ func failingEnvelope() *envelope.CognitiveTaskEnvelope {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: "/tmp/workspace",
 		},
@@ -117,7 +117,7 @@ func errorEnvelope() *envelope.CognitiveTaskEnvelope {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: "/tmp/workspace",
 		},
@@ -248,7 +248,7 @@ func TestSettle_SecondReceipt_ChainLink(t *testing.T) {
 			EmitterAgentID:  "agent-a",
 			ExecutorAgentID: "agent-b",
 			Territory: envelope.Territory{
-				Repository:    "github.com/gentleman-programming/gentle-mesh",
+				Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 				Branch:        "main",
 				WorkspacePath: "/tmp/workspace",
 			},
@@ -516,7 +516,7 @@ func TestSettle_ExitCodeMismatch(t *testing.T) {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: dir,
 		},
@@ -583,7 +583,7 @@ func TestSettle_FileHashMismatch(t *testing.T) {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: dir,
 		},
@@ -653,7 +653,7 @@ func TestSettle_AssertionTimeout(t *testing.T) {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: dir,
 		},
@@ -721,7 +721,7 @@ func TestSettle_RemediationMaxReached(t *testing.T) {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: dir,
 		},
@@ -781,7 +781,7 @@ func TestSettle_ErrorRemediation(t *testing.T) {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: dir,
 		},
@@ -841,7 +841,7 @@ func TestSettle_AllAssertionsFail(t *testing.T) {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: dir,
 		},
@@ -912,7 +912,7 @@ func TestSettle_MixedResults(t *testing.T) {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: dir,
 		},
@@ -1347,7 +1347,7 @@ func TestSettle_FileBasedAssertion(t *testing.T) {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: dir,
 		},
@@ -1428,7 +1428,7 @@ func TestSettle_GitCleanWorktree(t *testing.T) {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: gitDir,
 		},
@@ -1482,7 +1482,7 @@ func TestSettle_GitDirtyWorktree(t *testing.T) {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: gitDir,
 		},

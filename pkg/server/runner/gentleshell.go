@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/gitsafe"
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/gitsafe"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
 )
 
 const (

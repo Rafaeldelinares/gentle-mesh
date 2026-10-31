@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 // ─────────────────────────────────────────────────────────────────

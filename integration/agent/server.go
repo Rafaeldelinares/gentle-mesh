@@ -20,12 +20,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/gitsafe"
-	"github.com/gentleman-programming/gentle-mesh/pkg/keystore"
-	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
-	"github.com/gentleman-programming/gentle-mesh/pkg/settlement"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/gitsafe"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/keystore"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/receipt"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/settlement"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 	_ "modernc.org/sqlite"
 )
 

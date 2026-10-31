@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 func setupCapabilityServer(t *testing.T, grantedCaps []envelope.Capability) (*Server, *httptest.Server, signing.Signer, signing.Signer) {

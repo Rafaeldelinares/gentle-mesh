@@ -17,11 +17,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
-	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/pki"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
+	meshhttp "github.com/Rafaeldelinares/gentle-mesh/pkg/server/http"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/runner"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/store"
 )
 
 func setupTestServer(t *testing.T, modifyCfg ...func(*meshhttp.ServerConfig)) (*meshhttp.Server, *httptest.Server) {
@@ -1056,7 +1056,7 @@ func TestServer_MeshRadar(t *testing.T) {
 	taskReq := protocol.TaskRequest{
 		Agent:     "worker",
 		Task:      "Refactor authentication middleware",
-		GitRepo:   "github.com/gentleman-programming/gentle-mesh",
+		GitRepo:   "github.com/Rafaeldelinares/gentle-mesh",
 		GitBranch: "feature/auth-radar",
 	}
 	mt, err := srv.TaskManager().CreateTask(taskReq)
@@ -1659,12 +1659,12 @@ func TestServer_FederatedTerritoryConflict(t *testing.T) {
 		c.ClusterName = "cluster-b"
 	})
 
-	// On Coord B, create an active task touching GitRepo "github.com/gentleman-programming/gentle-mesh",
+	// On Coord B, create an active task touching GitRepo "github.com/Rafaeldelinares/gentle-mesh",
 	// branch "main", EditSurfaces ["pkg/auth/*"].
 	taskB, err := srvB.TaskManager().CreateTask(protocol.TaskRequest{
 		Agent:        "worker",
 		Task:         "Implement auth subsystem",
-		GitRepo:      "github.com/gentleman-programming/gentle-mesh",
+		GitRepo:      "github.com/Rafaeldelinares/gentle-mesh",
 		GitBranch:    "main",
 		EditSurfaces: []string{"pkg/auth/*"},
 	})
@@ -1709,12 +1709,12 @@ func TestServer_FederatedTerritoryConflict(t *testing.T) {
 		t.Fatalf("expected 1 active territory in Coord B sync manifest, got %d", len(syncManifest.Territories))
 	}
 
-	// On Coord A, attempt to create a task touching GitRepo "git@github.com:gentleman-programming/gentle-mesh.git",
+	// On Coord A, attempt to create a task touching GitRepo "git@github.com:Rafaeldelinares/gentle-mesh.git",
 	// branch "feature/auth", EditSurfaces ["pkg/auth/login.go"].
 	taskReqA := protocol.TaskRequest{
 		Agent:        "worker",
 		Task:         "Add login endpoint",
-		GitRepo:      "git@github.com:gentleman-programming/gentle-mesh.git",
+		GitRepo:      "git@github.com:Rafaeldelinares/gentle-mesh.git",
 		GitBranch:    "feature/auth",
 		EditSurfaces: []string{"pkg/auth/login.go"},
 	}
@@ -1896,7 +1896,7 @@ func TestServer_TerritoryQueueMode_TransparentFIFO(t *testing.T) {
 		cfg.Runner = gate
 	})
 
-	const repo = "github.com/gentleman-programming/gentle-mesh"
+	const repo = "github.com/Rafaeldelinares/gentle-mesh"
 	const branch = "feature/queue-test"
 
 	first := postTaskHTTP(t, ts, protocol.TaskRequest{

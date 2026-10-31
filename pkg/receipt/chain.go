@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/jcs"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"

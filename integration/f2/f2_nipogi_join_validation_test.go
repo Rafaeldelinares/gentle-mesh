@@ -37,9 +37,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/integration/agent"
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/integration/agent"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 func TestF2_NiPoGiJoinAndValidation(t *testing.T) {
@@ -173,7 +173,7 @@ func TestF2_NiPoGiJoinAndValidation(t *testing.T) {
 				TimeoutSeconds:  300,
 				MaxRemediations: 0,
 				Territory: envelope.Territory{
-					Repository:    "https://github.com/gentleman-programming/gentle-mesh",
+					Repository:    "https://github.com/Rafaeldelinares/gentle-mesh",
 					Branch:        "main",
 					WorkspacePath: "/home/rafael/f2-workspace",
 				},

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
 )
 
 // TestRunReturnsNodeLostWhenTheStreamIsReset pins the bug exposed by

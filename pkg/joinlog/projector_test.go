@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/joinlog"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/joinlog"
 )
 
 // RFC-003 J6 (El log es la fuente de verdad) requires that the complete state

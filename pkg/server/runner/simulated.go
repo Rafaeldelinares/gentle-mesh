@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
 )
 
 // DefaultTokens provides a realistic subagent token streaming sequence.

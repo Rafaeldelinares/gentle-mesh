@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
 )
 
 var errStreamDone = errors.New("sse stream finished")

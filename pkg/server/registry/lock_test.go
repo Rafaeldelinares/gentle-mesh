@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/registry"
 )
 
 func TestBranchLockManager_BasicClaimAndRelease(t *testing.T) {

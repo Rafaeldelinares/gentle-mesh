@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/integration/agent"
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
-	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/integration/agent"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/jcs"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/receipt"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 // ─────────────────────────────────────────────────────────────────
@@ -339,7 +339,7 @@ def subtract(a, b):
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: workspace,
 		},
@@ -601,7 +601,7 @@ func buildEnvelope(emitterID, executorID, id, workspace, filePath, expectedHash 
 		EmitterAgentID:  emitterID,
 		ExecutorAgentID: executorID,
 		Territory: envelope.Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "main",
 			WorkspacePath: workspace,
 		},

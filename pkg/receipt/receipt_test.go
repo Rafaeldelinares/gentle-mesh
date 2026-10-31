@@ -139,7 +139,7 @@ func validReceipt() *SettlementReceipt {
 		EmitterAgentID:  "agent-a",
 		ExecutorAgentID: "agent-b",
 		Territory: Territory{
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:        "feature/auth",
 			WorkspacePath: "/srv/workspace/mesh",
 		},

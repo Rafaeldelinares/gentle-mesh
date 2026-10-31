@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/joinlog"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/joinlog"
 )
 
 func setupTestServer(t *testing.T) (*joinlog.Log, *joinlog.Projector, *httptest.Server) {

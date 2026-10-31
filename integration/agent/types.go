@@ -7,7 +7,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
 )
 
 // Role defines whether this agent is an emitter (A) or executor (B).

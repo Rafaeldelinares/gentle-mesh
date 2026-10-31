@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/gitsafe"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/gitsafe"
 )
 
 // Surface matching semantics (RFC-003 J5, issue #173)

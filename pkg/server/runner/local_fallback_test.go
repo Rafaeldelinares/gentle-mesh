@@ -9,9 +9,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/registry"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/runner"
 )
 
 // fallbackSelector implements runner.NodeSelector and returns either a configured error or

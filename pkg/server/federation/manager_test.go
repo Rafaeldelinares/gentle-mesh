@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/federation"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/federation"
 )
 
 func TestTerritoryManager_Registration(t *testing.T) {
@@ -130,7 +130,7 @@ func TestTerritoryManager_LocalManifest(t *testing.T) {
 	mockLocal := []protocol.ActiveTerritory{
 		{
 			TaskID:       "task-100",
-			Repo:         "github.com/gentleman-programming/gentle-mesh",
+			Repo:         "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:       "main",
 			EditSurfaces: []string{"pkg/server/*"},
 			Agent:        "worker",
@@ -166,7 +166,7 @@ func TestTerritoryManager_SyncPeer_Success(t *testing.T) {
 		Territories: []protocol.ActiveTerritory{
 			{
 				TaskID:       "task-cloud-1",
-				Repo:         "github.com/gentleman-programming/gentle-mesh",
+				Repo:         "github.com/Rafaeldelinares/gentle-mesh",
 				Branch:       "feature/gpu-acceleration",
 				EditSurfaces: []string{"pkg/server/runner/gpu/*"},
 				Agent:        "gpu-worker",
@@ -301,7 +301,7 @@ func TestTerritoryManager_FindConflict_LocalAndFederated(t *testing.T) {
 	localActive := []protocol.ActiveTerritory{
 		{
 			TaskID:       "local-task-1",
-			Repo:         "github.com/gentleman-programming/gentle-mesh",
+			Repo:         "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:       "feature/local-branch",
 			EditSurfaces: []string{"pkg/server/http/*"},
 			Agent:        "worker",
@@ -316,7 +316,7 @@ func TestTerritoryManager_FindConflict_LocalAndFederated(t *testing.T) {
 		Territories: []protocol.ActiveTerritory{
 			{
 				TaskID:       "europe-task-99",
-				Repo:         "github.com/gentleman-programming/gentle-mesh",
+				Repo:         "github.com/Rafaeldelinares/gentle-mesh",
 				Branch:       "feature/europe-mesh",
 				EditSurfaces: []string{"pkg/server/runner/*"},
 				Agent:        "runner-worker",
@@ -349,7 +349,7 @@ func TestTerritoryManager_FindConflict_LocalAndFederated(t *testing.T) {
 
 	// 1. Conflict with Local territory (branch collision)
 	clashLocal := tm.FindConflict(protocol.ActiveTerritory{
-		Repo:   "https://github.com/gentleman-programming/gentle-mesh.git",
+		Repo:   "https://github.com/Rafaeldelinares/gentle-mesh.git",
 		Branch: "feature/local-branch",
 	})
 	if clashLocal == nil || clashLocal.ConflictType != protocol.ConflictBranchLocked {
@@ -358,7 +358,7 @@ func TestTerritoryManager_FindConflict_LocalAndFederated(t *testing.T) {
 
 	// 2. Conflict with Federated Peer territory (surface collision)
 	clashPeer := tm.FindConflict(protocol.ActiveTerritory{
-		Repo:         "git@github.com:gentleman-programming/gentle-mesh",
+		Repo:         "git@github.com:Rafaeldelinares/gentle-mesh",
 		Branch:       "feature/my-runner-tweak",
 		EditSurfaces: []string{"pkg/server/runner/mesh.go"},
 	})
@@ -371,7 +371,7 @@ func TestTerritoryManager_FindConflict_LocalAndFederated(t *testing.T) {
 
 	// 3. No conflict
 	safeTask := tm.FindConflict(protocol.ActiveTerritory{
-		Repo:         "github.com/gentleman-programming/gentle-mesh",
+		Repo:         "github.com/Rafaeldelinares/gentle-mesh",
 		Branch:       "feature/safe-docs",
 		EditSurfaces: []string{"docs/guides/*"},
 	})
@@ -486,7 +486,7 @@ func TestTerritoryManager_FindRunningConflict(t *testing.T) {
 	running := []protocol.ActiveTerritory{
 		{
 			TaskID:       "running-task-1",
-			Repo:         "github.com/gentleman-programming/gentle-mesh",
+			Repo:         "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:       "feature/running-branch",
 			EditSurfaces: []string{"pkg/server/runner/*"},
 			Agent:        "worker",
@@ -496,7 +496,7 @@ func TestTerritoryManager_FindRunningConflict(t *testing.T) {
 	localQueued := []protocol.ActiveTerritory{
 		{
 			TaskID: "queued-task-1",
-			Repo:   "github.com/gentleman-programming/gentle-mesh",
+			Repo:   "github.com/Rafaeldelinares/gentle-mesh",
 			Branch: "feature/queued-branch",
 		},
 	}
@@ -508,7 +508,7 @@ func TestTerritoryManager_FindRunningConflict(t *testing.T) {
 		Territories: []protocol.ActiveTerritory{
 			{
 				TaskID:       "europe-task-99",
-				Repo:         "github.com/gentleman-programming/gentle-mesh",
+				Repo:         "github.com/Rafaeldelinares/gentle-mesh",
 				Branch:       "feature/europe-mesh",
 				EditSurfaces: []string{"pkg/server/http/*"},
 				Agent:        "runner-worker",
@@ -543,7 +543,7 @@ func TestTerritoryManager_FindRunningConflict(t *testing.T) {
 	t.Run("conflict with running territory", func(t *testing.T) {
 		conflict := tm.FindRunningConflict(protocol.ActiveTerritory{
 			TaskID:       "target-1",
-			Repo:         "github.com/gentleman-programming/gentle-mesh",
+			Repo:         "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:       "feature/running-branch",
 			EditSurfaces: []string{"docs/notes.md"},
 		})
@@ -558,7 +558,7 @@ func TestTerritoryManager_FindRunningConflict(t *testing.T) {
 	t.Run("conflict with cached peer territory", func(t *testing.T) {
 		conflict := tm.FindRunningConflict(protocol.ActiveTerritory{
 			TaskID:       "target-2",
-			Repo:         "github.com/gentleman-programming/gentle-mesh",
+			Repo:         "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:       "feature/target-2",
 			EditSurfaces: []string{"pkg/server/http/router.go"},
 		})
@@ -573,7 +573,7 @@ func TestTerritoryManager_FindRunningConflict(t *testing.T) {
 	t.Run("self task identity is ignored against running manifest", func(t *testing.T) {
 		conflict := tm.FindRunningConflict(protocol.ActiveTerritory{
 			TaskID:       "running-task-1",
-			Repo:         "github.com/gentleman-programming/gentle-mesh",
+			Repo:         "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:       "feature/running-branch",
 			EditSurfaces: []string{"docs/notes.md"},
 		})
@@ -585,7 +585,7 @@ func TestTerritoryManager_FindRunningConflict(t *testing.T) {
 	t.Run("self task identity is ignored against peer manifest", func(t *testing.T) {
 		conflict := tm.FindRunningConflict(protocol.ActiveTerritory{
 			TaskID:       "europe-task-99",
-			Repo:         "github.com/gentleman-programming/gentle-mesh",
+			Repo:         "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:       "feature/europe-mesh",
 			EditSurfaces: []string{"pkg/server/http/router.go"},
 		})
@@ -597,7 +597,7 @@ func TestTerritoryManager_FindRunningConflict(t *testing.T) {
 	t.Run("queued local territories are not considered", func(t *testing.T) {
 		conflict := tm.FindRunningConflict(protocol.ActiveTerritory{
 			TaskID: "target-3",
-			Repo:   "github.com/gentleman-programming/gentle-mesh",
+			Repo:   "github.com/Rafaeldelinares/gentle-mesh",
 			Branch: "feature/queued-branch",
 		})
 		if conflict != nil {
@@ -608,7 +608,7 @@ func TestTerritoryManager_FindRunningConflict(t *testing.T) {
 	t.Run("no conflict anywhere", func(t *testing.T) {
 		conflict := tm.FindRunningConflict(protocol.ActiveTerritory{
 			TaskID:       "target-4",
-			Repo:         "github.com/gentleman-programming/gentle-mesh",
+			Repo:         "github.com/Rafaeldelinares/gentle-mesh",
 			Branch:       "feature/safe-docs",
 			EditSurfaces: []string{"docs/guides/*"},
 		})

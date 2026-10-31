@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/worker"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/runner"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/worker"
 )
 
 func TestWorkerServer_SimulatedRunnerEmitsWarning(t *testing.T) {

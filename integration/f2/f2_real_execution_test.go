@@ -37,10 +37,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/integration/agent"
-	"github.com/gentleman-programming/gentle-mesh/pkg/envelope"
-	"github.com/gentleman-programming/gentle-mesh/pkg/receipt"
-	"github.com/gentleman-programming/gentle-mesh/pkg/signing"
+	"github.com/Rafaeldelinares/gentle-mesh/integration/agent"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/envelope"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/receipt"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/signing"
 )
 
 // ─────────────────────────────────────────────────────────────────
@@ -345,7 +345,7 @@ func TestF2_A2ARealExecution(t *testing.T) {
 		TimeoutSeconds:  300,
 		MaxRemediations: 0,
 		Territory: envelope.Territory{
-			Repository:    "https://github.com/gentleman-programming/gentle-mesh", // validator requires a URL-shaped repo, not a local path
+			Repository:    "https://github.com/Rafaeldelinares/gentle-mesh", // validator requires a URL-shaped repo, not a local path
 			Branch:        branch,
 			WorkspacePath: workspace,
 		},

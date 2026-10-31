@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/store"
 )
 
 func newMemoryStoreForTest(t *testing.T) store.TaskStore {
@@ -57,7 +57,7 @@ func TestSaveAndGet(t *testing.T) {
 		original := &store.TaskRecord{
 			TaskID:        "task-uuid-001",
 			Branch:        "feature/distributed-mesh",
-			Repository:    "github.com/gentleman-programming/gentle-mesh",
+			Repository:    "github.com/Rafaeldelinares/gentle-mesh",
 			Domain:        "core",
 			BlastRadius:   protocol.BlastRadiusSharedSchema,
 			Phase:         protocol.AgentPhasePlan,

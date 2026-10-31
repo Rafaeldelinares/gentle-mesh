@@ -26,15 +26,15 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/client"
-	"github.com/gentleman-programming/gentle-mesh/pkg/pki"
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
-	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/registry"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/runner"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/store"
-	"github.com/gentleman-programming/gentle-mesh/pkg/server/worker"
-	"github.com/gentleman-programming/gentle-mesh/pkg/tlsutil"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/client"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/pki"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
+	meshhttp "github.com/Rafaeldelinares/gentle-mesh/pkg/server/http"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/registry"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/runner"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/store"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/server/worker"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/tlsutil"
 )
 
 func main() {

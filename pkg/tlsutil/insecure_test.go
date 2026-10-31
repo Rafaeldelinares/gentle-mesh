@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/tlsutil"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/tlsutil"
 )
 
 func TestDevInsecureConfig_ExplicitFlagRequired(t *testing.T) {

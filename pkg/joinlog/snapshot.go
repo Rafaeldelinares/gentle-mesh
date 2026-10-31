@@ -5,7 +5,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/jcs"
 )
 
 // Snapshot is the verifiable state snapshot at an exact point in the join log (RFC-003 J3).

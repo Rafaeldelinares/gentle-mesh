@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/gitsafe"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/gitsafe"
 )
 
 // Result is the outcome of an assertion evaluation.

@@ -3,7 +3,7 @@ package protocol_test
 import (
 	"testing"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/protocol"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
 )
 
 func TestA2A_StateMappingTable(t *testing.T) {

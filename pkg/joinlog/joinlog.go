@@ -26,7 +26,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/jcs"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/jcs"
 
 	_ "modernc.org/sqlite"
 )

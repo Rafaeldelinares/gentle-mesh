@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gentleman-programming/gentle-mesh/pkg/joinlog"
-	meshhttp "github.com/gentleman-programming/gentle-mesh/pkg/server/http"
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/joinlog"
+	meshhttp "github.com/Rafaeldelinares/gentle-mesh/pkg/server/http"
 )
 
 // TestServer_JoinLog_ProductionEndpoints verifies that GET /v1/mesh/snapshot and
