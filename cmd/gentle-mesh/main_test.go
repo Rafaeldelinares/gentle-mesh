@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rafaeldelinares/gentle-mesh/pkg/joinlog"
 	"github.com/Rafaeldelinares/gentle-mesh/pkg/pki"
 	"github.com/Rafaeldelinares/gentle-mesh/pkg/protocol"
 	meshhttp "github.com/Rafaeldelinares/gentle-mesh/pkg/server/http"
@@ -692,6 +693,170 @@ func TestWorker_ReRegisterOn404Heartbeat(t *testing.T) {
 		// Successfully re-registered after 404 heartbeat
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for worker re-registration after 404 heartbeat")
+	}
+}
+
+func TestWorker_SituatedJoin_SnapshotAndEvents(t *testing.T) {
+	var (
+		mu              sync.Mutex
+		snapshotFetched bool
+		eventsConnected bool
+	)
+
+	// Create mock coordinator
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/mesh/join":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(protocol.NodeInfo{NodeID: "situated-w1", Status: protocol.NodeStatusOnline})
+		case "/v1/mesh/snapshot":
+			mu.Lock()
+			snapshotFetched = true
+			mu.Unlock()
+			// Generate verifiable snapshot on the fly
+			state := joinlog.MeshState{
+				Nodes:                  map[string]joinlog.NodeJoinedPayload{},
+				Tasks:                  map[string]joinlog.TaskCreatedPayload{},
+				ActiveLocks:            map[string]joinlog.ActiveTerritoryLock{},
+				SettledTasks:           map[string]joinlog.TaskSettledPayload{},
+				TerritoryHistory:       []joinlog.TerritoryHistoryEntry{},
+				TerritoryVerifications: []joinlog.TerritoryVerification{},
+			}
+			digest, _ := joinlog.ComputeStateDigest(&state)
+			snap := joinlog.Snapshot{
+				HeadEventSeq:  10,
+				HeadEventHash: "hash-10",
+				State:         state,
+				StateDigest:   digest,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(snap)
+		case "/v1/mesh/events":
+			mu.Lock()
+			eventsConnected = true
+			mu.Unlock()
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			<-r.Context().Done()
+		case "/v1/mesh/heartbeat":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		}
+	}))
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	go func() {
+		_ = runCLI(ctx, []string{
+			"worker",
+			"-coordinator", ts.URL,
+			"-node-id", "situated-w1",
+			"-heartbeat-interval", "100ms",
+			"-addr", "127.0.0.1:0",
+		}, &stdout, &stderr)
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		done := snapshotFetched && eventsConnected
+		mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !snapshotFetched {
+		t.Fatal("worker did not fetch /v1/mesh/snapshot upon joining")
+	}
+	if !eventsConnected {
+		t.Fatal("worker did not connect to /v1/mesh/events upon joining")
+	}
+}
+
+func TestWorker_SituatedJoin_TamperedSnapshotAborts(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/mesh/join":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(protocol.NodeInfo{NodeID: "tampered-w1", Status: protocol.NodeStatusOnline})
+		case "/v1/mesh/snapshot":
+			// Send corrupted digest
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"head_event_seq":1,"head_event_hash":"h1","state":{},"state_digest":"corrupted-sha256"}`)
+		}
+	}))
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	err := runCLI(ctx, []string{
+		"worker",
+		"-coordinator", ts.URL,
+		"-node-id", "tampered-w1",
+		"-addr", "127.0.0.1:0",
+	}, &stdout, &stderr)
+
+	if err == nil {
+		t.Fatal("expected error on tampered snapshot digest, got nil")
+	}
+	if !strings.Contains(err.Error(), "snapshot") {
+		t.Fatalf("expected error mentioning snapshot, got: %v", err)
+	}
+}
+
+func TestWorker_SituatedJoin_Divergence409Aborts(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/mesh/join":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(protocol.NodeInfo{NodeID: "div-w1", Status: protocol.NodeStatusOnline})
+		case "/v1/mesh/snapshot":
+			state := joinlog.MeshState{}
+			digest, _ := joinlog.ComputeStateDigest(&state)
+			snap := joinlog.Snapshot{
+				HeadEventSeq:  5,
+				HeadEventHash: "hash-5",
+				State:         state,
+				StateDigest:   digest,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(snap)
+		case "/v1/mesh/events":
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":"chain divergence detected at seq 5"}`))
+		}
+	}))
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	err := runCLI(ctx, []string{
+		"worker",
+		"-coordinator", ts.URL,
+		"-node-id", "div-w1",
+		"-addr", "127.0.0.1:0",
+	}, &stdout, &stderr)
+
+	if err == nil {
+		t.Fatal("expected error on 409 chain divergence, got nil")
+	}
+	if !strings.Contains(err.Error(), "chain divergence") && !strings.Contains(err.Error(), "409") {
+		t.Fatalf("expected error mentioning chain divergence / 409, got: %v", err)
 	}
 }
 
